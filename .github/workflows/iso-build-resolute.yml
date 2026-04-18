@@ -1,0 +1,56 @@
+# ISO build for Ubuntu 26.04 LTS (resolute) — HWE kernel 26.04 metapackages only.
+# Requires a runner image with debootstrap support for the resolute suite when available.
+name: ISO build (resolute)
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_flavor:
+        description: "Kernel metapackage flavor"
+        type: choice
+        options:
+          - generic
+          - lowlatency
+        default: generic
+      install_kernel_recommends:
+        description: "Install apt Recommends for the kernel metapackage"
+        type: boolean
+        default: false
+
+concurrency:
+  group: iso-resolute-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y debootstrap squashfs-tools xorriso
+
+      - name: Write scripts/config.sh from workflow inputs
+        run: |
+          export TARGET_UBUNTU_VERSION=resolute
+          export TARGET_KERNEL_FLAVOR="${{ inputs.kernel_flavor }}"
+          if [ "${{ inputs.install_kernel_recommends }}" = "true" ]; then
+            export TARGET_KERNEL_METAPACKAGE_INSTALL_RECOMMENDS=yes
+          else
+            export TARGET_KERNEL_METAPACKAGE_INSTALL_RECOMMENDS=no
+          fi
+          bash scripts/ci/render-config.sh
+
+      - name: Build ISO
+        working-directory: scripts
+        run: ./build.sh -
+
+      - name: Upload ISO artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iso-resolute-${{ inputs.kernel_flavor }}-krec-${{ inputs.install_kernel_recommends }}
+          path: scripts/*.iso
+          if-no-files-found: error
