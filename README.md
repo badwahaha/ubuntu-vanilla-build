@@ -12,10 +12,6 @@ This guide shows how to build a bootable Ubuntu live ISO from a minimal base: **
 
 Use a **host** that is the same release as your target or newer (for example, build `jammy` on 22.04+; `noble` on 24.04+; `resolute` on 26.04+ when available). While **Resolute** is still rolling toward GA, use a current daily/beta host or build from a matching environment; use a mirror that publishes the target suite.
 
-**GitHub Actions:** workflow files live under [`.github/workflows/`](.github/workflows/). There is one workflow per supported release (`iso-build-jammy.yml`, `iso-build-noble.yml`, `iso-build-resolute.yml`), each with inputs for kernel flavor and whether to install **Recommends** for the kernel metapackage. A small helper [`scripts/ci/render-config.sh`](scripts/ci/render-config.sh) writes `scripts/config.sh` from those inputs before `./build.sh -`.
-
-**GitHub Pages:** Jekyll theme config is in [`docs/_config.yml`](docs/_config.yml); enable Pages with the **`/docs`** folder as the site source if you use it.
-
 The main flow is: build environment → `debootstrap` → work **inside the chroot** (including preparing `/image`) → exit the chroot → **squashfs** → **xorriso**.
 
 ## Requirements
@@ -26,13 +22,15 @@ The main flow is: build environment → `debootstrap` → work **inside the chro
 
 ## Quick start (recommended)
 
-Set `TARGET_UBUNTU_VERSION` to `jammy`, `noble`, or `resolute` in `scripts/default_config.sh` (or copy it to `scripts/config.sh`). Optional: `TARGET_KERNEL_METAPACKAGE_INSTALL_RECOMMENDS=yes|no` controls apt **Recommends** for the kernel metapackage only. Then run from the `scripts` directory:
+Run from the `scripts` directory. On a normal terminal, if you omit `--release` or `--kernel`, the script asks first for the Ubuntu release, then for the kernel type. Optional: `--kernel-recommends=yes|no` controls apt **Recommends** for the kernel metapackage only. For fully non-interactive runs, pass both `--release` and `--kernel`:
 
 ```shell
 ./build.sh -
+./build.sh --release=jammy --kernel=generic -
+./build.sh --release=noble --kernel=lowlatency --kernel-recommends=yes -
 ```
 
-That runs: host setup → `debootstrap` → scripts inside the chroot (including snapd block, Ubiquity + disk tools, vanilla GNOME) → ISO creation.
+That runs: host setup -> `debootstrap` -> scripts inside the chroot (including snapd block, Ubiquity + disk tools, vanilla GNOME) -> ISO creation. Temporary build files live under `scripts/workspace/{chroot,image}` while the build runs, then `workspace` is deleted after the ISO, SHA-1 file, and SHA-256 file are written.
 
 ## Terminology
 
@@ -141,7 +139,7 @@ apt-get install -y \
    gparted dosfstools e2fsprogs btrfs-progs xfsprogs ntfs-3g parted
 
 apt-get install -y --no-install-recommends linux-generic-hwe-24.04
-# (suffix 22.04 / 24.04 / 26.04 from jammy / noble / resolute — see scripts/default_config.sh)
+# (suffix 22.04 / 24.04 / 26.04 from jammy / noble / resolute)
 
 apt-get install -y \
    ubiquity ubiquity-casper ubiquity-frontend-gtk ubiquity-ubuntu-artwork
@@ -406,7 +404,7 @@ sudo dd if=ubuntu-from-scratch.iso of=/dev/sdX status=progress oflag=sync bs=4M
 
 ## Configuration
 
-Edit `scripts/default_config.sh` or `scripts/config.sh` to set `TARGET_UBUNTU_VERSION` to **`jammy`**, **`noble`**, or **`resolute`**, plus the ISO name, mirror, kernel options, and the `customize_image` function.
+Use `scripts/build.sh` options or environment variables to choose **`jammy`**, **`noble`**, or **`resolute`**, along with the mirror, kernel options, ISO name, and other overrides. On a TTY you are prompted for the release first, then the kernel type, unless you set them with flags or the environment. Temporary files stay under `scripts/workspace` only until the ISO and checksum files are created, then that folder is removed.
 
 ## License
 
