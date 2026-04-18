@@ -4,12 +4,17 @@ This guide shows how to build a bootable Ubuntu live ISO from a minimal base: **
 
 **Supported Ubuntu releases (only these):**
 
-| Codename   | Version   | Common name        |
-| ---------- | --------- | ------------------ |
-| `noble`    | 24.04 LTS | Noble Numbat       |
-| `resolute` | 26.04 LTS | Resolute Raccoon   |
+| Codename   | Version   | HWE metapackage suffix | Common name        |
+| ---------- | --------- | ---------------------- | ------------------ |
+| `jammy`    | 22.04 LTS | `-hwe-22.04`           | Jammy Jellyfish    |
+| `noble`    | 24.04 LTS | `-hwe-24.04`           | Noble Numbat       |
+| `resolute` | 26.04 LTS | `-hwe-26.04`           | Resolute Raccoon   |
 
-Use a **host** that is the same release as your target or newer (for example, build `noble` on 24.04+; build `resolute` on 26.04+ when available). While **Resolute** is still rolling toward GA, use a current daily/beta host or build from a matching environment; replace every `noble` in the examples with `resolute` and use a mirror that publishes the `resolute` suite.
+Use a **host** that is the same release as your target or newer (for example, build `jammy` on 22.04+; `noble` on 24.04+; `resolute` on 26.04+ when available). While **Resolute** is still rolling toward GA, use a current daily/beta host or build from a matching environment; use a mirror that publishes the target suite.
+
+**GitHub Actions:** workflow files live under [`.github/workflows/`](.github/workflows/). There is one workflow per supported release (`iso-build-jammy.yml`, `iso-build-noble.yml`, `iso-build-resolute.yml`), each with inputs for kernel flavor and whether to install **Recommends** for the kernel metapackage. A small helper [`scripts/ci/render-config.sh`](scripts/ci/render-config.sh) writes `scripts/config.sh` from those inputs before `./build.sh -`.
+
+**GitHub Pages:** Jekyll theme config is in [`docs/_config.yml`](docs/_config.yml); enable Pages with the **`/docs`** folder as the site source if you use it.
 
 The main flow is: build environment → `debootstrap` → work **inside the chroot** (including preparing `/image`) → exit the chroot → **squashfs** → **xorriso**.
 
@@ -17,11 +22,11 @@ The main flow is: build environment → `debootstrap` → work **inside the chro
 
 - Comfort with the Linux shell and scripting.
 - Enough disk space and RAM for bootstrapping and building the ISO.
-- Host Ubuntu version **≥** target release (`noble` or `resolute`), as in the table above.
+- Host Ubuntu version **≥** target release (`jammy`, `noble`, or `resolute`), as in the table above.
 
 ## Quick start (recommended)
 
-Set `TARGET_UBUNTU_VERSION` to `noble` or `resolute` in `scripts/default_config.sh` (or copy it to `scripts/config.sh`), then run from the `scripts` directory:
+Set `TARGET_UBUNTU_VERSION` to `jammy`, `noble`, or `resolute` in `scripts/default_config.sh` (or copy it to `scripts/config.sh`). Optional: `TARGET_KERNEL_METAPACKAGE_INSTALL_RECOMMENDS=yes|no` controls apt **Recommends** for the kernel metapackage only. Then run from the `scripts` directory:
 
 ```shell
 ./build.sh -
@@ -37,9 +42,9 @@ That runs: host setup → `debootstrap` → scripts inside the chroot (including
 
 ## Manual procedure (overview)
 
-The order matches `scripts/build.sh` and `scripts/chroot_build.sh`: finish **all steps inside the chroot** (including creating `/image` and boot files), then **exit the chroot**, then run **squashfs compression** and **ISO creation** on the host.
+The order matches `scripts/build.sh`: the **chroot phase** (same file, `--chroot-internal`) finishes **all steps inside the chroot** (including creating `/image` and boot files), then **exit the chroot**, then **squashfs compression** and **ISO creation** run on the host.
 
-Set `RELEASE` to `noble` or `resolute` for the commands below. Example working directory: `$HOME/live-ubuntu-from-scratch`.
+Set `RELEASE` to `jammy`, `noble`, or `resolute` for the commands below. Example working directory: `$HOME/live-ubuntu-from-scratch`.
 
 ---
 
@@ -56,7 +61,7 @@ cd "$HOME/live-ubuntu-from-scratch"
 ### 2. On the host: `debootstrap` and bind mounts
 
 ```shell
-RELEASE=noble   # or: resolute
+RELEASE=noble   # or: jammy | resolute
 
 sudo debootstrap \
    --arch=amd64 \
@@ -88,10 +93,10 @@ export HOME=/root
 export LC_ALL=C
 ```
 
-Set `RELEASE` to match what you used in `debootstrap` (`noble` or `resolute`). Then hostname, `sources.list`, and **permanent snapd block** (before any upgrade that could pull in snapd):
+Set `RELEASE` to match what you used in `debootstrap` (`jammy`, `noble`, or `resolute`). Then hostname, `sources.list`, and **permanent snapd block** (before any upgrade that could pull in snapd):
 
 ```shell
-RELEASE=noble   # must match debootstrap
+RELEASE=noble   # must match debootstrap (jammy | noble | resolute)
 
 echo "ubuntu-fs-live" > /etc/hostname
 
@@ -135,7 +140,8 @@ apt-get install -y \
    grub-efi-amd64-signed shim-signed mtools unzip binutils \
    gparted dosfstools e2fsprogs btrfs-progs xfsprogs ntfs-3g parted
 
-apt-get install -y --no-install-recommends linux-generic
+apt-get install -y --no-install-recommends linux-generic-hwe-24.04
+# (suffix 22.04 / 24.04 / 26.04 from jammy / noble / resolute — see scripts/default_config.sh)
 
 apt-get install -y \
    ubiquity ubiquity-casper ubiquity-frontend-gtk ubiquity-ubuntu-artwork
@@ -400,7 +406,7 @@ sudo dd if=ubuntu-from-scratch.iso of=/dev/sdX status=progress oflag=sync bs=4M
 
 ## Configuration
 
-Edit `scripts/default_config.sh` or `scripts/config.sh` to set `TARGET_UBUNTU_VERSION` to **`noble`** or **`resolute`**, plus the ISO name, mirror, kernel package, and the `customize_image` function.
+Edit `scripts/default_config.sh` or `scripts/config.sh` to set `TARGET_UBUNTU_VERSION` to **`jammy`**, **`noble`**, or **`resolute`**, plus the ISO name, mirror, kernel options, and the `customize_image` function.
 
 ## License
 

@@ -2,6 +2,10 @@
 
 ## build.sh
 
+The same `build.sh` runs on the **host** (debootstrap, chroot, ISO) and **inside the chroot** when invoked with `--chroot-internal` (do not run that mode yourself; `run_chroot` does it).
+
+Supported releases: **jammy**, **noble**, **resolute** only (HWE suffix **22.04**, **24.04**, or **26.04**). Kernel metapackages are always HWE: `linux-generic-hwe-XX.04` or `linux-lowlatency-hwe-XX.04`. Choose flavor via `TARGET_KERNEL_FLAVOR` in `config.sh`, or `./build.sh --kernel=generic|lowlatency`, or `-i` for an interactive menu. For the kernel metapackage only, `TARGET_KERNEL_METAPACKAGE_INSTALL_RECOMMENDS=yes|no` or `./build.sh --kernel-recommends=yes|no`. Advanced: set `TARGET_KERNEL_PACKAGE` to pin a metapackage name.
+
 ```console
 This script builds a bootable ubuntu ISO image
 
