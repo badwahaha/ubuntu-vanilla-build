@@ -1,6 +1,6 @@
 # Build your own Ubuntu ISO with vanilla way without `snapd` and more clear
 
-This guide shows how to build a bootable Ubuntu live ISO from a minimal base: **vanilla GNOME** (via `vanilla-gnome-desktop`), **no Snap** (snapd is blocked permanently with APT pinning), and a **slim Ubiquity** install (no slideshow packages). **GParted** and common **filesystem tools** are installed so disk preparation matches what the graphical installer expects.
+This guide shows how to build a bootable Ubuntu live ISO from a minimal base: **vanilla GNOME** (via `vanilla-gnome-desktop`), **no Snap** (snapd is blocked permanently with APT pinning), and **Calamares** for installation (not Ubiquity). The live image adds **Brave Browser** from Brave’s official APT repository, **Flatpak** with the **Flathub** remote, **GNOME Software** (with the Flatpak plugin), **ClamAV**, **Terminator**, and common CLI tools (**git**, **wget**, **curl**, **vim**, **nano**, and more). **GParted** and common **filesystem tools** are installed so disk preparation matches what the graphical installer expects. A few default GNOME games and **Transmission** are removed to keep the desktop lean.
 
 **Supported Ubuntu releases (only these):**
 
@@ -30,7 +30,7 @@ Run from the `scripts` directory. On a normal terminal, if you omit `--release` 
 ./build.sh --release=noble --kernel=lowlatency --kernel-recommends=yes -
 ```
 
-That runs: host setup -> `debootstrap` -> scripts inside the chroot (including snapd block, Ubiquity + disk tools, vanilla GNOME) -> ISO creation. Temporary build files live under `scripts/workspace/{chroot,image}` while the build runs, then `workspace` is deleted after the ISO, SHA-1 file, and SHA-256 file are written.
+That runs: host setup → `debootstrap` → chroot steps (snapd block, Calamares + disk tools, vanilla GNOME, Brave, Flatpak, customization) → ISO creation. While the build runs, temporary files live under a **workspace** directory: by default `<repository-root>/workspace` with `chroot/` and `image/` inside it. If the repo is on a WSL Windows mount (`/mnt/...`) or similar, the script uses `~/.cache/ubuntu-vanilla-build/workspace` instead (debootstrap cannot unpack reliably on DrvFs). You can override the parent path with **`UBUNTU_VANILLA_WORKSPACE`**, which becomes `UBUNTU_VANILLA_WORKSPACE/workspace`. After a successful build, the workspace tree is removed; the ISO and checksum files are written under **`scripts/`** (next to `build.sh`) as **`${TARGET_NAME:-ubuntu}.iso`** (default name **`ubuntu.iso`**) plus **`.sha1`** and **`.sha256`**.
 
 ## Terminology
 
@@ -96,7 +96,8 @@ Set `RELEASE` to match what you used in `debootstrap` (`jammy`, `noble`, or `res
 ```shell
 RELEASE=noble   # must match debootstrap (jammy | noble | resolute)
 
-echo "ubuntu-fs-live" > /etc/hostname
+echo "ubuntu" > /etc/hostname
+# (the script uses TARGET_NAME, default ubuntu)
 
 cat <<EOF > /etc/apt/sources.list
 deb http://archive.ubuntu.com/ubuntu/ ${RELEASE} main restricted universe multiverse
@@ -128,12 +129,12 @@ ln -s /bin/true /sbin/initctl
 apt-get -y upgrade
 ```
 
-Core packages for the live system, kernel, **Calamares** (via `calamares-settings-ubuntu-unity` on noble/resolute, or `calamares` + `calamares-settings-debian` on jammy), and disk tooling (GParted + filesystem utilities):
+Core packages for the live system, kernel, **Calamares**, and disk tooling (GParted + filesystem utilities)—this matches what `install_pkg` in `scripts/build.sh` does (no `wireless-tools` / `wpagui` in the script):
 
 ```shell
 apt-get install -y \
    sudo ubuntu-standard casper discover laptop-detect os-prober \
-   network-manager net-tools wireless-tools wpagui locales \
+   network-manager net-tools locales \
    grub-common grub-gfxpayload-lists grub-pc grub-pc-bin grub2-common \
    grub-efi-amd64-signed shim-signed mtools unzip binutils \
    gparted dosfstools e2fsprogs btrfs-progs xfsprogs ntfs-3g parted
@@ -141,18 +142,52 @@ apt-get install -y \
 apt-get install -y --no-install-recommends linux-generic-hwe-24.04
 # (suffix 22.04 / 24.04 / 26.04 from jammy / noble / resolute)
 
-apt-get install -y calamares-settings-ubuntu-unity
-# jammy: apt-get install -y calamares calamares-settings-debian
+# jammy:
+apt-get install -y calamares calamares-settings-debian
+
+# noble or resolute:
+apt-get install -y calamares calamares-settings-ubuntu-common calamares-settings-ubuntu-unity
 ```
 
-**Vanilla GNOME** desktop stack (replaces `ubuntu-gnome-desktop`) and extra tools:
+**Vanilla GNOME**, Brave, Flatpak, and extra tools—this matches `customize_image` in `scripts/build.sh` (order matters: desktop first, then Brave repo, then the rest):
 
 ```shell
 apt-get install -y \
-   plymouth-themes vanilla-gnome-desktop
+   plymouth-themes \
+   plymouth-theme-spinner \
+   plymouth-theme-ubuntu-text \
+   plymouth-theme-ubuntu-gnome-logo \
+   vanilla-gnome-desktop
+
+apt-get install -y curl apt-transport-https ca-certificates
+
+install -d /usr/share/keyrings /etc/apt/sources.list.d
+curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
+   https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
+curl -fsSLo /etc/apt/sources.list.d/brave-browser-release.sources \
+   https://brave-browser-apt-release.s3.brave.com/brave-browser.sources
+
+apt-get update
+apt-get install -y brave-browser
 
 apt-get install -y \
-   clamav-daemon terminator apt-transport-https curl vim nano less
+   clamav-daemon \
+   git \
+   terminator \
+   vim \
+   nano \
+   wget \
+   less \
+   flatpak \
+   gnome-software \
+   gnome-software-plugin-flatpak
+
+flatpak remote-add --if-not-exists --system flathub \
+   https://flathub.org/repo/flathub.flatpakrepo
+
+apt-get purge -y \
+   transmission-gtk transmission-common \
+   gnome-mahjongg gnome-mines gnome-sudoku aisleriot hitori
 ```
 
 Remove unused packages, then configure locale and networking:
@@ -190,6 +225,8 @@ cp "/boot/vmlinuz-$(uname -r)" /image/casper/vmlinuz
 cp "/boot/initrd.img-$(uname -r)" /image/casper/initrd
 ```
 
+`build_image` in `scripts/build.sh` instead picks the **latest** `/boot/vmlinuz-*` and `/boot/initrd.img-*` by version sort, which avoids mismatches if multiple kernels are installed.
+
 Memtest86+:
 
 ```shell
@@ -212,52 +249,53 @@ insmod all_video
 set default="0"
 set timeout=30
 
-menuentry "Try Ubuntu FS without installing" {
+menuentry "Try Ubuntu without installing" {
    linux /casper/vmlinuz boot=casper nopersistent quiet splash ---
    initrd /casper/initrd
 }
 
-menuentry "Check disc for defects" {
+menuentry "Check the disc for defects" {
    linux /casper/vmlinuz boot=casper integrity-check quiet splash ---
    initrd /casper/initrd
 }
 
 grub_platform
 if [ "$grub_platform" = "efi" ]; then
-menuentry 'UEFI Firmware Settings' {
+menuentry "UEFI firmware settings" {
    fwsetup
 }
 
-menuentry "Test memory Memtest86+ (UEFI)" {
+menuentry "Test memory with Memtest86+ (UEFI)" {
    linux /install/memtest86+.efi
 }
 else
-menuentry "Test memory Memtest86+ (BIOS)" {
+menuentry "Test memory with Memtest86+ (BIOS)" {
    linux16 /install/memtest86+.bin
 }
 fi
 EOF
 ```
 
-Manifest (remove packages that should not be present on the installed desktop system from the `filesystem.manifest-desktop` copy):
+The automated build uses the environment variable **`GRUB_LIVEBOOT_LABEL`** (default **`Try Ubuntu without installing`**) for the first menu entry and for **`README.diskdefines`** `DISKNAME`—override it when invoking the chroot if you want a different label.
+
+Manifest (remove packages that should not be present on the installed desktop system from the `filesystem.manifest-desktop` copy). The script removes these package names (see **`TARGET_PACKAGE_REMOVE`** in `build.sh`): **`calamares`**, **`calamares-settings-ubuntu-unity`**, **`calamares-settings-ubuntu-common`**, **`calamares-settings-debian`**, **`casper`**, **`discover`**, **`laptop-detect`**, **`os-prober`**:
 
 ```shell
 dpkg-query -W --showformat='${Package} ${Version}\n' | tee /image/casper/filesystem.manifest
 
 cp -v /image/casper/filesystem.manifest /image/casper/filesystem.manifest-desktop
 
-sed -i '/calamares/d' /image/casper/filesystem.manifest-desktop
-sed -i '/casper/d' /image/casper/filesystem.manifest-desktop
-sed -i '/discover/d' /image/casper/filesystem.manifest-desktop
-sed -i '/laptop-detect/d' /image/casper/filesystem.manifest-desktop
-sed -i '/os-prober/d' /image/casper/filesystem.manifest-desktop
+for pkg in calamares calamares-settings-ubuntu-unity calamares-settings-ubuntu-common \
+           calamares-settings-debian casper discover laptop-detect os-prober; do
+   sed -i "/$pkg/d" /image/casper/filesystem.manifest-desktop
+done
 ```
 
 `README.diskdefines`:
 
 ```shell
 cat <<EOF > /image/README.diskdefines
-#define DISKNAME  Ubuntu from scratch
+#define DISKNAME  Try Ubuntu without installing
 #define TYPE  binary
 #define TYPEbinary  1
 #define ARCH  amd64
@@ -335,6 +373,8 @@ sudo umount "$HOME/live-ubuntu-from-scratch/chroot/run"
 
 ### 7. On the host: move `/image`, squashfs, size file, ISO
 
+Adjust paths to match your chroot layout (here: `$HOME/live-ubuntu-from-scratch/chroot`). The automated build moves **`image/`** out of the chroot before running **`mksquashfs`** and passes **`-e "image"`** so the staging tree is never packed into the squashfs. In this manual sequence, **`image/`** is already moved aside; keeping **`-e "image"`** matches the script and is harmless if the directory is absent.
+
 ```shell
 cd "$HOME/live-ubuntu-from-scratch"
 sudo mv chroot/image .
@@ -348,7 +388,8 @@ sudo mksquashfs chroot image/casper/filesystem.squashfs \
    -e "root/.*" \
    -e "tmp/*" \
    -e "tmp/.*" \
-   -e "swapfile"
+   -e "swapfile" \
+   -e "image"
 
 printf $(sudo du -sx --block-size=1 chroot | cut -f1) | sudo tee image/casper/filesystem.size
 
@@ -358,8 +399,8 @@ sudo xorriso \
    -iso-level 3 \
    -full-iso9660-filenames \
    -J -J -joliet-long \
-   -volid "Ubuntu from scratch" \
-   -output "../ubuntu-from-scratch.iso" \
+   -volid "ubuntu" \
+   -output "../ubuntu.iso" \
    -eltorito-boot isolinux/bios.img \
      -no-emul-boot \
      -boot-load-size 4 \
@@ -389,17 +430,17 @@ sudo xorriso \
       "."
 ```
 
-The ISO is written to `$HOME/live-ubuntu-from-scratch/ubuntu-from-scratch.iso`. To copy it to a USB drive, replace `/dev/sdX` with your actual block device:
+The example ISO path is `$HOME/live-ubuntu-from-scratch/ubuntu.iso`. When you use **`./build.sh`**, the ISO is **`scripts/${TARGET_NAME:-ubuntu}.iso`** (default **`ubuntu.iso`**) next to **`build.sh`**. To copy an ISO to a USB drive, replace `/dev/sdX` with your actual block device:
 
 ```shell
-sudo dd if=ubuntu-from-scratch.iso of=/dev/sdX status=progress oflag=sync bs=4M
+sudo dd if=ubuntu.iso of=/dev/sdX status=progress oflag=sync bs=4M
 ```
 
 ---
 
 ## Configuration
 
-Use `scripts/build.sh` options or environment variables to choose **`jammy`**, **`noble`**, or **`resolute`**, along with the mirror, kernel options, ISO name, and other overrides. On a TTY you are prompted for the release first, then the kernel type, unless you set them with flags or the environment. Temporary files stay under `scripts/workspace` only until the ISO and checksum files are created, then that folder is removed.
+Use `scripts/build.sh` options or environment variables to choose **`jammy`**, **`noble`**, or **`resolute`**, along with **`--mirror`**, kernel flavor (**`--kernel=generic|lowlatency`**), **`--kernel-recommends=yes|no`**, ISO basename (**`TARGET_NAME`**, default **`ubuntu`**), live menu label (**`GRUB_LIVEBOOT_LABEL`**), and workspace parent (**`UBUNTU_VANILLA_WORKSPACE`**). On a TTY you are prompted for the release first, then the kernel type, unless you set them with flags or the environment. The build workspace (see Quick start) is removed after **`TARGET_NAME.iso`**, **`.sha1`**, and **`.sha256`** are written under **`scripts/`**.
 
 ## License
 
