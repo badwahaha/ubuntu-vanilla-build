@@ -128,7 +128,7 @@ ln -s /bin/true /sbin/initctl
 apt-get -y upgrade
 ```
 
-Core packages for the live system, kernel, **Ubiquity with disk tooling** (GParted + filesystem utilities; **no** slideshow), then the graphical installer metapackage without the slideshow:
+Core packages for the live system, kernel, **Calamares** (via `calamares-settings-ubuntu-unity` on noble/resolute, or `calamares` + `calamares-settings-debian` on jammy), and disk tooling (GParted + filesystem utilities):
 
 ```shell
 apt-get install -y \
@@ -141,8 +141,8 @@ apt-get install -y \
 apt-get install -y --no-install-recommends linux-generic-hwe-24.04
 # (suffix 22.04 / 24.04 / 26.04 from jammy / noble / resolute)
 
-apt-get install -y \
-   ubiquity ubiquity-casper ubiquity-frontend-gtk ubiquity-ubuntu-artwork
+apt-get install -y calamares-settings-ubuntu-unity
+# jammy: apt-get install -y calamares calamares-settings-debian
 ```
 
 **Vanilla GNOME** desktop stack (replaces `ubuntu-gnome-desktop`) and extra tools:
@@ -213,12 +213,7 @@ set default="0"
 set timeout=30
 
 menuentry "Try Ubuntu FS without installing" {
-   linux /casper/vmlinuz boot=casper nopersistent toram quiet splash ---
-   initrd /casper/initrd
-}
-
-menuentry "Install Ubuntu FS" {
-   linux /casper/vmlinuz boot=casper only-ubiquity quiet splash ---
+   linux /casper/vmlinuz boot=casper nopersistent quiet splash ---
    initrd /casper/initrd
 }
 
@@ -251,7 +246,7 @@ dpkg-query -W --showformat='${Package} ${Version}\n' | tee /image/casper/filesys
 
 cp -v /image/casper/filesystem.manifest /image/casper/filesystem.manifest-desktop
 
-sed -i '/ubiquity/d' /image/casper/filesystem.manifest-desktop
+sed -i '/calamares/d' /image/casper/filesystem.manifest-desktop
 sed -i '/casper/d' /image/casper/filesystem.manifest-desktop
 sed -i '/discover/d' /image/casper/filesystem.manifest-desktop
 sed -i '/laptop-detect/d' /image/casper/filesystem.manifest-desktop

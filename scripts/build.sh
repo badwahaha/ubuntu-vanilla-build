@@ -37,10 +37,12 @@ function set_defaults() {
     export TARGET_KERNEL_METAPACKAGE_INSTALL_RECOMMENDS="${TARGET_KERNEL_METAPACKAGE_INSTALL_RECOMMENDS:-no}"
     export TARGET_KERNEL_PACKAGE="${TARGET_KERNEL_PACKAGE:-}"
     export TARGET_NAME="${TARGET_NAME:-ubuntu}"
-    export GRUB_LIVEBOOT_LABEL="${GRUB_LIVEBOOT_LABEL:-Try Ubuntu FS without installing}"
-    export GRUB_INSTALL_LABEL="${GRUB_INSTALL_LABEL:-Install Ubuntu FS}"
+    export GRUB_LIVEBOOT_LABEL="${GRUB_LIVEBOOT_LABEL:-Try Ubuntu without installing}"
     export TARGET_PACKAGE_REMOVE="${TARGET_PACKAGE_REMOVE:-\
-ubiquity \
+calamares \
+calamares-settings-ubuntu-unity \
+calamares-settings-ubuntu-common \
+calamares-settings-debian \
 casper \
 discover \
 laptop-detect \
@@ -324,7 +326,6 @@ function run_chroot() {
         TARGET_KERNEL_METAPACKAGE_INSTALL_RECOMMENDS="${TARGET_KERNEL_METAPACKAGE_INSTALL_RECOMMENDS:-}" \
         TARGET_NAME="${TARGET_NAME}" \
         GRUB_LIVEBOOT_LABEL="${GRUB_LIVEBOOT_LABEL}" \
-        GRUB_INSTALL_LABEL="${GRUB_INSTALL_LABEL}" \
         TARGET_PACKAGE_REMOVE="${TARGET_PACKAGE_REMOVE}" \
         /root/build.sh --chroot-internal -
 
@@ -770,11 +771,18 @@ function install_pkg() {
     echo "=====> kernel metapackage apt options: ${kernel_apt_opts[*]} $TARGET_KERNEL_PACKAGE"
     apt-get install "${kernel_apt_opts[@]}" "$TARGET_KERNEL_PACKAGE"
 
-    apt-get install -y \
-        ubiquity \
-        ubiquity-casper \
-        ubiquity-frontend-gtk \
-        ubiquity-ubuntu-artwork
+    case "${TARGET_UBUNTU_VERSION}" in
+        jammy)
+            apt-get install -y calamares calamares-settings-debian
+            ;;
+        noble|resolute)
+            apt-get install -y calamares calamares-settings-ubuntu-common calamares-settings-ubuntu-unity
+            ;;
+        *)
+            >&2 echo "Internal error: unsupported TARGET_UBUNTU_VERSION for Calamares: ${TARGET_UBUNTU_VERSION:-}"
+            exit 1
+            ;;
+    esac
 
     customize_image
 
@@ -835,12 +843,7 @@ set default="0"
 set timeout=30
 
 menuentry "$GRUB_LIVEBOOT_LABEL" {
-    linux /casper/vmlinuz boot=casper nopersistent toram quiet splash ---
-    initrd /casper/initrd
-}
-
-menuentry "$GRUB_INSTALL_LABEL" {
-    linux /casper/vmlinuz boot=casper only-ubiquity quiet splash ---
+    linux /casper/vmlinuz boot=casper nopersistent quiet splash ---
     initrd /casper/initrd
 }
 
