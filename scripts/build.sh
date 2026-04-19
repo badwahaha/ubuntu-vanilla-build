@@ -9,6 +9,10 @@ SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 WORKSPACE_DIR=""
 WORKSPACE_CHROOT=""
 WORKSPACE_IMAGE=""
+# Set to 1 while chroot bind mounts (dev, run, proc, sys, dev/pts) are active (host phase).
+CHROOT_MOUNTS_ACTIVE=0
+# Prevents duplicate teardown when both a signal handler and EXIT run.
+HOST_ABORT_CLEANUP_DONE=0
 DATE="$(TZ="UTC" date +"%y%m%d-%H%M%S")"
 
 # Host (outside chroot): prepare tree, debootstrap, run chroot phase, squashfs + ISO
@@ -97,9 +101,23 @@ function set_target_kernel_package_from_flavor() {
     esac
 }
 
+function block_snapd() {
+    install -d /etc/apt/preferences.d
+    cat <<'EOF' > /etc/apt/preferences.d/nosnap.pref
+Package: snapd
+Pin: release *
+Pin-Priority: -1
+EOF
+}
+
 function customize_image() {
+    block_snapd
+
     apt-get install -y \
         plymouth-themes \
+        plymouth-theme-spinner \
+        plymouth-theme-ubuntu-text \
+        plymouth-theme-ubuntu-gnome-logo \
         vanilla-gnome-desktop
 
     apt-get install -y \
@@ -109,7 +127,13 @@ function customize_image() {
         curl \
         vim \
         nano \
-        less
+        less \
+        flatpak \
+        gnome-software \
+        gnome-software-backend-flatpak
+
+    flatpak remote-add --if-not-exists --system flathub \
+        https://flathub.org/repo/flathub.flatpakrepo
 
     apt-get purge -y \
         transmission-gtk \
@@ -197,14 +221,56 @@ function chroot_enter_setup() {
     host_priv chroot "$WORKSPACE_CHROOT" mount none -t proc /proc
     host_priv chroot "$WORKSPACE_CHROOT" mount none -t sysfs /sys
     host_priv chroot "$WORKSPACE_CHROOT" mount none -t devpts /dev/pts
+    CHROOT_MOUNTS_ACTIVE=1
 }
 
 function chroot_exit_teardown() {
-    host_priv chroot "$WORKSPACE_CHROOT" umount -l /proc
-    host_priv chroot "$WORKSPACE_CHROOT" umount -l /sys
-    host_priv chroot "$WORKSPACE_CHROOT" umount -l /dev/pts
-    host_priv umount -l "$WORKSPACE_CHROOT/dev"
-    host_priv umount -l "$WORKSPACE_CHROOT/run"
+    CHROOT_MOUNTS_ACTIVE=0
+    [[ -z "${WORKSPACE_CHROOT:-}" ]] && return 0
+    # Unmount from the host so we still unwind if chroot is unusable; order: inner mounts, then bind mounts.
+    host_priv umount -l "$WORKSPACE_CHROOT/dev/pts" 2>/dev/null || true
+    host_priv umount -l "$WORKSPACE_CHROOT/proc" 2>/dev/null || true
+    host_priv umount -l "$WORKSPACE_CHROOT/sys" 2>/dev/null || true
+    host_priv umount -l "$WORKSPACE_CHROOT/run" 2>/dev/null || true
+    host_priv umount -l "$WORKSPACE_CHROOT/dev" 2>/dev/null || true
+}
+
+# On failed or interrupted host build: drop chroot mounts (if any) and remove the workspace tree so leftover
+# mounts do not require a reboot to clear.
+function host_abort_cleanup() {
+    if [[ "${HOST_ABORT_CLEANUP_DONE:-0}" -eq 1 ]]; then
+        return 0
+    fi
+    HOST_ABORT_CLEANUP_DONE=1
+    echo "=====> unmounting chroot bind mounts and removing workspace ..." >&2
+    chroot_exit_teardown || true
+    if [[ -n "${WORKSPACE_DIR:-}" ]]; then
+        clean_workspace || true
+    fi
+}
+
+function host_build_exit_trap() {
+    local _st=$?
+    if [[ "$_st" -ne 0 ]] && [[ "${HOST_ABORT_CLEANUP_DONE:-0}" -eq 0 ]]; then
+        host_abort_cleanup
+    fi
+    exit "$_st"
+}
+
+function host_build_int_trap() {
+    if [[ "${HOST_ABORT_CLEANUP_DONE:-0}" -eq 1 ]]; then
+        exit 130
+    fi
+    host_abort_cleanup
+    exit 130
+}
+
+function host_build_term_trap() {
+    if [[ "${HOST_ABORT_CLEANUP_DONE:-0}" -eq 1 ]]; then
+        exit 143
+    fi
+    host_abort_cleanup
+    exit 143
 }
 
 function setup_host() {
@@ -509,6 +575,12 @@ function host_main() {
     cd "$SCRIPT_DIR"
     resolve_workspace_paths
 
+    HOST_ABORT_CLEANUP_DONE=0
+    CHROOT_MOUNTS_ACTIVE=0
+    trap host_build_exit_trap EXIT
+    trap host_build_int_trap INT
+    trap host_build_term_trap TERM
+
     if [[ -n "$cli_release" ]]; then
         export TARGET_UBUNTU_VERSION="$cli_release"
     fi
@@ -626,12 +698,7 @@ EOF
 
     apt-get update
 
-    install -d /etc/apt/preferences.d
-    cat <<'EOF' > /etc/apt/preferences.d/nosnap.pref
-Package: snapd
-Pin: release *
-Pin-Priority: -1
-EOF
+    block_snapd
 
     apt-get install -y libterm-readline-gnu-perl systemd-sysv
 
@@ -656,8 +723,6 @@ function install_pkg() {
         os-prober \
         network-manager \
         net-tools \
-        wireless-tools \
-        wpagui \
         locales \
         grub-common \
         grub-gfxpayload-lists \
