@@ -130,7 +130,7 @@ function customize_image() {
         less \
         flatpak \
         gnome-software \
-        gnome-software-backend-flatpak
+        gnome-software-plugin-flatpak
 
     flatpak remote-add --if-not-exists --system flathub \
         https://flathub.org/repo/flathub.flatpakrepo
@@ -197,11 +197,32 @@ function host_find_index() {
 }
 
 function check_host_user() {
-    local os_ver
-    os_ver="$(lsb_release -i 2>/dev/null | grep -E "(Ubuntu|Debian)" || true)"
-    if [[ -z "$os_ver" ]]; then
-        echo "WARNING: This host is not Ubuntu or Debian, so the build is untested here."
+    local ID ID_LIKE
+
+    if [[ ! -r /etc/os-release ]]; then
+        >&2 echo "ERROR: /etc/os-release is missing or unreadable."
+        >&2 echo "This script must be run on Ubuntu (or an Ubuntu-based distribution) or on Debian (or a Debian-based distribution)."
+        exit 1
     fi
+    # shellcheck source=/dev/null
+    . /etc/os-release
+
+    if [[ "${ID:-}" == "ubuntu" ]] || [[ "${ID_LIKE:-}" == *ubuntu* ]]; then
+        return 0
+    fi
+
+    if [[ "${ID:-}" == "debian" ]] || [[ "${ID_LIKE:-}" == *debian* ]]; then
+        if [[ "${ID:-}" == "debian" ]] && ! dpkg -s ubuntu-archive-keyring &>/dev/null; then
+            >&2 echo "ERROR: On Debian, install the Ubuntu archive keyring before building (required for debootstrap from Ubuntu mirrors):"
+            >&2 echo "  sudo apt install ubuntu-archive-keyring"
+            exit 1
+        fi
+        return 0
+    fi
+
+    >&2 echo "ERROR: Unsupported host OS (ID='${ID:-unknown}', ID_LIKE='${ID_LIKE:-}')."
+    >&2 echo "Run this script only on Ubuntu or an Ubuntu-based system, or on Debian or a Debian-based system."
+    exit 1
 }
 
 function ensure_workspace_root() {
