@@ -122,13 +122,24 @@ function customize_image() {
         plymouth-theme-ubuntu-gnome-logo \
         vanilla-gnome-desktop
 
+    apt-get install -y curl apt-transport-https ca-certificates
+
+    install -d /usr/share/keyrings /etc/apt/sources.list.d
+    curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
+        https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
+    curl -fsSLo /etc/apt/sources.list.d/brave-browser-release.sources \
+        https://brave-browser-apt-release.s3.brave.com/brave-browser.sources
+
+    apt-get update
+    apt-get install -y brave-browser
+
     apt-get install -y \
         clamav-daemon \
+        git \
         terminator \
-        apt-transport-https \
-        curl \
         vim \
         nano \
+        wget \
         less \
         flatpak \
         gnome-software \
