@@ -5,9 +5,10 @@ set -o pipefail
 set -u
 
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
-WORKSPACE_DIR="$SCRIPT_DIR/workspace"
-WORKSPACE_CHROOT="$WORKSPACE_DIR/chroot"
-WORKSPACE_IMAGE="$WORKSPACE_DIR/image"
+# Set in resolve_workspace_paths() during host_main (WSL: avoid /mnt/c for debootstrap).
+WORKSPACE_DIR=""
+WORKSPACE_CHROOT=""
+WORKSPACE_IMAGE=""
 DATE="$(TZ="UTC" date +"%y%m%d-%H%M%S")"
 
 # Host (outside chroot): prepare tree, debootstrap, run chroot phase, squashfs + ISO
@@ -15,6 +16,15 @@ HOST_CMD=(setup_host debootstrap run_chroot build_iso)
 
 # Chroot phase: APT setup, packages, /image layout, cleanup
 CHROOT_CMD=(chroot_prepare install_pkg build_image finish_up)
+
+# Run host commands as root: sudo when invoked as a normal user, direct exec when already root.
+function host_priv() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
 
 function set_defaults() {
     export TARGET_UBUNTU_VERSION="${TARGET_UBUNTU_VERSION:-}"
@@ -136,6 +146,7 @@ function host_help() {
     echo "Options:"
     echo "  --release=jammy|noble|resolute          Target Ubuntu release (omit to be prompted on a TTY)"
     echo "  --mirror=URL                            Ubuntu package mirror"
+    echo "  UBUNTU_VANILLA_WORKSPACE=DIR             Parent directory for build workspace (optional; auto on WSL /mnt/c)"
     echo "  --kernel=generic|lowlatency             Kernel type to install"
     echo "  --kernel-recommends=yes|no              Install apt Recommends for the kernel metapackage"
     echo "  -i, --interactive                       Ask for release and kernel on a TTY (same as omitting them)"
@@ -163,56 +174,51 @@ function host_find_index() {
 
 function check_host_user() {
     local os_ver
-    os_ver="$(lsb_release -i | grep -E "(Ubuntu|Debian)" || true)"
+    os_ver="$(lsb_release -i 2>/dev/null | grep -E "(Ubuntu|Debian)" || true)"
     if [[ -z "$os_ver" ]]; then
         echo "WARNING: This host is not Ubuntu or Debian, so the build is untested here."
-    fi
-
-    if [ "$(id -u)" -eq 0 ]; then
-        echo "Do not run this script as root."
-        exit 1
     fi
 }
 
 function ensure_workspace_root() {
-    sudo mkdir -p "$WORKSPACE_DIR"
+    host_priv mkdir -p "$WORKSPACE_DIR"
 }
 
 function clean_workspace() {
     if [[ -e "$WORKSPACE_DIR" ]]; then
         echo "=====> removing workspace ..."
-        sudo rm -rf "$WORKSPACE_DIR"
+        host_priv rm -rf "$WORKSPACE_DIR"
     fi
 }
 
 function chroot_enter_setup() {
-    sudo mount --bind /dev "$WORKSPACE_CHROOT/dev"
-    sudo mount --bind /run "$WORKSPACE_CHROOT/run"
-    sudo chroot "$WORKSPACE_CHROOT" mount none -t proc /proc
-    sudo chroot "$WORKSPACE_CHROOT" mount none -t sysfs /sys
-    sudo chroot "$WORKSPACE_CHROOT" mount none -t devpts /dev/pts
+    host_priv mount --bind /dev "$WORKSPACE_CHROOT/dev"
+    host_priv mount --bind /run "$WORKSPACE_CHROOT/run"
+    host_priv chroot "$WORKSPACE_CHROOT" mount none -t proc /proc
+    host_priv chroot "$WORKSPACE_CHROOT" mount none -t sysfs /sys
+    host_priv chroot "$WORKSPACE_CHROOT" mount none -t devpts /dev/pts
 }
 
 function chroot_exit_teardown() {
-    sudo chroot "$WORKSPACE_CHROOT" umount -l /proc
-    sudo chroot "$WORKSPACE_CHROOT" umount -l /sys
-    sudo chroot "$WORKSPACE_CHROOT" umount -l /dev/pts
-    sudo umount -l "$WORKSPACE_CHROOT/dev"
-    sudo umount -l "$WORKSPACE_CHROOT/run"
+    host_priv chroot "$WORKSPACE_CHROOT" umount -l /proc
+    host_priv chroot "$WORKSPACE_CHROOT" umount -l /sys
+    host_priv chroot "$WORKSPACE_CHROOT" umount -l /dev/pts
+    host_priv umount -l "$WORKSPACE_CHROOT/dev"
+    host_priv umount -l "$WORKSPACE_CHROOT/run"
 }
 
 function setup_host() {
     echo "=====> running setup_host ..."
-    sudo apt update
-    sudo apt install -y debootstrap squashfs-tools xorriso
+    host_priv apt update
+    host_priv apt install -y debootstrap squashfs-tools xorriso
     clean_workspace
     ensure_workspace_root
-    sudo mkdir -p "$WORKSPACE_CHROOT"
+    host_priv mkdir -p "$WORKSPACE_CHROOT"
 }
 
 function debootstrap() {
     echo "=====> running debootstrap ... this will take a few minutes ..."
-    sudo debootstrap --arch=amd64 --variant=minbase "$TARGET_UBUNTU_VERSION" "$WORKSPACE_CHROOT" "$TARGET_UBUNTU_MIRROR"
+    host_priv debootstrap --arch=amd64 --variant=minbase "$TARGET_UBUNTU_VERSION" "$WORKSPACE_CHROOT" "$TARGET_UBUNTU_MIRROR"
 }
 
 function run_chroot() {
@@ -220,9 +226,9 @@ function run_chroot() {
 
     chroot_enter_setup
 
-    sudo cp "$SCRIPT_DIR/build.sh" "$WORKSPACE_CHROOT/root/build.sh"
+    host_priv cp "$SCRIPT_DIR/build.sh" "$WORKSPACE_CHROOT/root/build.sh"
 
-    sudo chroot "$WORKSPACE_CHROOT" /usr/bin/env \
+    host_priv chroot "$WORKSPACE_CHROOT" /usr/bin/env \
         DEBIAN_FRONTEND="${DEBIAN_FRONTEND:-readline}" \
         TARGET_UBUNTU_VERSION="${TARGET_UBUNTU_VERSION}" \
         TARGET_UBUNTU_MIRROR="${TARGET_UBUNTU_MIRROR}" \
@@ -235,7 +241,7 @@ function run_chroot() {
         TARGET_PACKAGE_REMOVE="${TARGET_PACKAGE_REMOVE}" \
         /root/build.sh --chroot-internal -
 
-    sudo rm -f "$WORKSPACE_CHROOT/root/build.sh"
+    host_priv rm -f "$WORKSPACE_CHROOT/root/build.sh"
 
     chroot_exit_teardown
 }
@@ -257,10 +263,10 @@ function build_iso() {
     echo "=====> running build_iso ..."
 
     ensure_workspace_root
-    sudo rm -rf "$WORKSPACE_IMAGE"
-    sudo mv "$WORKSPACE_CHROOT/image" "$WORKSPACE_IMAGE"
+    host_priv rm -rf "$WORKSPACE_IMAGE"
+    host_priv mv "$WORKSPACE_CHROOT/image" "$WORKSPACE_IMAGE"
 
-    sudo mksquashfs "$WORKSPACE_CHROOT" "$WORKSPACE_IMAGE/casper/filesystem.squashfs" \
+    host_priv mksquashfs "$WORKSPACE_CHROOT" "$WORKSPACE_IMAGE/casper/filesystem.squashfs" \
         -noappend -no-duplicates -no-recovery \
         -wildcards \
         -comp xz -b 1M -Xdict-size 100% \
@@ -272,11 +278,11 @@ function build_iso() {
         -e "swapfile" \
         -e "image"
 
-    printf "%s" "$(sudo du -sx --block-size=1 "$WORKSPACE_CHROOT" | cut -f1)" | sudo tee "$WORKSPACE_IMAGE/casper/filesystem.size" >/dev/null
+    printf "%s" "$(host_priv du -sx --block-size=1 "$WORKSPACE_CHROOT" | cut -f1)" | host_priv tee "$WORKSPACE_IMAGE/casper/filesystem.size" >/dev/null
 
     pushd "$WORKSPACE_IMAGE" >/dev/null
 
-    sudo xorriso \
+    host_priv xorriso \
         -as mkisofs \
         -iso-level 3 \
         -full-iso9660-filenames \
@@ -416,6 +422,35 @@ function resolve_kernel_choice() {
     exit 1
 }
 
+# debootstrap extracts .deb archives with tar; DrvFs/9p under WSL (/mnt/c, etc.) breaks that. Use ext4 (e.g. ~/.cache/...) instead.
+function resolve_workspace_paths() {
+    local repo_root
+    repo_root="$(cd "$(dirname "$SCRIPT_DIR")" && pwd)"
+    local fs_type ft_lower
+    fs_type="$(df -T "$repo_root" 2>/dev/null | awk 'NR==2 {print $2}')"
+    ft_lower="$(printf '%s' "$fs_type" | tr '[:upper:]' '[:lower:]')"
+
+    if [[ -n "${UBUNTU_VANILLA_WORKSPACE:-}" ]]; then
+        WORKSPACE_DIR="${UBUNTU_VANILLA_WORKSPACE%/}/workspace"
+        echo "=====> Workspace (UBUNTU_VANILLA_WORKSPACE): $WORKSPACE_DIR" >&2
+    elif [[ "$repo_root" == /mnt/* ]] || [[ "$repo_root" == /media/* ]] || \
+         [[ "$fs_type" == 9p ]] || [[ "$ft_lower" == drvfs ]]; then
+        local _cache="${XDG_CACHE_HOME:-${HOME:-/root}/.cache}"
+        WORKSPACE_DIR="$_cache/ubuntu-vanilla-build/workspace"
+        echo "=====> Windows/WSL filesystem (${fs_type:-unknown}) at $repo_root — debootstrap cannot unpack reliably there." >&2
+        echo "=====> Using Linux-native workspace: $WORKSPACE_DIR" >&2
+    else
+        WORKSPACE_DIR="$repo_root/workspace"
+    fi
+    WORKSPACE_CHROOT="$WORKSPACE_DIR/chroot"
+    WORKSPACE_IMAGE="$WORKSPACE_DIR/image"
+
+    if [[ "${TMPDIR:-}" == /mnt/* ]] || [[ "${TMPDIR:-}" == /media/* ]]; then
+        echo "=====> TMPDIR is on a Windows mount (${TMPDIR:-}); using /tmp for extraction." >&2
+        export TMPDIR=/tmp
+    fi
+}
+
 function host_main() {
     local interactive=0
     local cli_kernel=""
@@ -472,6 +507,7 @@ function host_main() {
     set -- "${args[@]}"
 
     cd "$SCRIPT_DIR"
+    resolve_workspace_paths
 
     if [[ -n "$cli_release" ]]; then
         export TARGET_UBUNTU_VERSION="$cli_release"
