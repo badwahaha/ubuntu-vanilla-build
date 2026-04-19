@@ -142,10 +142,10 @@ function host_help() {
     echo
     echo "Syntax: $0 [options] [start_cmd] [-] [end_cmd]"
     echo "  Run from start_cmd to end_cmd"
-    echo "  If start_cmd is omitted, start from the first command"
-    echo "  If end_cmd is omitted, stop after the selected command"
-    echo "  Use a single command to run only that command"
-    echo "  Use '-' by itself to run all commands"
+    echo "  If no start_cmd/end_cmd are given, all host steps run (same as '-')"
+    echo "  If start_cmd is given without '-', only that command runs"
+    echo "  If end_cmd is omitted (with a start_cmd), stop after the selected start_cmd"
+    echo "  Use '-' by itself to run all commands explicitly"
     echo
     exit 0
 }
@@ -499,7 +499,12 @@ function host_main() {
     set_target_kernel_package_from_flavor
     check_host_user
 
-    if [[ $# == 0 || $# > 3 ]]; then
+    # With no [start_cmd] [-] [end_cmd], run the full host pipeline (same as '-').
+    if [[ $# == 0 ]]; then
+        set -- "-"
+    fi
+
+    if [[ $# > 3 ]]; then
         host_help
     fi
 
