@@ -14,6 +14,22 @@ CHROOT_MOUNTS_ACTIVE=0
 # Prevents duplicate teardown when both a signal handler and EXIT run.
 HOST_ABORT_CLEANUP_DONE=0
 DATE="$(TZ="UTC" date +"%y%m%d-%H%M%S")"
+DEBUG_SESSION_ID="5d03ce"
+DEBUG_LOG_PATH="debug-5d03ce.log"
+
+function agent_debug_log() {
+    local run_id="$1"
+    local hypothesis_id="$2"
+    local location="$3"
+    local message="$4"
+    local data="$5"
+    local ts
+    ts="$(date +%s%3N)"
+    #region agent log
+    printf '{"sessionId":"%s","runId":"%s","hypothesisId":"%s","location":"%s","message":"%s","data":"%s","timestamp":%s}\n' \
+        "$DEBUG_SESSION_ID" "$run_id" "$hypothesis_id" "$location" "$message" "$data" "$ts" >> "$DEBUG_LOG_PATH"
+    #endregion
+}
 
 # Host (outside chroot): prepare tree, debootstrap, run chroot phase, squashfs + ISO
 HOST_CMD=(setup_host debootstrap run_chroot build_iso)
@@ -131,45 +147,30 @@ EOF
 
 function configure_plymouth_theme() {
     local theme="${1:-ubuntu-text}"
-    local setter=""
+    local theme_dir="/usr/share/plymouth/themes/$theme"
 
-    # `plymouth-set-default-theme` may not be pulled by theme packages alone on some releases.
+    # Ensure the required Plymouth tools/themes are installed in the chroot.
+    apt-get install -y plymouth plymouth-label plymouth-theme-ubuntu-text
+
     if ! command -v plymouth-set-default-theme >/dev/null 2>&1; then
-        apt-get install -y plymouth plymouth-label || true
-    fi
-
-    if command -v plymouth-set-default-theme >/dev/null 2>&1; then
-        setter="plymouth-set-default-theme"
-    elif [[ -x /usr/sbin/plymouth-set-default-theme ]]; then
-        setter="/usr/sbin/plymouth-set-default-theme"
-    elif [[ -x /sbin/plymouth-set-default-theme ]]; then
-        setter="/sbin/plymouth-set-default-theme"
-    fi
-
-    if [[ -z "$setter" ]]; then
         >&2 echo "ERROR: plymouth-set-default-theme is unavailable after installing Plymouth packages."
         >&2 echo "       Install and verify packages: plymouth, plymouth-label, plymouth-theme-ubuntu-text."
         exit 1
     fi
 
-    if [[ ! -d "/usr/share/plymouth/themes/$theme" ]]; then
+    if [[ ! -d "$theme_dir" ]]; then
         >&2 echo "ERROR: Requested Plymouth theme '$theme' is not installed."
         >&2 echo "       Available themes are under /usr/share/plymouth/themes."
         exit 1
     fi
 
-    "$setter" -R "$theme"
+    plymouth-set-default-theme -R "$theme"
 }
 
 function customize_image() {
     block_snapd
 
-    apt-get install -y \
-        plymouth \
-        plymouth-label \
-        plymouth-theme-ubuntu-text \
-        vanilla-gnome-desktop
-
+    apt-get install -y vanilla-gnome-desktop
     configure_plymouth_theme "ubuntu-text"
 
     apt-get install -y curl apt-transport-https ca-certificates squashfs-tools
