@@ -33,7 +33,7 @@ function host_priv() {
 function default_target_package_remove() {
     case "${TARGET_INSTALLER:-calamares}" in
         calamares)
-            echo "calamares casper discover laptop-detect os-prober"
+            echo "calamares casper discover laptop-detect os-prober ubiquity-slideshow-ubuntu"
             ;;
         ubiquity)
             echo "ubiquity ubiquity-frontend-gtk ubiquity-ubuntu-artwork ubiquity-slideshow-ubuntu casper discover laptop-detect os-prober"
@@ -133,11 +133,10 @@ function customize_image() {
     block_snapd
 
     apt-get install -y \
-        plymouth-themes \
-        plymouth-theme-spinner \
         plymouth-theme-ubuntu-text \
-        plymouth-theme-ubuntu-gnome-logo \
         vanilla-gnome-desktop
+
+    plymouth-set-default-theme -R ubuntu-text
 
     apt-get install -y curl apt-transport-https ca-certificates squashfs-tools
 
@@ -173,6 +172,11 @@ function customize_image() {
         gnome-sudoku \
         aisleriot \
         hitori
+
+    apt-get purge -y --ignore-missing \
+        ubiquity-slideshow-ubuntu \
+        calamares-slideshow-ubuntu \
+        || true
 }
 
 function check_settings() {
@@ -921,7 +925,8 @@ function install_pkg() {
                 >&2 echo "Internal error: Ubiquity is supported only on jammy; got TARGET_UBUNTU_VERSION='${TARGET_UBUNTU_VERSION}'."
                 exit 1
             fi
-            apt-get install -y ubiquity ubiquity-frontend-gtk
+            # No-install-recommends prevents ubiquity-slideshow-ubuntu from being pulled in.
+            apt-get install -y --no-install-recommends ubiquity ubiquity-frontend-gtk
             ;;
         *)
             >&2 echo "Internal error: unsupported TARGET_INSTALLER: ${TARGET_INSTALLER:-}"
