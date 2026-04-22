@@ -148,7 +148,7 @@ EOF
 function customize_image() {
     block_snapd
 
-    apt-get install -y --no-install-recommends vanilla-gnome-desktop
+    apt-get install -y --no-install-recommends vanilla-gnome-desktop gnome-console
     apt-get install -y plymouth plymouth-label plymouth-theme-ubuntu-text
 
     apt-get install -y curl apt-transport-https ca-certificates squashfs-tools
