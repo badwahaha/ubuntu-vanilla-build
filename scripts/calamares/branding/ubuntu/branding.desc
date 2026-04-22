@@ -1,0 +1,19 @@
+---
+componentName: ubuntu
+
+welcomeStyleCalamares: true
+welcomeExpandingLogo:  true
+windowExpanding:       normal
+windowSize:            800px,520px
+
+strings:
+    productName:         Ubuntu
+    shortProductName:    Ubuntu
+    version:             @VERSION@
+    shortVersion:        @CODENAME@
+    versionedName:       Ubuntu @VERSION@ LTS
+    shortVersionedName:  Ubuntu @VERSION@ LTS
+    bootloaderEntryName: Ubuntu
+    productUrl:          https://ubuntu.com/
+
+slideshowAPI:            2

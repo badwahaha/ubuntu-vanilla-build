@@ -49,7 +49,6 @@ function set_defaults() {
     export TARGET_UBUNTU_VERSION="${TARGET_UBUNTU_VERSION:-}"
     export TARGET_UBUNTU_MIRROR="${TARGET_UBUNTU_MIRROR:-http://us.archive.ubuntu.com/ubuntu/}"
     export TARGET_KERNEL_FLAVOR="${TARGET_KERNEL_FLAVOR:-}"
-    export TARGET_KERNEL_METAPACKAGE_INSTALL_RECOMMENDS="${TARGET_KERNEL_METAPACKAGE_INSTALL_RECOMMENDS:-no}"
     export TARGET_KERNEL_PACKAGE="${TARGET_KERNEL_PACKAGE:-}"
     export TARGET_NAME="${TARGET_NAME:-ubuntu}"
     export GRUB_LIVEBOOT_LABEL="${GRUB_LIVEBOOT_LABEL:-Try Ubuntu without installing}"
@@ -140,7 +139,7 @@ function customize_image() {
         plymouth-theme-ubuntu-gnome-logo \
         vanilla-gnome-desktop
 
-    apt-get install -y curl apt-transport-https ca-certificates
+    apt-get install -y curl apt-transport-https ca-certificates squashfs-tools
 
     install -d /usr/share/keyrings /etc/apt/sources.list.d
     curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
@@ -178,13 +177,6 @@ function customize_image() {
 
 function check_settings() {
     assert_supported_release || exit 1
-    case "${TARGET_KERNEL_METAPACKAGE_INSTALL_RECOMMENDS:-}" in
-        yes|no) ;;
-        *)
-            >&2 echo "TARGET_KERNEL_METAPACKAGE_INSTALL_RECOMMENDS must be yes or no."
-            exit 1
-            ;;
-    esac
 }
 
 function host_help() {
@@ -204,7 +196,6 @@ function host_help() {
     echo "  UBUNTU_VANILLA_WORKSPACE=DIR             Parent directory for build workspace (optional; auto on WSL /mnt/c)"
     echo "  TARGET_INSTALLER=calamares|ubiquity       Live installer (optional; default calamares)"
     echo "  --kernel=generic|lowlatency             Kernel type to install"
-    echo "  --kernel-recommends=yes|no              Install apt Recommends for the kernel metapackage"
     echo "  --installer=calamares|ubiquity           Calamares (default), or Ubiquity (jammy/22.04 only)"
     echo "  -i, --interactive                       Ask for release, installer, and kernel on a TTY (same as omitting them)"
     echo
@@ -358,7 +349,6 @@ function run_chroot() {
         TARGET_UBUNTU_MIRROR="${TARGET_UBUNTU_MIRROR}" \
         TARGET_KERNEL_FLAVOR="${TARGET_KERNEL_FLAVOR:-}" \
         TARGET_KERNEL_PACKAGE="${TARGET_KERNEL_PACKAGE:-}" \
-        TARGET_KERNEL_METAPACKAGE_INSTALL_RECOMMENDS="${TARGET_KERNEL_METAPACKAGE_INSTALL_RECOMMENDS:-}" \
         TARGET_NAME="${TARGET_NAME}" \
         GRUB_LIVEBOOT_LABEL="${GRUB_LIVEBOOT_LABEL}" \
         TARGET_INSTALLER="${TARGET_INSTALLER:-calamares}" \
@@ -647,7 +637,6 @@ function host_main() {
     local cli_kernel=""
     local cli_release=""
     local cli_mirror=""
-    local cli_krec=""
     local cli_installer=""
     local args=()
 
@@ -678,10 +667,6 @@ function host_main() {
             --mirror)
                 cli_mirror="$2"
                 shift 2
-                ;;
-            --kernel-recommends=yes|--kernel-recommends=no)
-                cli_krec="${1#--kernel-recommends=}"
-                shift
                 ;;
             -i|--interactive)
                 interactive=1
@@ -723,9 +708,6 @@ function host_main() {
     fi
     if [[ -n "$cli_kernel" ]]; then
         export TARGET_KERNEL_FLAVOR="$cli_kernel"
-    fi
-    if [[ -n "$cli_krec" ]]; then
-        export TARGET_KERNEL_METAPACKAGE_INSTALL_RECOMMENDS="$cli_krec"
     fi
     if [[ -n "$cli_installer" ]]; then
         export TARGET_INSTALLER="$cli_installer"
@@ -870,6 +852,25 @@ function apply_calamares_custom_config() {
         fi
         cp /root/calamares-config/i18n/SUPPORTED /usr/share/i18n/SUPPORTED
     fi
+
+    # Render the Ubuntu branding template with the correct release version so the installer
+    # shows "Ubuntu 24.04 LTS" / "Ubuntu 26.04 LTS" instead of the stock Calamares default
+    # ("Fancy GNU/Linux ..."). Matches calamares-settings-ubuntu's per-flavor branding approach.
+    local ubuntu_version
+    ubuntu_version="$(hwe_version_for_release "$TARGET_UBUNTU_VERSION")"
+    if [[ -z "$ubuntu_version" ]]; then
+        >&2 echo "Internal error: no Ubuntu marketing version for TARGET_UBUNTU_VERSION='$TARGET_UBUNTU_VERSION'."
+        exit 1
+    fi
+    if [[ ! -f /root/calamares-config/branding/ubuntu/branding.desc ]]; then
+        >&2 echo "Internal error: scripts/calamares/branding/ubuntu/branding.desc is missing."
+        exit 1
+    fi
+    install -d /etc/calamares/branding/ubuntu
+    sed -e "s|@VERSION@|${ubuntu_version}|g" \
+        -e "s|@CODENAME@|${TARGET_UBUNTU_VERSION}|g" \
+        /root/calamares-config/branding/ubuntu/branding.desc \
+        > /etc/calamares/branding/ubuntu/branding.desc
 }
 
 function install_pkg() {
@@ -905,12 +906,8 @@ function install_pkg() {
         ntfs-3g \
         parted
 
-    local kernel_apt_opts=(-y)
-    if [[ "${TARGET_KERNEL_METAPACKAGE_INSTALL_RECOMMENDS:-no}" != "yes" ]]; then
-        kernel_apt_opts+=(--no-install-recommends)
-    fi
-    echo "=====> kernel metapackage apt options: ${kernel_apt_opts[*]} $TARGET_KERNEL_PACKAGE"
-    apt-get install "${kernel_apt_opts[@]}" "$TARGET_KERNEL_PACKAGE"
+    echo "=====> installing kernel metapackage (with Recommends): $TARGET_KERNEL_PACKAGE"
+    apt-get install -y "$TARGET_KERNEL_PACKAGE"
 
     echo "=====> live installer: ${TARGET_INSTALLER}"
     case "${TARGET_INSTALLER}" in

@@ -22,12 +22,12 @@ The main flow is: build environment → `debootstrap` → work **inside the chro
 
 ## Quick start (recommended)
 
-Run from the `scripts` directory. On a normal terminal, if you omit `--release`, `--installer`, or `--kernel`, the script can prompt for the Ubuntu release, then the installer (**Calamares** or **Ubiquity**), then the kernel type. Optional: `--kernel-recommends=yes|no` controls apt **Recommends** for the kernel metapackage only. For fully non-interactive runs, pass `--release`, `--kernel`, and optionally `--installer=calamares|ubiquity` (default is Calamares):
+Run from the `scripts` directory. On a normal terminal, if you omit `--release`, `--installer`, or `--kernel`, the script can prompt for the Ubuntu release, then the installer (**Calamares** or **Ubiquity**), then the kernel type. The kernel metapackage is always installed **with** apt **Recommends** (so firmware and microcode come along). For fully non-interactive runs, pass `--release`, `--kernel`, and optionally `--installer=calamares|ubiquity` (default is Calamares):
 
 ```shell
 ./build.sh -
 ./build.sh --release=jammy --kernel=generic -
-./build.sh --release=jammy --kernel=generic --installer=ubiquity --kernel-recommends=yes -
+./build.sh --release=jammy --kernel=generic --installer=ubiquity -
 ```
 
 That runs: host setup → `debootstrap` → chroot steps (snapd block, chosen installer + disk tools, vanilla GNOME, Brave, Flatpak, customization) → ISO creation. While the build runs, temporary files live under a **workspace** directory: by default `<repository-root>/workspace` with `chroot/` and `image/` inside it. If the repo is on a WSL Windows mount (`/mnt/...`) or similar, the script uses `~/.cache/ubuntu-vanilla-build/workspace` instead (debootstrap cannot unpack reliably on DrvFs). You can override the parent path with **`UBUNTU_VANILLA_WORKSPACE`**, which becomes `UBUNTU_VANILLA_WORKSPACE/workspace`. After a successful build, the workspace tree is removed; the ISO and checksum files are written under **`scripts/`** (next to `build.sh`) as **`${TARGET_NAME:-ubuntu}.iso`** (default name **`ubuntu.iso`**) plus **`.sha1`** and **`.sha256`**.
@@ -139,8 +139,9 @@ apt-get install -y \
    grub-efi-amd64-signed shim-signed mtools unzip binutils \
    gparted dosfstools e2fsprogs btrfs-progs xfsprogs ntfs-3g parted
 
-apt-get install -y --no-install-recommends linux-generic-hwe-24.04
+apt-get install -y linux-generic-hwe-24.04
 # (suffix 22.04 / 24.04 / 26.04 from jammy / noble / resolute)
+# The kernel metapackage is installed WITH Recommends so firmware / microcode come along.
 
 # Calamares (all supported releases — script uses only the binary package + scripts/calamares):
 # apt-get install -y --no-install-recommends calamares
@@ -440,7 +441,7 @@ sudo dd if=ubuntu.iso of=/dev/sdX status=progress oflag=sync bs=4M
 
 ## Configuration
 
-Use `scripts/build.sh` options or environment variables to choose **`jammy`**, **`noble`**, or **`resolute`**, along with **`--mirror`**, kernel flavor (**`--kernel=generic|lowlatency`**), **`--kernel-recommends=yes|no`**, ISO basename (**`TARGET_NAME`**, default **`ubuntu`**), live menu label (**`GRUB_LIVEBOOT_LABEL`**), and workspace parent (**`UBUNTU_VANILLA_WORKSPACE`**). On a TTY you are prompted for the release first, then the kernel type, unless you set them with flags or the environment. The build workspace (see Quick start) is removed after **`TARGET_NAME.iso`**, **`.sha1`**, and **`.sha256`** are written under **`scripts/`**.
+Use `scripts/build.sh` options or environment variables to choose **`jammy`**, **`noble`**, or **`resolute`**, along with **`--mirror`**, kernel flavor (**`--kernel=generic|lowlatency`**), ISO basename (**`TARGET_NAME`**, default **`ubuntu`**), live menu label (**`GRUB_LIVEBOOT_LABEL`**), and workspace parent (**`UBUNTU_VANILLA_WORKSPACE`**). On a TTY you are prompted for the release first, then the kernel type, unless you set them with flags or the environment. The build workspace (see Quick start) is removed after **`TARGET_NAME.iso`**, **`.sha1`**, and **`.sha256`** are written under **`scripts/`**.
 
 ## License
 
