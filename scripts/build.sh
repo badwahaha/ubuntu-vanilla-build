@@ -145,33 +145,11 @@ Pin-Priority: -1
 EOF
 }
 
-function configure_plymouth_theme() {
-    local theme="${1:-ubuntu-text}"
-    local theme_dir="/usr/share/plymouth/themes/$theme"
-
-    # Ensure the required Plymouth tools/themes are installed in the chroot.
-    apt-get install -y plymouth plymouth-label plymouth-theme-ubuntu-text
-
-    if ! command -v plymouth-set-default-theme >/dev/null 2>&1; then
-        >&2 echo "ERROR: plymouth-set-default-theme is unavailable after installing Plymouth packages."
-        >&2 echo "       Install and verify packages: plymouth, plymouth-label, plymouth-theme-ubuntu-text."
-        exit 1
-    fi
-
-    if [[ ! -d "$theme_dir" ]]; then
-        >&2 echo "ERROR: Requested Plymouth theme '$theme' is not installed."
-        >&2 echo "       Available themes are under /usr/share/plymouth/themes."
-        exit 1
-    fi
-
-    plymouth-set-default-theme -R "$theme"
-}
-
 function customize_image() {
     block_snapd
 
-    apt-get install -y vanilla-gnome-desktop
-    configure_plymouth_theme "ubuntu-text"
+    apt-get install -y --no-install-recommends vanilla-gnome-desktop
+    apt-get install -y plymouth plymouth-label plymouth-theme-ubuntu-text
 
     apt-get install -y curl apt-transport-https ca-certificates squashfs-tools
 
