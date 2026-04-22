@@ -1,6 +1,6 @@
 # Build your own Ubuntu ISO with vanilla way without `snapd` and more clear
 
-This guide shows how to build a bootable Ubuntu live ISO from a minimal base: **vanilla GNOME** (via `vanilla-gnome-desktop`), **no Snap** (snapd is blocked permanently with APT pinning), and **Calamares** for installation (not Ubiquity). The live image adds **Brave Browser** from Brave’s official APT repository, **Flatpak** with the **Flathub** remote, **GNOME Software** (with the Flatpak plugin), **ClamAV**, **Terminator**, and common CLI tools (**git**, **wget**, **curl**, **vim**, **nano**, and more). **GParted** and common **filesystem tools** are installed so disk preparation matches what the graphical installer expects. A few default GNOME games and **Transmission** are removed to keep the desktop lean.
+This guide shows how to build a bootable Ubuntu live ISO from a minimal base: **vanilla GNOME** (via `vanilla-gnome-desktop`), **no Snap** (snapd is blocked permanently with APT pinning), and your choice of **Calamares** (default) or **Ubiquity** for installation (**Ubiquity is supported only on jammy / 22.04 LTS**; use Calamares for noble or resolute). Calamares installs **only the `calamares` package** (with **`--no-install-recommends`** so **`calamares-settings-*`** metapackages are not pulled in as *Recommends*). If `apt` refuses to install `calamares` because your suite requires a flavor settings package as a hard **Depends**, install the smallest satisfying package once to satisfy the resolver, then keep using **`scripts/calamares/`** as the active configuration (or adjust `install_pkg` in `build.sh` accordingly). The full installer UI and jobs come from **`scripts/calamares/`** (`settings.conf`, `modules/*.conf`, and a curated **`i18n/SUPPORTED`**) so localization and welcome/locale steps stay lean and avoid common issues with packaged defaults (for example progress stalling around the locale phase). The live image adds **Brave Browser** from Brave’s official APT repository, **Flatpak** with the **Flathub** remote, **GNOME Software** (with the Flatpak plugin), **ClamAV**, **Terminator**, and common CLI tools (**git**, **wget**, **curl**, **vim**, **nano**, and more). **GParted** and common **filesystem tools** are installed so disk preparation matches what the graphical installer expects. A few default GNOME games and **Transmission** are removed to keep the desktop lean.
 
 **Supported Ubuntu releases (only these):**
 
@@ -22,15 +22,15 @@ The main flow is: build environment → `debootstrap` → work **inside the chro
 
 ## Quick start (recommended)
 
-Run from the `scripts` directory. On a normal terminal, if you omit `--release` or `--kernel`, the script asks first for the Ubuntu release, then for the kernel type. Optional: `--kernel-recommends=yes|no` controls apt **Recommends** for the kernel metapackage only. For fully non-interactive runs, pass both `--release` and `--kernel`:
+Run from the `scripts` directory. On a normal terminal, if you omit `--release`, `--installer`, or `--kernel`, the script can prompt for the Ubuntu release, then the installer (**Calamares** or **Ubiquity**), then the kernel type. Optional: `--kernel-recommends=yes|no` controls apt **Recommends** for the kernel metapackage only. For fully non-interactive runs, pass `--release`, `--kernel`, and optionally `--installer=calamares|ubiquity` (default is Calamares):
 
 ```shell
 ./build.sh -
 ./build.sh --release=jammy --kernel=generic -
-./build.sh --release=noble --kernel=lowlatency --kernel-recommends=yes -
+./build.sh --release=jammy --kernel=generic --installer=ubiquity --kernel-recommends=yes -
 ```
 
-That runs: host setup → `debootstrap` → chroot steps (snapd block, Calamares + disk tools, vanilla GNOME, Brave, Flatpak, customization) → ISO creation. While the build runs, temporary files live under a **workspace** directory: by default `<repository-root>/workspace` with `chroot/` and `image/` inside it. If the repo is on a WSL Windows mount (`/mnt/...`) or similar, the script uses `~/.cache/ubuntu-vanilla-build/workspace` instead (debootstrap cannot unpack reliably on DrvFs). You can override the parent path with **`UBUNTU_VANILLA_WORKSPACE`**, which becomes `UBUNTU_VANILLA_WORKSPACE/workspace`. After a successful build, the workspace tree is removed; the ISO and checksum files are written under **`scripts/`** (next to `build.sh`) as **`${TARGET_NAME:-ubuntu}.iso`** (default name **`ubuntu.iso`**) plus **`.sha1`** and **`.sha256`**.
+That runs: host setup → `debootstrap` → chroot steps (snapd block, chosen installer + disk tools, vanilla GNOME, Brave, Flatpak, customization) → ISO creation. While the build runs, temporary files live under a **workspace** directory: by default `<repository-root>/workspace` with `chroot/` and `image/` inside it. If the repo is on a WSL Windows mount (`/mnt/...`) or similar, the script uses `~/.cache/ubuntu-vanilla-build/workspace` instead (debootstrap cannot unpack reliably on DrvFs). You can override the parent path with **`UBUNTU_VANILLA_WORKSPACE`**, which becomes `UBUNTU_VANILLA_WORKSPACE/workspace`. After a successful build, the workspace tree is removed; the ISO and checksum files are written under **`scripts/`** (next to `build.sh`) as **`${TARGET_NAME:-ubuntu}.iso`** (default name **`ubuntu.iso`**) plus **`.sha1`** and **`.sha256`**.
 
 ## Terminology
 
@@ -129,7 +129,7 @@ ln -s /bin/true /sbin/initctl
 apt-get -y upgrade
 ```
 
-Core packages for the live system, kernel, **Calamares**, and disk tooling (GParted + filesystem utilities)—this matches what `install_pkg` in `scripts/build.sh` does (no `wireless-tools` / `wpagui` in the script):
+Core packages for the live system, kernel, **Calamares or Ubiquity**, and disk tooling (GParted + filesystem utilities)—this matches what `install_pkg` in `scripts/build.sh` does (no `wireless-tools` / `wpagui` in the script):
 
 ```shell
 apt-get install -y \
@@ -142,11 +142,12 @@ apt-get install -y \
 apt-get install -y --no-install-recommends linux-generic-hwe-24.04
 # (suffix 22.04 / 24.04 / 26.04 from jammy / noble / resolute)
 
-# jammy:
-apt-get install -y calamares calamares-settings-debian
+# Calamares (all supported releases — script uses only the binary package + scripts/calamares):
+# apt-get install -y --no-install-recommends calamares
+# (then copy scripts/calamares into /etc/calamares as build.sh does)
 
-# noble or resolute:
-apt-get install -y calamares calamares-settings-ubuntu-common calamares-settings-ubuntu-unity
+# Or Ubiquity (jammy / 22.04 only — the script rejects other releases):
+# apt-get install -y ubiquity ubiquity-frontend-gtk
 ```
 
 **Vanilla GNOME**, Brave, Flatpak, and extra tools—this matches `customize_image` in `scripts/build.sh` (order matters: desktop first, then Brave repo, then the rest):
@@ -278,15 +279,14 @@ EOF
 
 The automated build uses the environment variable **`GRUB_LIVEBOOT_LABEL`** (default **`Try Ubuntu without installing`**) for the first menu entry and for **`README.diskdefines`** `DISKNAME`—override it when invoking the chroot if you want a different label.
 
-Manifest (remove packages that should not be present on the installed desktop system from the `filesystem.manifest-desktop` copy). The script removes these package names (see **`TARGET_PACKAGE_REMOVE`** in `build.sh`): **`calamares`**, **`calamares-settings-ubuntu-unity`**, **`calamares-settings-ubuntu-common`**, **`calamares-settings-debian`**, **`casper`**, **`discover`**, **`laptop-detect`**, **`os-prober`**:
+Manifest (remove packages that should not be present on the installed desktop system from the `filesystem.manifest-desktop` copy). The script removes package names from **`TARGET_PACKAGE_REMOVE`** in `build.sh` (defaults depend on **`TARGET_INSTALLER`**: Calamares removes **`calamares`**; Ubiquity removes **`ubiquity`** and related metapackages; both lists always include **`casper`**, **`discover`**, **`laptop-detect`**, and **`os-prober`**):
 
 ```shell
 dpkg-query -W --showformat='${Package} ${Version}\n' | tee /image/casper/filesystem.manifest
 
 cp -v /image/casper/filesystem.manifest /image/casper/filesystem.manifest-desktop
 
-for pkg in calamares calamares-settings-ubuntu-unity calamares-settings-ubuntu-common \
-           calamares-settings-debian casper discover laptop-detect os-prober; do
+for pkg in $TARGET_PACKAGE_REMOVE; do
    sed -i "/$pkg/d" /image/casper/filesystem.manifest-desktop
 done
 ```

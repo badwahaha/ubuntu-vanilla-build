@@ -30,6 +30,21 @@ function host_priv() {
     fi
 }
 
+function default_target_package_remove() {
+    case "${TARGET_INSTALLER:-calamares}" in
+        calamares)
+            echo "calamares casper discover laptop-detect os-prober"
+            ;;
+        ubiquity)
+            echo "ubiquity ubiquity-frontend-gtk ubiquity-ubuntu-artwork ubiquity-slideshow-ubuntu casper discover laptop-detect os-prober"
+            ;;
+        *)
+            >&2 echo "Internal error: default_target_package_remove with TARGET_INSTALLER='${TARGET_INSTALLER:-}'."
+            exit 1
+            ;;
+    esac
+}
+
 function set_defaults() {
     export TARGET_UBUNTU_VERSION="${TARGET_UBUNTU_VERSION:-}"
     export TARGET_UBUNTU_MIRROR="${TARGET_UBUNTU_MIRROR:-http://us.archive.ubuntu.com/ubuntu/}"
@@ -38,16 +53,19 @@ function set_defaults() {
     export TARGET_KERNEL_PACKAGE="${TARGET_KERNEL_PACKAGE:-}"
     export TARGET_NAME="${TARGET_NAME:-ubuntu}"
     export GRUB_LIVEBOOT_LABEL="${GRUB_LIVEBOOT_LABEL:-Try Ubuntu without installing}"
-    export TARGET_PACKAGE_REMOVE="${TARGET_PACKAGE_REMOVE:-\
-calamares \
-calamares-settings-ubuntu-unity \
-calamares-settings-ubuntu-common \
-calamares-settings-debian \
-casper \
-discover \
-laptop-detect \
-os-prober \
-}"
+}
+
+# TARGET_INSTALLER / TARGET_PACKAGE_REMOVE (after CLI and interactive resolution on the host).
+function set_installer_and_manifest_defaults() {
+    export TARGET_INSTALLER="${TARGET_INSTALLER:-calamares}"
+    case "${TARGET_INSTALLER}" in
+        calamares|ubiquity) ;;
+        *)
+            >&2 echo "TARGET_INSTALLER must be calamares or ubiquity (got: '${TARGET_INSTALLER}')."
+            exit 1
+            ;;
+    esac
+    export TARGET_PACKAGE_REMOVE="${TARGET_PACKAGE_REMOVE:-$(default_target_package_remove)}"
 }
 
 function hwe_version_for_release() {
@@ -184,9 +202,11 @@ function host_help() {
     echo "  --release=jammy|noble|resolute          Target Ubuntu release (omit to be prompted on a TTY)"
     echo "  --mirror=URL                            Ubuntu package mirror"
     echo "  UBUNTU_VANILLA_WORKSPACE=DIR             Parent directory for build workspace (optional; auto on WSL /mnt/c)"
+    echo "  TARGET_INSTALLER=calamares|ubiquity       Live installer (optional; default calamares)"
     echo "  --kernel=generic|lowlatency             Kernel type to install"
     echo "  --kernel-recommends=yes|no              Install apt Recommends for the kernel metapackage"
-    echo "  -i, --interactive                       Ask for release and kernel on a TTY (same as omitting them)"
+    echo "  --installer=calamares|ubiquity           Calamares (default), or Ubiquity (jammy/22.04 only)"
+    echo "  -i, --interactive                       Ask for release, installer, and kernel on a TTY (same as omitting them)"
     echo
     echo "Syntax: $0 [options] [start_cmd] [-] [end_cmd]"
     echo "  Run from start_cmd to end_cmd"
@@ -327,6 +347,10 @@ function run_chroot() {
     chroot_enter_setup
 
     host_priv cp "$SCRIPT_DIR/build.sh" "$WORKSPACE_CHROOT/root/build.sh"
+    host_priv rm -rf "$WORKSPACE_CHROOT/root/calamares-config"
+    if [[ -d "$SCRIPT_DIR/calamares" ]]; then
+        host_priv cp -a "$SCRIPT_DIR/calamares" "$WORKSPACE_CHROOT/root/calamares-config"
+    fi
 
     host_priv chroot "$WORKSPACE_CHROOT" /usr/bin/env \
         DEBIAN_FRONTEND="${DEBIAN_FRONTEND:-readline}" \
@@ -337,10 +361,12 @@ function run_chroot() {
         TARGET_KERNEL_METAPACKAGE_INSTALL_RECOMMENDS="${TARGET_KERNEL_METAPACKAGE_INSTALL_RECOMMENDS:-}" \
         TARGET_NAME="${TARGET_NAME}" \
         GRUB_LIVEBOOT_LABEL="${GRUB_LIVEBOOT_LABEL}" \
+        TARGET_INSTALLER="${TARGET_INSTALLER:-calamares}" \
         TARGET_PACKAGE_REMOVE="${TARGET_PACKAGE_REMOVE}" \
         /root/build.sh --chroot-internal -
 
     host_priv rm -f "$WORKSPACE_CHROOT/root/build.sh"
+    host_priv rm -rf "$WORKSPACE_CHROOT/root/calamares-config"
 
     chroot_exit_teardown
 }
@@ -521,6 +547,72 @@ function resolve_kernel_choice() {
     exit 1
 }
 
+function interactive_installer_pick() {
+    if [[ ! -t 0 ]]; then
+        >&2 echo "No terminal is available. Use --installer=calamares|ubiquity."
+        exit 1
+    fi
+
+    echo
+    echo "Choose the installer for the live environment:"
+    echo "(Ubiquity is supported only on Ubuntu 22.04 LTS — jammy; use Calamares for noble or resolute.)"
+    PS3="Selection [1-2]: "
+    select _opt in \
+        "Calamares (default; matches this project’s ISO layout)" \
+        "Ubiquity (classic installer; jammy / 22.04 only)"; do
+        case "$REPLY" in
+            1)
+                export TARGET_INSTALLER="calamares"
+                echo "=> TARGET_INSTALLER=calamares"
+                break
+                ;;
+            2)
+                if [[ "${TARGET_UBUNTU_VERSION:-}" != "jammy" ]]; then
+                    echo >&2
+                    echo >&2 "WARNING: Ubiquity is supported only on Ubuntu 22.04 LTS (jammy)."
+                    echo >&2 "         This build targets '${TARGET_UBUNTU_VERSION:-unknown}'. Choose option 1 (Calamares),"
+                    echo >&2 "         or restart with --release=jammy if you need Ubiquity."
+                    echo >&2
+                    continue
+                fi
+                export TARGET_INSTALLER="ubiquity"
+                echo "=> TARGET_INSTALLER=ubiquity"
+                break
+                ;;
+            *)
+                echo "Invalid selection."
+                ;;
+        esac
+    done
+    echo
+}
+
+# Ubiquity is only validated for jammy; Calamares is used for noble and resolute.
+function validate_ubiquity_jammy_only() {
+    if [[ "${TARGET_INSTALLER:-}" != "ubiquity" ]]; then
+        return 0
+    fi
+    if [[ "${TARGET_UBUNTU_VERSION:-}" == "jammy" ]]; then
+        return 0
+    fi
+    echo >&2 "ERROR: Ubiquity is supported only on Ubuntu 22.04 LTS (jammy)."
+    echo >&2 "       This build targets '${TARGET_UBUNTU_VERSION:-unknown}'. Use Calamares instead (e.g. --installer=calamares)."
+    exit 1
+}
+
+function resolve_installer_choice() {
+    if [[ -n "${TARGET_INSTALLER:-}" ]]; then
+        return 0
+    fi
+
+    if [[ -t 0 ]]; then
+        interactive_installer_pick
+        return 0
+    fi
+
+    export TARGET_INSTALLER=calamares
+}
+
 # debootstrap extracts .deb archives with tar; DrvFs/9p under WSL (/mnt/c, etc.) breaks that. Use ext4 (e.g. ~/.cache/...) instead.
 function resolve_workspace_paths() {
     local repo_root
@@ -556,6 +648,7 @@ function host_main() {
     local cli_release=""
     local cli_mirror=""
     local cli_krec=""
+    local cli_installer=""
     local args=()
 
     set_defaults
@@ -594,6 +687,14 @@ function host_main() {
                 interactive=1
                 shift
                 ;;
+            --installer=calamares|--installer=ubiquity)
+                cli_installer="${1#--installer=}"
+                shift
+                ;;
+            --installer)
+                cli_installer="$2"
+                shift 2
+                ;;
             -h|--help)
                 host_help
                 ;;
@@ -626,12 +727,21 @@ function host_main() {
     if [[ -n "$cli_krec" ]]; then
         export TARGET_KERNEL_METAPACKAGE_INSTALL_RECOMMENDS="$cli_krec"
     fi
+    if [[ -n "$cli_installer" ]]; then
+        export TARGET_INSTALLER="$cli_installer"
+    fi
 
     if [[ "$interactive" -eq 1 || -z "${TARGET_UBUNTU_VERSION:-}" ]]; then
         resolve_release_choice
     fi
 
+    if [[ "$interactive" -eq 1 || -z "${TARGET_INSTALLER:-}" ]]; then
+        resolve_installer_choice
+    fi
+    set_installer_and_manifest_defaults
+
     check_settings
+    validate_ubiquity_jammy_only
 
     if [[ "$interactive" -eq 1 || -z "${TARGET_KERNEL_FLAVOR:-}" ]]; then
         resolve_kernel_choice
@@ -742,6 +852,26 @@ EOF
     ln -s /bin/true /sbin/initctl
 }
 
+# Full Calamares layout from scripts/calamares (settings.conf + modules + curated i18n).
+# Only the calamares binary package is installed — no calamares-settings-* metapackages.
+function apply_calamares_custom_config() {
+    echo "=====> installing Calamares configuration from scripts/calamares ..."
+    if [[ ! -d /root/calamares-config ]] || [[ ! -f /root/calamares-config/settings.conf ]]; then
+        >&2 echo "Internal error: scripts/calamares must include settings.conf (host did not copy scripts/calamares into the chroot)."
+        exit 1
+    fi
+    install -d /etc/calamares/modules
+    cp -a /root/calamares-config/settings.conf /etc/calamares/settings.conf
+    cp -a /root/calamares-config/modules/. /etc/calamares/modules/
+    if [[ -f /root/calamares-config/i18n/SUPPORTED ]]; then
+        install -d /usr/share/i18n
+        if [[ -f /usr/share/i18n/SUPPORTED ]]; then
+            cp -a /usr/share/i18n/SUPPORTED /usr/share/i18n/SUPPORTED.stock-ubuntu-vanilla-backup
+        fi
+        cp /root/calamares-config/i18n/SUPPORTED /usr/share/i18n/SUPPORTED
+    fi
+}
+
 function install_pkg() {
     echo "=====> running install_pkg ... this will take a while ..."
     echo "=====> kernel metapackage: $TARGET_KERNEL_PACKAGE"
@@ -782,15 +912,22 @@ function install_pkg() {
     echo "=====> kernel metapackage apt options: ${kernel_apt_opts[*]} $TARGET_KERNEL_PACKAGE"
     apt-get install "${kernel_apt_opts[@]}" "$TARGET_KERNEL_PACKAGE"
 
-    case "${TARGET_UBUNTU_VERSION}" in
-        jammy)
-            apt-get install -y calamares calamares-settings-debian
+    echo "=====> live installer: ${TARGET_INSTALLER}"
+    case "${TARGET_INSTALLER}" in
+        calamares)
+            # Depends only (no Recommends): avoids pulling calamares-settings-* packages; config is 100% scripts/calamares.
+            apt-get install -y --no-install-recommends calamares
+            apply_calamares_custom_config
             ;;
-        noble|resolute)
-            apt-get install -y calamares calamares-settings-ubuntu-common calamares-settings-ubuntu-unity
+        ubiquity)
+            if [[ "${TARGET_UBUNTU_VERSION}" != "jammy" ]]; then
+                >&2 echo "Internal error: Ubiquity is supported only on jammy; got TARGET_UBUNTU_VERSION='${TARGET_UBUNTU_VERSION}'."
+                exit 1
+            fi
+            apt-get install -y ubiquity ubiquity-frontend-gtk
             ;;
         *)
-            >&2 echo "Internal error: unsupported TARGET_UBUNTU_VERSION for Calamares: ${TARGET_UBUNTU_VERSION:-}"
+            >&2 echo "Internal error: unsupported TARGET_INSTALLER: ${TARGET_INSTALLER:-}"
             exit 1
             ;;
     esac
@@ -945,6 +1082,8 @@ function finish_up() {
 function chroot_main() {
     shift
     set_defaults
+    set_installer_and_manifest_defaults
+    validate_ubiquity_jammy_only
     check_settings
     set_target_kernel_package_from_flavor
     check_chroot_root

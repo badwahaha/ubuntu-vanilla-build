@@ -4,7 +4,7 @@
 
 The same `build.sh` runs on the **host** (debootstrap, chroot, ISO) and **inside the chroot** when invoked with `--chroot-internal` (do not run that mode yourself; `run_chroot` does it).
 
-Supported releases: **jammy**, **noble**, **resolute** only (HWE suffix **22.04**, **24.04**, or **26.04**). Kernel metapackages are always HWE: `linux-generic-hwe-XX.04` or `linux-lowlatency-hwe-XX.04`. On a TTY, the script can prompt for the release first, then the kernel type; or pass `./build.sh --release=… --kernel=…` for a non-interactive build. For the kernel metapackage only, use `./build.sh --kernel-recommends=yes|no`. Advanced: set `TARGET_KERNEL_PACKAGE` in the environment to pin a metapackage name.
+Supported releases: **jammy**, **noble**, **resolute** only (HWE suffix **22.04**, **24.04**, or **26.04**). Kernel metapackages are always HWE: `linux-generic-hwe-XX.04` or `linux-lowlatency-hwe-XX.04`. On a TTY, the script can prompt for the release, then the installer (**Calamares** or **Ubiquity** — Ubiquity only on **jammy**), then the kernel type; or pass `./build.sh --release=… --installer=calamares|ubiquity --kernel=…` for a non-interactive build. For the kernel metapackage only, use `./build.sh --kernel-recommends=yes|no`. Advanced: set `TARGET_KERNEL_PACKAGE` in the environment to pin a metapackage name.
 
 ```console
 This script builds a bootable Ubuntu ISO image.
@@ -21,7 +21,9 @@ Syntax: ./build.sh [options] [start_cmd] [-] [end_cmd]
 
 ## How to Customize
 
-Run `./build.sh -` and answer the prompts for release and kernel, or pass `--release`, `--kernel`, and optional `--kernel-recommends` for a scripted run.
+Run `./build.sh -` and answer the prompts for release, installer, and kernel, or pass `--release`, `--installer`, `--kernel`, and optional `--kernel-recommends` for a scripted run.
+
+**Calamares:** The build installs **only** `calamares` (`--no-install-recommends`). All YAML under **`scripts/calamares/`** is copied into `/etc/calamares/` (`settings.conf`, `modules/`, and optional `i18n/SUPPORTED`). Edit those files to change the installer flow, partitioning defaults, welcome screen, locale behavior, and post-install package removals.
 
 ## How to Update
 
