@@ -129,14 +129,48 @@ Pin-Priority: -1
 EOF
 }
 
+function configure_plymouth_theme() {
+    local theme="${1:-ubuntu-text}"
+    local setter=""
+
+    # `plymouth-set-default-theme` may not be pulled by theme packages alone on some releases.
+    if ! command -v plymouth-set-default-theme >/dev/null 2>&1; then
+        apt-get install -y plymouth plymouth-label || true
+    fi
+
+    if command -v plymouth-set-default-theme >/dev/null 2>&1; then
+        setter="plymouth-set-default-theme"
+    elif [[ -x /usr/sbin/plymouth-set-default-theme ]]; then
+        setter="/usr/sbin/plymouth-set-default-theme"
+    elif [[ -x /sbin/plymouth-set-default-theme ]]; then
+        setter="/sbin/plymouth-set-default-theme"
+    fi
+
+    if [[ -z "$setter" ]]; then
+        >&2 echo "ERROR: plymouth-set-default-theme is unavailable after installing Plymouth packages."
+        >&2 echo "       Install and verify packages: plymouth, plymouth-label, plymouth-theme-ubuntu-text."
+        exit 1
+    fi
+
+    if [[ ! -d "/usr/share/plymouth/themes/$theme" ]]; then
+        >&2 echo "ERROR: Requested Plymouth theme '$theme' is not installed."
+        >&2 echo "       Available themes are under /usr/share/plymouth/themes."
+        exit 1
+    fi
+
+    "$setter" -R "$theme"
+}
+
 function customize_image() {
     block_snapd
 
     apt-get install -y \
+        plymouth \
+        plymouth-label \
         plymouth-theme-ubuntu-text \
         vanilla-gnome-desktop
 
-    plymouth-set-default-theme -R ubuntu-text
+    configure_plymouth_theme "ubuntu-text"
 
     apt-get install -y curl apt-transport-https ca-certificates squashfs-tools
 
