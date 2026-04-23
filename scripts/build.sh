@@ -884,6 +884,8 @@ function apply_calamares_custom_config() {
         exit 1
     fi
     install -d /etc/calamares/branding/ubuntu
+    # Copy all branding assets (QML slideshow, images); branding.desc is templated next.
+    cp -a /root/calamares-config/branding/ubuntu/. /etc/calamares/branding/ubuntu/
     sed -e "s|@VERSION@|${ubuntu_version}|g" \
         -e "s|@CODENAME@|${TARGET_UBUNTU_VERSION}|g" \
         /root/calamares-config/branding/ubuntu/branding.desc \

@@ -16,3 +16,10 @@ strings:
     bootloaderEntryName: Ubuntu
     productUrl:          https://ubuntu.com/
 
+images:
+    productLogo:         "logo.png"
+    productIcon:         "icon.png"
+
+slideshow:               "show.qml"
+slideshowAPI:            1
+
