@@ -468,7 +468,7 @@ function build_iso() {
         -J -J -joliet-long \
         -volid "$TARGET_NAME" \
         -output "$SCRIPT_DIR/$TARGET_NAME.iso" \
-      -eltorito-boot isolinux/bios.img \
+      -eltorito-boot boot/grub/bios.img \
         -no-emul-boot \
         -boot-load-size 4 \
         -boot-info-table \
@@ -479,22 +479,14 @@ function build_iso() {
         --mbr-force-bootable \
       -eltorito-alt-boot \
         -no-emul-boot \
-        -e isolinux/efiboot.img \
-        -append_partition 2 28732ac11ff8d211ba4b00a0c93ec93b isolinux/efiboot.img \
+        -e boot/grub/efiboot.img \
+        -append_partition 2 28732ac11ff8d211ba4b00a0c93ec93b boot/grub/efiboot.img \
         -appended_part_as_gpt \
         -iso_mbr_part_type a2a0d0ebe5b9334487c068b6b72699c7 \
-        -m "isolinux/efiboot.img" \
-        -m "isolinux/bios.img" \
+        -m "boot/grub/efiboot.img" \
+        -m "boot/grub/bios.img" \
         -e '--interval:appended_partition_2:::' \
-      -exclude isolinux \
-      -graft-points \
-         "/EFI/boot/bootx64.efi=isolinux/bootx64.efi" \
-         "/EFI/boot/mmx64.efi=isolinux/mmx64.efi" \
-         "/EFI/boot/grubx64.efi=isolinux/grubx64.efi" \
-         "/EFI/ubuntu/grub.cfg=isolinux/grub.cfg" \
-         "/isolinux/bios.img=isolinux/bios.img" \
-         "/isolinux/efiboot.img=isolinux/efiboot.img" \
-         "."
+      .
 
     popd >/dev/null
 
@@ -1131,7 +1123,7 @@ function build_image() {
     echo "=====> running build_image ..."
 
     rm -rf /image
-    mkdir -p /image/{casper,isolinux,install}
+    mkdir -p /image/{casper,boot/grub,install,EFI/boot,EFI/ubuntu}
 
     pushd /image >/dev/null
 
@@ -1155,7 +1147,7 @@ function build_image() {
     rm -f install/memtest86.zip
 
     touch ubuntu
-    cat <<EOF > isolinux/grub.cfg
+    cat <<EOF > boot/grub/grub.cfg
 
 search --set=root --file /ubuntu
 
@@ -1211,33 +1203,34 @@ EOF
 #define TOTALNUM0  1
 EOF
 
-    cp /usr/lib/shim/shimx64.efi.signed.previous isolinux/bootx64.efi
-    cp /usr/lib/shim/mmx64.efi isolinux/mmx64.efi
-    cp /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed isolinux/grubx64.efi
+    cp /usr/lib/shim/shimx64.efi.signed.previous EFI/boot/bootx64.efi
+    cp /usr/lib/shim/mmx64.efi EFI/boot/mmx64.efi
+    cp /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed EFI/boot/grubx64.efi
+    cp boot/grub/grub.cfg EFI/ubuntu/grub.cfg
 
     (
-        cd isolinux
+        cd boot/grub
         dd if=/dev/zero of=efiboot.img bs=1M count=10
         mkfs.vfat -F 16 efiboot.img
         LC_CTYPE=C mmd -i efiboot.img efi efi/ubuntu efi/boot
-        LC_CTYPE=C mcopy -i efiboot.img ./bootx64.efi ::efi/boot/bootx64.efi
-        LC_CTYPE=C mcopy -i efiboot.img ./mmx64.efi ::efi/boot/mmx64.efi
-        LC_CTYPE=C mcopy -i efiboot.img ./grubx64.efi ::efi/boot/grubx64.efi
+        LC_CTYPE=C mcopy -i efiboot.img ../../EFI/boot/bootx64.efi ::efi/boot/bootx64.efi
+        LC_CTYPE=C mcopy -i efiboot.img ../../EFI/boot/mmx64.efi ::efi/boot/mmx64.efi
+        LC_CTYPE=C mcopy -i efiboot.img ../../EFI/boot/grubx64.efi ::efi/boot/grubx64.efi
         LC_CTYPE=C mcopy -i efiboot.img ./grub.cfg ::efi/ubuntu/grub.cfg
     )
 
     grub-mkstandalone \
       --format=i386-pc \
-      --output=isolinux/core.img \
+      --output=boot/grub/core.img \
       --install-modules="linux16 linux normal iso9660 biosdisk memdisk search tar ls" \
       --modules="linux16 linux normal iso9660 biosdisk search" \
       --locales="" \
       --fonts="" \
-      "boot/grub/grub.cfg=isolinux/grub.cfg"
+      "boot/grub/grub.cfg=boot/grub/grub.cfg"
 
-    cat /usr/lib/grub/i386-pc/cdboot.img isolinux/core.img > isolinux/bios.img
+    cat /usr/lib/grub/i386-pc/cdboot.img boot/grub/core.img > boot/grub/bios.img
 
-    /bin/bash -c "(find . -type f -print0 | xargs -0 md5sum | grep -v -e 'isolinux' > md5sum.txt)"
+    /bin/bash -c "(find . -type f -print0 | xargs -0 md5sum | grep -v -e 'boot/grub/efiboot.img' -e 'boot/grub/bios.img' > md5sum.txt)"
 
     popd >/dev/null
 }
