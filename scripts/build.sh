@@ -156,7 +156,7 @@ function customize_image() {
             ;;
         xfce)
             echo "=====> desktop flavor: xfce"
-            apt-get install -y xfce4 xfce4-goodies
+            apt-get install -y xfce4 xfce4-goodies lightdm slick-greeter labwc
             ;;
         *)
             >&2 echo "TARGET_DESKTOP must be gnome or xfce (got: '${TARGET_DESKTOP:-}')."
