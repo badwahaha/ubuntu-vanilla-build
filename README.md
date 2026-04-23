@@ -1,6 +1,6 @@
 # Build your own Ubuntu ISO with vanilla way without `snapd` and more clear
 
-This guide shows how to build a bootable Ubuntu live ISO from a minimal base with **no Snap** (snapd is blocked permanently with APT pinning), and your choice of desktop and installer. Desktop options are **GNOME** (default, via `vanilla-gnome-desktop`) and **XFCE** (`xfce4` + `xfce4-goodies` + `lightdm`/`slick-greeter`). Installer options are **Calamares** (default) or **Ubiquity** (**Ubiquity is supported only on jammy / 22.04 LTS**; use Calamares for noble or resolute). Calamares installs **only the `calamares` package** (with **`--no-install-recommends`** so **`calamares-settings-*`** metapackages are not pulled in as *Recommends*). If `apt` refuses to install `calamares` because your suite requires a flavor settings package as a hard **Depends**, install the smallest satisfying package once to satisfy the resolver, then keep using **`scripts/calamares/`** as the active configuration (or adjust `install_pkg` in `build.sh` accordingly). The full installer UI and jobs come from **`scripts/calamares/`** (`settings.conf`, `modules/*.conf`, branding, and a curated **`i18n/SUPPORTED`**) so localization and welcome/locale steps stay lean and avoid common issues with packaged defaults. The live image also adds **Brave Browser** from Brave’s official APT repository, **Flatpak** with the **Flathub** remote, and core CLI tools (**git**, **wget**, **curl**, **vim**, **nano**, and more). **GParted** and common **filesystem tools** are installed so disk preparation matches what the graphical installer expects.
+This guide shows how to build a bootable Ubuntu live ISO from a minimal base with **no Snap** (snapd is blocked permanently with APT pinning), and your choice of desktop and installer. Desktop options are **GNOME** (default, via `vanilla-gnome-desktop`), **XFCE** (`xfce4` + `xfce4-goodies` + `lightdm`/`slick-greeter`), and **Cosmic** (`cosmic-session` from PPA `ppa:hepp3n/cosmic-epoch`; **supported only on `noble` and `resolute`**, not on jammy). Installer options are **Calamares** (default) or **Ubiquity** (**Ubiquity is supported only on jammy / 22.04 LTS**; use Calamares for noble or resolute). Calamares installs **only the `calamares` package** (with **`--no-install-recommends`** so **`calamares-settings-*`** metapackages are not pulled in as *Recommends*). If `apt` refuses to install `calamares` because your suite requires a flavor settings package as a hard **Depends**, install the smallest satisfying package once to satisfy the resolver, then keep using **`scripts/calamares/`** as the active configuration (or adjust `install_pkg` in `build.sh` accordingly). The full installer UI and jobs come from **`scripts/calamares/`** (`settings.conf`, `modules/*.conf`, branding, and a curated **`i18n/SUPPORTED`**) so localization and welcome/locale steps stay lean and avoid common issues with packaged defaults. The live image also adds **Brave Browser** from Brave’s official APT repository, **Flatpak** with the **Flathub** remote, and core CLI tools (**git**, **wget**, **curl**, **vim**, **nano**, and more). **GParted** and common **filesystem tools** are installed so disk preparation matches what the graphical installer expects.
 
 **Supported Ubuntu releases (only these):**
 
@@ -22,7 +22,7 @@ The main flow is: build environment → `debootstrap` → work **inside the chro
 
 ## Quick start (recommended)
 
-Run from the `scripts` directory. On a normal terminal, if you omit flags, the script can prompt for the Ubuntu release, installer (**Calamares** or **Ubiquity**), kernel type, desktop (**gnome** or **xfce**), and whether to enable GNOME recommends. The kernel metapackage is always installed **with** apt **Recommends** (so firmware and microcode come along). For fully non-interactive runs, pass `--release`, `--kernel`, and optionally `--installer`, `--desktop`, and `TARGET_GNOME_INSTALL_RECOMMENDS`:
+Run from the `scripts` directory. On a normal terminal, if you omit flags, the script can prompt for the Ubuntu release, installer (**Calamares** or **Ubiquity**), kernel type, desktop (**gnome**, **xfce**, or **cosmic** on noble/resolute), whether to enable GNOME recommends, and (for Cosmic) whether to install `cosmic-session` with or without apt **Recommends**. The kernel metapackage is always installed **with** apt **Recommends** (so firmware and microcode come along). For fully non-interactive runs, pass `--release`, `--kernel`, and optionally `--installer`, `--desktop`, `TARGET_GNOME_INSTALL_RECOMMENDS`, and `TARGET_COSMIC_INSTALL_RECOMMENDS` when using Cosmic:
 
 ```shell
 ./build.sh -
@@ -30,7 +30,23 @@ Run from the `scripts` directory. On a normal terminal, if you omit flags, the s
 ./build.sh --release=jammy --kernel=generic --installer=ubiquity -
 ./build.sh --release=noble --kernel=lowlatency --desktop=xfce -
 TARGET_GNOME_INSTALL_RECOMMENDS=1 ./build.sh --release=noble --kernel=generic --desktop=gnome -
+./build.sh --release=noble --kernel=generic --desktop=cosmic -
+TARGET_COSMIC_INSTALL_RECOMMENDS=1 ./build.sh --release=resolute --kernel=generic --desktop=cosmic -
 ```
+
+For **Cosmic**, the build adds the PPA (`add-apt-repository ppa:hepp3n/cosmic-epoch -y` equivalent), then installs `cosmic-session`. By default **`TARGET_COSMIC_INSTALL_RECOMMENDS=0`**, which runs `apt install --no-install-recommends cosmic-session`. Set **`TARGET_COSMIC_INSTALL_RECOMMENDS=1`** for a full install *with* recommends (like `apt install cosmic-session` with default recommends).
+
+When the script asks for desktop, the interactive menu is:
+
+```text
+Choose desktop environment:
+  1) GNOME (default, recommended for most users)
+  2) XFCE (lighter and faster)
+  3) COSMIC (only shown on noble or resolute)
+Desktop [1/2/3, Enter=1]:
+```
+
+On **jammy**, only options **1** and **2** are listed. You can type `1`/`2`/`3` (or `gnome`/`xfce`/`cosmic`). Press **Enter** to accept **GNOME**.
 
 That runs: host setup -> `debootstrap` -> chroot steps (snapd block, chosen installer + disk tools, selected desktop, Brave, Flatpak, customization) -> ISO creation. While the build runs, temporary files live under a **workspace** directory: by default `<repository-root>/workspace` with `chroot/` and `image/` inside it. If the repo is on a WSL Windows mount (`/mnt/...`) or similar, the script uses `~/.cache/ubuntu-vanilla-build/workspace` instead (debootstrap cannot unpack reliably on DrvFs). You can override the parent path with **`UBUNTU_VANILLA_WORKSPACE`**, which becomes `UBUNTU_VANILLA_WORKSPACE/workspace`. After a successful build, the workspace tree is removed; the ISO and checksum files are written under **`scripts/`** (next to `build.sh`) as **`${TARGET_NAME:-ubuntu}.iso`** (default name **`ubuntu.iso`**) plus **`.sha1`** and **`.sha256`**.
 
@@ -74,7 +90,9 @@ That runs: host setup -> `debootstrap` -> chroot steps (snapd block, chosen inst
 - Desktop choice:
   - `gnome` (default, lightweight mode with `--no-install-recommends`)
   - `xfce`
+  - `cosmic` — PPA `ppa:hepp3n/cosmic-epoch`, then `cosmic-session` (noble and resolute only; validation rejects jammy)
 - Optional GNOME recommends mode via `TARGET_GNOME_INSTALL_RECOMMENDS=1`.
+- Optional Cosmic install mode via `TARGET_COSMIC_INSTALL_RECOMMENDS=1` (with recommends); default `0` uses `--no-install-recommends` for `cosmic-session`.
 - Snap is blocked by APT pinning (`snapd` priority `-1`).
 - Preconfigured additions:
   - Brave (official Brave apt source)
@@ -85,7 +103,7 @@ That runs: host setup -> `debootstrap` -> chroot steps (snapd block, chosen inst
 
 ## Configuration
 
-Use `scripts/build.sh` options or environment variables to choose **`jammy`**, **`noble`**, or **`resolute`**, along with **`--mirror`**, kernel flavor (**`--kernel=generic|lowlatency`**), installer (**`--installer=calamares|ubiquity`**), desktop (**`--desktop=gnome|xfce`**), GNOME recommends mode (**`TARGET_GNOME_INSTALL_RECOMMENDS=0|1`**, default `0`), ISO basename (**`TARGET_NAME`**, default **`ubuntu`**), live menu label (**`GRUB_LIVEBOOT_LABEL`**), and workspace parent (**`UBUNTU_VANILLA_WORKSPACE`**). Advanced: set **`TARGET_KERNEL_PACKAGE`** directly if you need to pin a metapackage name. On a TTY the script can prompt for release, installer, kernel, desktop, and GNOME recommends unless you set them with flags or the environment. The build workspace (see Quick start) is removed after **`TARGET_NAME.iso`**, **`.sha1`**, and **`.sha256`** are written under **`scripts/`**.
+Use `scripts/build.sh` options or environment variables to choose **`jammy`**, **`noble`**, or **`resolute`**, along with **`--mirror`**, kernel flavor (**`--kernel=generic|lowlatency`**), installer (**`--installer=calamares|ubiquity`**), desktop (**`--desktop=gnome|xfce|cosmic`**; **cosmic** is only valid with **noble** or **resolute**), GNOME recommends mode (**`TARGET_GNOME_INSTALL_RECOMMENDS=0|1`**, default `0`), Cosmic recommends mode for **`cosmic-session`** (**`TARGET_COSMIC_INSTALL_RECOMMENDS=0|1`**, default `0`), ISO basename (**`TARGET_NAME`**, default **`ubuntu`**), live menu label (**`GRUB_LIVEBOOT_LABEL`**), and workspace parent (**`UBUNTU_VANILLA_WORKSPACE`**). Advanced: set **`TARGET_KERNEL_PACKAGE`** directly if you need to pin a metapackage name. On a TTY the script can prompt for release, installer, kernel, desktop, GNOME recommends, and (when desktop is Cosmic) Cosmic recommends unless you set them with flags or the environment. The build workspace (see Quick start) is removed after **`TARGET_NAME.iso`**, **`.sha1`**, and **`.sha256`** are written under **`scripts/`**.
 
 ## License
 

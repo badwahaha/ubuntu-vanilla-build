@@ -164,8 +164,21 @@ function customize_image() {
             echo "=====> desktop flavor: xfce"
             apt-get install -y xfce4 xfce4-goodies lightdm slick-greeter labwc
             ;;
+        cosmic)
+            echo "=====> desktop flavor: cosmic (PPA hepp3n/cosmic-epoch)"
+            apt-get install -y software-properties-common
+            add-apt-repository -y ppa:hepp3n/cosmic-epoch
+            apt-get update
+            if [[ "${TARGET_COSMIC_INSTALL_RECOMMENDS:-0}" == "1" ]]; then
+                echo "=====> cosmic-session: install with recommends"
+                apt-get install -y cosmic-session
+            else
+                echo "=====> cosmic-session: install without recommends (default)"
+                apt-get install -y --no-install-recommends cosmic-session
+            fi
+            ;;
         *)
-            >&2 echo "TARGET_DESKTOP must be gnome or xfce (got: '${TARGET_DESKTOP:-}')."
+            >&2 echo "TARGET_DESKTOP must be gnome, xfce, or cosmic (got: '${TARGET_DESKTOP:-}')."
             exit 1
             ;;
     esac
@@ -221,18 +234,37 @@ function customize_image() {
 function check_settings() {
     assert_supported_release || exit 1
     case "${TARGET_DESKTOP:-}" in
-        gnome|xfce)
+        gnome|xfce|cosmic)
             ;;
         *)
-            >&2 echo "TARGET_DESKTOP must be gnome or xfce (got: '${TARGET_DESKTOP:-}')."
+            >&2 echo "TARGET_DESKTOP must be gnome, xfce, or cosmic (got: '${TARGET_DESKTOP:-}')."
             exit 1
             ;;
     esac
+    if [[ "${TARGET_DESKTOP:-}" == "cosmic" ]]; then
+        case "${TARGET_UBUNTU_VERSION:-}" in
+            noble|resolute)
+                ;;
+            *)
+                >&2 echo "TARGET_DESKTOP=cosmic is supported only on Ubuntu 24.04 LTS (noble) or 26.04 LTS (resolute)."
+                >&2 echo "This build targets '${TARGET_UBUNTU_VERSION:-unknown}'."
+                exit 1
+                ;;
+        esac
+    fi
     case "${TARGET_GNOME_INSTALL_RECOMMENDS:-0}" in
         0|1)
             ;;
         *)
             >&2 echo "TARGET_GNOME_INSTALL_RECOMMENDS must be 0 or 1 (got: '${TARGET_GNOME_INSTALL_RECOMMENDS:-}')."
+            exit 1
+            ;;
+    esac
+    case "${TARGET_COSMIC_INSTALL_RECOMMENDS:-0}" in
+        0|1)
+            ;;
+        *)
+            >&2 echo "TARGET_COSMIC_INSTALL_RECOMMENDS must be 0 or 1 (got: '${TARGET_COSMIC_INSTALL_RECOMMENDS:-}')."
             exit 1
             ;;
     esac
@@ -254,11 +286,12 @@ function host_help() {
     echo "  --mirror=URL                            Ubuntu package mirror"
     echo "  UBUNTU_VANILLA_WORKSPACE=DIR             Parent directory for build workspace (optional; auto on WSL /mnt/c)"
     echo "  TARGET_INSTALLER=calamares|ubiquity       Live installer (optional; default calamares)"
-    echo "  TARGET_DESKTOP=gnome|xfce                 Desktop flavor (optional; default gnome)"
+    echo "  TARGET_DESKTOP=gnome|xfce|cosmic         Desktop flavor (optional; default gnome)"
     echo "  TARGET_GNOME_INSTALL_RECOMMENDS=0|1       GNOME install with recommends (optional; default 0)"
+    echo "  TARGET_COSMIC_INSTALL_RECOMMENDS=0|1     Cosmic: apt install cosmic-session (1) or --no-install-recommends (0; default); noble/resolute only"
     echo "  --kernel=generic|lowlatency             Kernel type to install"
     echo "  --installer=calamares|ubiquity           Calamares (default), or Ubiquity (jammy/22.04 only)"
-    echo "  --desktop=gnome|xfce                     Desktop flavor to install"
+    echo "  --desktop=gnome|xfce|cosmic              Desktop flavor to install (cosmic: noble or resolute only)"
     echo "  -i, --interactive                       Ask for release, installer, kernel, and desktop on a TTY"
     echo
     echo "Syntax: $0 [options] [start_cmd] [-] [end_cmd]"
@@ -413,6 +446,7 @@ function run_chroot() {
         TARGET_KERNEL_PACKAGE="${TARGET_KERNEL_PACKAGE:-}" \
         TARGET_DESKTOP="${TARGET_DESKTOP:-gnome}" \
         TARGET_GNOME_INSTALL_RECOMMENDS="${TARGET_GNOME_INSTALL_RECOMMENDS:-0}" \
+        TARGET_COSMIC_INSTALL_RECOMMENDS="${TARGET_COSMIC_INSTALL_RECOMMENDS:-0}" \
         TARGET_NAME="${TARGET_NAME}" \
         GRUB_LIVEBOOT_LABEL="${GRUB_LIVEBOOT_LABEL}" \
         TARGET_INSTALLER="${TARGET_INSTALLER:-calamares}" \
@@ -595,29 +629,54 @@ function resolve_kernel_choice() {
 
 function interactive_desktop_pick() {
     if [[ ! -t 0 ]]; then
-        >&2 echo "No terminal is available. Use --desktop=gnome|xfce."
+        >&2 echo "No terminal is available. Use --desktop=gnome|xfce|cosmic."
         exit 1
     fi
 
-    echo
-    echo "Choose the desktop flavor for the live environment:"
-    PS3="Selection [1-2]: "
-    select _opt in \
-        "GNOME (vanilla-gnome-desktop)" \
-        "XFCE (xfce4 + xfce4-goodies)"; do
-        case "$REPLY" in
-            1)
+    local desktop_choice
+    local cosmic_line="  3) COSMIC (PPA: hepp3n/cosmic-epoch; noble or resolute only)"
+    local prompt="Desktop [1/2/3, Enter=1]: "
+    local invalid="Invalid selection. Please choose 1 (GNOME), 2 (XFCE)"
+    if [[ "${TARGET_UBUNTU_VERSION:-}" == "noble" || "${TARGET_UBUNTU_VERSION:-}" == "resolute" ]]; then
+        invalid+=", or 3 (COSMIC)."
+    else
+        invalid+="."
+    fi
+
+    while true; do
+        echo
+        echo "Choose desktop environment:"
+        echo "  1) GNOME (default, recommended for most users)"
+        echo "     - Package: vanilla-gnome-desktop"
+        echo "     - Optional extra recommends prompt appears after this choice"
+        echo "  2) XFCE (lighter and faster)"
+        echo "     - Packages: xfce4 + xfce4-goodies + lightdm + slick-greeter"
+        if [[ "${TARGET_UBUNTU_VERSION:-}" == "noble" || "${TARGET_UBUNTU_VERSION:-}" == "resolute" ]]; then
+            echo "$cosmic_line"
+        fi
+        read -r -p "$prompt" desktop_choice
+
+        case "${desktop_choice,,}" in
+            ""|1|g|gnome)
                 export TARGET_DESKTOP="gnome"
                 echo "=> TARGET_DESKTOP=gnome"
                 break
                 ;;
-            2)
+            2|x|xfce)
                 export TARGET_DESKTOP="xfce"
                 echo "=> TARGET_DESKTOP=xfce"
                 break
                 ;;
+            3|c|cosmic)
+                if [[ "${TARGET_UBUNTU_VERSION:-}" == "noble" || "${TARGET_UBUNTU_VERSION:-}" == "resolute" ]]; then
+                    export TARGET_DESKTOP="cosmic"
+                    echo "=> TARGET_DESKTOP=cosmic"
+                    break
+                fi
+                echo "COSMIC is available only for Ubuntu 24.04 (noble) or 26.04 (resolute). Choose 1 or 2."
+                ;;
             *)
-                echo "Invalid selection."
+                echo "$invalid"
                 ;;
         esac
     done
@@ -634,8 +693,55 @@ function resolve_desktop_choice() {
         return 0
     fi
 
-    >&2 echo "TARGET_DESKTOP is not set. Use --desktop=gnome|xfce for non-interactive runs."
+    >&2 echo "TARGET_DESKTOP is not set. Use --desktop=gnome|xfce|cosmic for non-interactive runs."
     exit 1
+}
+
+function interactive_cosmic_recommends_pick() {
+    if [[ ! -t 0 ]]; then
+        >&2 echo "No terminal is available. Use TARGET_COSMIC_INSTALL_RECOMMENDS=0|1."
+        exit 1
+    fi
+
+    local yn
+    while true; do
+        echo
+        read -r -p "Install recommended packages for cosmic-session? [y/N]: " yn
+        case "${yn,,}" in
+            y|yes)
+                export TARGET_COSMIC_INSTALL_RECOMMENDS="1"
+                echo "=> TARGET_COSMIC_INSTALL_RECOMMENDS=1"
+                break
+                ;;
+            ""|n|no)
+                export TARGET_COSMIC_INSTALL_RECOMMENDS="0"
+                echo "=> TARGET_COSMIC_INSTALL_RECOMMENDS=0"
+                break
+                ;;
+            *)
+                echo "Please answer y or n."
+                ;;
+        esac
+    done
+    echo
+}
+
+function resolve_cosmic_recommends_choice() {
+    if [[ "${TARGET_DESKTOP:-gnome}" != "cosmic" ]]; then
+        export TARGET_COSMIC_INSTALL_RECOMMENDS=0
+        return 0
+    fi
+
+    if [[ -n "${TARGET_COSMIC_INSTALL_RECOMMENDS:-}" ]]; then
+        return 0
+    fi
+
+    if [[ -t 0 ]]; then
+        interactive_cosmic_recommends_pick
+        return 0
+    fi
+
+    export TARGET_COSMIC_INSTALL_RECOMMENDS=0
 }
 
 function interactive_gnome_recommends_pick() {
@@ -829,7 +935,7 @@ function host_main() {
                 cli_installer="$2"
                 shift 2
                 ;;
-            --desktop=gnome|--desktop=xfce)
+            --desktop=gnome|--desktop=xfce|--desktop=cosmic)
                 cli_desktop="${1#--desktop=}"
                 shift
                 ;;
@@ -893,6 +999,9 @@ function host_main() {
     fi
     if [[ "$interactive" -eq 1 || -z "${TARGET_GNOME_INSTALL_RECOMMENDS:-}" ]]; then
         resolve_gnome_recommends_choice
+    fi
+    if [[ "$interactive" -eq 1 || -z "${TARGET_COSMIC_INSTALL_RECOMMENDS:-}" ]]; then
+        resolve_cosmic_recommends_choice
     fi
 
     set_target_kernel_package_from_flavor
