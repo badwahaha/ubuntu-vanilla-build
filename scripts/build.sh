@@ -152,7 +152,13 @@ function customize_image() {
     case "${TARGET_DESKTOP:-gnome}" in
         gnome)
             echo "=====> desktop flavor: gnome"
-            apt-get install -y --no-install-recommends vanilla-gnome-desktop gnome-console
+            if [[ "${TARGET_GNOME_INSTALL_RECOMMENDS:-0}" == "1" ]]; then
+                echo "=====> gnome package recommends: enabled"
+                apt-get install -y vanilla-gnome-desktop gnome-console
+            else
+                echo "=====> gnome package recommends: disabled (default lightweight mode)"
+                apt-get install -y --no-install-recommends vanilla-gnome-desktop gnome-console
+            fi
             ;;
         xfce)
             echo "=====> desktop flavor: xfce"
@@ -222,6 +228,14 @@ function check_settings() {
             exit 1
             ;;
     esac
+    case "${TARGET_GNOME_INSTALL_RECOMMENDS:-0}" in
+        0|1)
+            ;;
+        *)
+            >&2 echo "TARGET_GNOME_INSTALL_RECOMMENDS must be 0 or 1 (got: '${TARGET_GNOME_INSTALL_RECOMMENDS:-}')."
+            exit 1
+            ;;
+    esac
 }
 
 function host_help() {
@@ -241,6 +255,7 @@ function host_help() {
     echo "  UBUNTU_VANILLA_WORKSPACE=DIR             Parent directory for build workspace (optional; auto on WSL /mnt/c)"
     echo "  TARGET_INSTALLER=calamares|ubiquity       Live installer (optional; default calamares)"
     echo "  TARGET_DESKTOP=gnome|xfce                 Desktop flavor (optional; default gnome)"
+    echo "  TARGET_GNOME_INSTALL_RECOMMENDS=0|1       GNOME install with recommends (optional; default 0)"
     echo "  --kernel=generic|lowlatency             Kernel type to install"
     echo "  --installer=calamares|ubiquity           Calamares (default), or Ubiquity (jammy/22.04 only)"
     echo "  --desktop=gnome|xfce                     Desktop flavor to install"
@@ -397,6 +412,7 @@ function run_chroot() {
         TARGET_KERNEL_FLAVOR="${TARGET_KERNEL_FLAVOR:-}" \
         TARGET_KERNEL_PACKAGE="${TARGET_KERNEL_PACKAGE:-}" \
         TARGET_DESKTOP="${TARGET_DESKTOP:-gnome}" \
+        TARGET_GNOME_INSTALL_RECOMMENDS="${TARGET_GNOME_INSTALL_RECOMMENDS:-0}" \
         TARGET_NAME="${TARGET_NAME}" \
         GRUB_LIVEBOOT_LABEL="${GRUB_LIVEBOOT_LABEL}" \
         TARGET_INSTALLER="${TARGET_INSTALLER:-calamares}" \
@@ -630,6 +646,53 @@ function resolve_desktop_choice() {
     exit 1
 }
 
+function interactive_gnome_recommends_pick() {
+    if [[ ! -t 0 ]]; then
+        >&2 echo "No terminal is available. Use TARGET_GNOME_INSTALL_RECOMMENDS=0|1."
+        exit 1
+    fi
+
+    local yn
+    while true; do
+        echo
+        read -r -p "Install recommended packages for GNOME? [y/N]: " yn
+        case "${yn,,}" in
+            y|yes)
+                export TARGET_GNOME_INSTALL_RECOMMENDS="1"
+                echo "=> TARGET_GNOME_INSTALL_RECOMMENDS=1"
+                break
+                ;;
+            ""|n|no)
+                export TARGET_GNOME_INSTALL_RECOMMENDS="0"
+                echo "=> TARGET_GNOME_INSTALL_RECOMMENDS=0"
+                break
+                ;;
+            *)
+                echo "Please answer y or n."
+                ;;
+        esac
+    done
+    echo
+}
+
+function resolve_gnome_recommends_choice() {
+    if [[ "${TARGET_DESKTOP:-gnome}" != "gnome" ]]; then
+        export TARGET_GNOME_INSTALL_RECOMMENDS=0
+        return 0
+    fi
+
+    if [[ -n "${TARGET_GNOME_INSTALL_RECOMMENDS:-}" ]]; then
+        return 0
+    fi
+
+    if [[ -t 0 ]]; then
+        interactive_gnome_recommends_pick
+        return 0
+    fi
+
+    export TARGET_GNOME_INSTALL_RECOMMENDS=0
+}
+
 function interactive_installer_pick() {
     if [[ ! -t 0 ]]; then
         >&2 echo "No terminal is available. Use --installer=calamares|ubiquity."
@@ -835,6 +898,9 @@ function host_main() {
     fi
     if [[ "$interactive" -eq 1 || -z "${TARGET_DESKTOP:-}" ]]; then
         resolve_desktop_choice
+    fi
+    if [[ "$interactive" -eq 1 || -z "${TARGET_GNOME_INSTALL_RECOMMENDS:-}" ]]; then
+        resolve_gnome_recommends_choice
     fi
 
     set_target_kernel_package_from_flavor
