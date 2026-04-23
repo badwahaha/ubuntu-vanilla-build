@@ -63,9 +63,10 @@ function default_target_package_remove() {
 
 function set_defaults() {
     export TARGET_UBUNTU_VERSION="${TARGET_UBUNTU_VERSION:-}"
-    export TARGET_UBUNTU_MIRROR="${TARGET_UBUNTU_MIRROR:-http://us.archive.ubuntu.com/ubuntu/}"
+    export TARGET_UBUNTU_MIRROR="${TARGET_UBUNTU_MIRROR:-http://archive.ubuntu.com/ubuntu/}"
     export TARGET_KERNEL_FLAVOR="${TARGET_KERNEL_FLAVOR:-}"
     export TARGET_KERNEL_PACKAGE="${TARGET_KERNEL_PACKAGE:-}"
+    export TARGET_DESKTOP="${TARGET_DESKTOP:-gnome}"
     export TARGET_NAME="${TARGET_NAME:-ubuntu}"
     export GRUB_LIVEBOOT_LABEL="${GRUB_LIVEBOOT_LABEL:-Try Ubuntu without installing}"
 }
@@ -148,7 +149,20 @@ EOF
 function customize_image() {
     block_snapd
 
-    apt-get install -y --no-install-recommends vanilla-gnome-desktop gnome-console
+    case "${TARGET_DESKTOP:-gnome}" in
+        gnome)
+            echo "=====> desktop flavor: gnome"
+            apt-get install -y --no-install-recommends vanilla-gnome-desktop gnome-console
+            ;;
+        xfce)
+            echo "=====> desktop flavor: xfce"
+            apt-get install -y xfce4 xfce4-goodies
+            ;;
+        *)
+            >&2 echo "TARGET_DESKTOP must be gnome or xfce (got: '${TARGET_DESKTOP:-}')."
+            exit 1
+            ;;
+    esac
     apt-get install -y plymouth plymouth-label plymouth-theme-ubuntu-text
 
     apt-get install -y curl apt-transport-https ca-certificates squashfs-tools
@@ -163,28 +177,34 @@ function customize_image() {
     apt-get install -y brave-browser
 
     apt-get install -y \
-        clamav-daemon \
         git \
-        terminator \
         vim \
         nano \
         wget \
         less \
-        flatpak \
-        gnome-software \
-        gnome-software-plugin-flatpak
+        flatpak
+
+    if [[ "${TARGET_DESKTOP:-gnome}" == "gnome" ]]; then
+        apt-get install -y \
+            gnome-software \
+            gnome-software-plugin-flatpak
+    fi
 
     flatpak remote-add --if-not-exists --system flathub \
         https://flathub.org/repo/flathub.flatpakrepo
 
-    apt-get purge -y \
+    apt-get purge -y --ignore-missing \
         transmission-gtk \
         transmission-common \
-        gnome-mahjongg \
-        gnome-mines \
-        gnome-sudoku \
         aisleriot \
         hitori
+
+    if [[ "${TARGET_DESKTOP:-gnome}" == "gnome" ]]; then
+        apt-get purge -y --ignore-missing \
+            gnome-mahjongg \
+            gnome-mines \
+            gnome-sudoku
+    fi
 
     apt-get purge -y --ignore-missing \
         ubiquity-slideshow-ubuntu \
@@ -194,6 +214,14 @@ function customize_image() {
 
 function check_settings() {
     assert_supported_release || exit 1
+    case "${TARGET_DESKTOP:-}" in
+        gnome|xfce)
+            ;;
+        *)
+            >&2 echo "TARGET_DESKTOP must be gnome or xfce (got: '${TARGET_DESKTOP:-}')."
+            exit 1
+            ;;
+    esac
 }
 
 function host_help() {
@@ -212,9 +240,11 @@ function host_help() {
     echo "  --mirror=URL                            Ubuntu package mirror"
     echo "  UBUNTU_VANILLA_WORKSPACE=DIR             Parent directory for build workspace (optional; auto on WSL /mnt/c)"
     echo "  TARGET_INSTALLER=calamares|ubiquity       Live installer (optional; default calamares)"
+    echo "  TARGET_DESKTOP=gnome|xfce                 Desktop flavor (optional; default gnome)"
     echo "  --kernel=generic|lowlatency             Kernel type to install"
     echo "  --installer=calamares|ubiquity           Calamares (default), or Ubiquity (jammy/22.04 only)"
-    echo "  -i, --interactive                       Ask for release, installer, and kernel on a TTY (same as omitting them)"
+    echo "  --desktop=gnome|xfce                     Desktop flavor to install"
+    echo "  -i, --interactive                       Ask for release, installer, kernel, and desktop on a TTY"
     echo
     echo "Syntax: $0 [options] [start_cmd] [-] [end_cmd]"
     echo "  Run from start_cmd to end_cmd"
@@ -366,6 +396,7 @@ function run_chroot() {
         TARGET_UBUNTU_MIRROR="${TARGET_UBUNTU_MIRROR}" \
         TARGET_KERNEL_FLAVOR="${TARGET_KERNEL_FLAVOR:-}" \
         TARGET_KERNEL_PACKAGE="${TARGET_KERNEL_PACKAGE:-}" \
+        TARGET_DESKTOP="${TARGET_DESKTOP:-gnome}" \
         TARGET_NAME="${TARGET_NAME}" \
         GRUB_LIVEBOOT_LABEL="${GRUB_LIVEBOOT_LABEL}" \
         TARGET_INSTALLER="${TARGET_INSTALLER:-calamares}" \
@@ -554,6 +585,51 @@ function resolve_kernel_choice() {
     exit 1
 }
 
+function interactive_desktop_pick() {
+    if [[ ! -t 0 ]]; then
+        >&2 echo "No terminal is available. Use --desktop=gnome|xfce."
+        exit 1
+    fi
+
+    echo
+    echo "Choose the desktop flavor for the live environment:"
+    PS3="Selection [1-2]: "
+    select _opt in \
+        "GNOME (vanilla-gnome-desktop)" \
+        "XFCE (xfce4 + xfce4-goodies)"; do
+        case "$REPLY" in
+            1)
+                export TARGET_DESKTOP="gnome"
+                echo "=> TARGET_DESKTOP=gnome"
+                break
+                ;;
+            2)
+                export TARGET_DESKTOP="xfce"
+                echo "=> TARGET_DESKTOP=xfce"
+                break
+                ;;
+            *)
+                echo "Invalid selection."
+                ;;
+        esac
+    done
+    echo
+}
+
+function resolve_desktop_choice() {
+    if [[ -n "${TARGET_DESKTOP:-}" ]]; then
+        return 0
+    fi
+
+    if [[ -t 0 ]]; then
+        interactive_desktop_pick
+        return 0
+    fi
+
+    >&2 echo "TARGET_DESKTOP is not set. Use --desktop=gnome|xfce for non-interactive runs."
+    exit 1
+}
+
 function interactive_installer_pick() {
     if [[ ! -t 0 ]]; then
         >&2 echo "No terminal is available. Use --installer=calamares|ubiquity."
@@ -655,6 +731,7 @@ function host_main() {
     local cli_release=""
     local cli_mirror=""
     local cli_installer=""
+    local cli_desktop=""
     local args=()
 
     set_defaults
@@ -697,6 +774,14 @@ function host_main() {
                 cli_installer="$2"
                 shift 2
                 ;;
+            --desktop=gnome|--desktop=xfce)
+                cli_desktop="${1#--desktop=}"
+                shift
+                ;;
+            --desktop)
+                cli_desktop="$2"
+                shift 2
+                ;;
             -h|--help)
                 host_help
                 ;;
@@ -729,6 +814,9 @@ function host_main() {
     if [[ -n "$cli_installer" ]]; then
         export TARGET_INSTALLER="$cli_installer"
     fi
+    if [[ -n "$cli_desktop" ]]; then
+        export TARGET_DESKTOP="$cli_desktop"
+    fi
 
     if [[ "$interactive" -eq 1 || -z "${TARGET_UBUNTU_VERSION:-}" ]]; then
         resolve_release_choice
@@ -744,6 +832,9 @@ function host_main() {
 
     if [[ "$interactive" -eq 1 || -z "${TARGET_KERNEL_FLAVOR:-}" ]]; then
         resolve_kernel_choice
+    fi
+    if [[ "$interactive" -eq 1 || -z "${TARGET_DESKTOP:-}" ]]; then
+        resolve_desktop_choice
     fi
 
     set_target_kernel_package_from_flavor

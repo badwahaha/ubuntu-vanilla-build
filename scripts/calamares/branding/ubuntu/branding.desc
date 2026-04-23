@@ -23,3 +23,8 @@ images:
 slideshow:               "show.qml"
 slideshowAPI:            1
 
+style:
+    SidebarBackground:    "#2C001E"
+    SidebarText:          "#FFFFFF"
+    SidebarTextCurrent:   "#E95420"
+

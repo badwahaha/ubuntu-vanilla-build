@@ -1,5 +1,4 @@
-/* SPDX-License-Identifier: MIT
- * Ubuntu vanilla live ISO — Calamares install slideshow (slideshow API 1).
+/* Ubuntu vanilla live ISO — Calamares install slideshow (slideshow API 1).
  * Paths are relative to this file under /etc/calamares/branding/ubuntu/
  */
 
@@ -51,7 +50,7 @@ Presentation
 
     Slide
     {
-        centeredText: qsTr( "Vanilla GNOME: a full-featured, stock GNOME experience without a flavor's extra packages or layout changes." )
+        centeredText: qsTr( "Vanilla desktop: a full-featured, stock desktop experience without a flavor's extra packages or layout changes." )
     }
 
     Slide
@@ -61,7 +60,7 @@ Presentation
 
     Slide
     {
-        centeredText: qsTr( "Flatpak, Brave, ClamAV, and useful extras are set up on the live session; they will be on your new system as configured by this build." )
+        centeredText: qsTr( "Flatpak, Brave, and more useful extras are set up on the live session; they will be on your new system as configured by this build." )
     }
 
     Slide
