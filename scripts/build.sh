@@ -236,7 +236,59 @@ function customize_image() {
             ;;
         xfce)
             echo "=====> desktop flavor: xfce"
-            apt-get install -y xfce4 xfce4-goodies lightdm slick-greeter labwc
+            # Xubuntu-equivalent package set, minus the xubuntu-* branding
+            # (no xubuntu-default-settings, xubuntu-artwork, xubuntu-wallpapers*,
+            # xubuntu-icon-theme, xubuntu-docs, xubuntu-community-*).
+            apt-get install -y \
+                xfce4 \
+                xfce4-goodies \
+                xfce4-terminal \
+                xfce4-notifyd \
+                xfce4-power-manager \
+                xfce4-pulseaudio-plugin \
+                xfce4-screensaver \
+                xfce4-taskmanager \
+                xfce4-indicator-plugin \
+                xfce4-whiskermenu-plugin \
+                thunar-archive-plugin \
+                thunar-media-tags-plugin \
+                thunar-volman \
+                tumbler \
+                gvfs \
+                gvfs-backends \
+                gvfs-fuse \
+                catfish \
+                menulibre \
+                mugshot \
+                gigolo \
+                galculator \
+                xarchiver \
+                simple-scan \
+                gnome-disk-utility \
+                network-manager-gnome \
+                blueman \
+                pulseaudio \
+                pavucontrol \
+                system-config-printer \
+                cups \
+                cups-browsed \
+                printer-driver-gutenprint \
+                software-properties-gtk \
+                update-manager \
+                update-notifier \
+                ubuntu-drivers-common \
+                synaptic \
+                xdg-user-dirs \
+                xdg-user-dirs-gtk \
+                language-selector-gtk \
+                fonts-ubuntu \
+                fonts-noto-core \
+                hunspell-en-us \
+                onboard \
+                xorg \
+                lightdm \
+                slick-greeter \
+                labwc
             ;;
         cosmic)
             echo "=====> desktop flavor: cosmic (PPA hepp3n/cosmic-epoch)"
