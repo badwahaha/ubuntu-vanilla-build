@@ -31,6 +31,80 @@ function agent_debug_log() {
     #endregion
 }
 
+# ---------------------------------------------------------------------------
+# UI helpers: consistent colored output, headings, step counters, prompts.
+# Colors auto-disabled if stdout is not a TTY, TERM=dumb, or NO_COLOR is set.
+# Set NO_CONFIRM=1 to skip the pre-build confirmation prompt.
+# ---------------------------------------------------------------------------
+UI_USE_COLOR=0
+if [[ -t 1 ]] && [[ "${TERM:-}" != "dumb" ]] && [[ -z "${NO_COLOR:-}" ]]; then
+    UI_USE_COLOR=1
+fi
+
+function _ui_c() {
+    if [[ "$UI_USE_COLOR" -eq 1 ]]; then
+        printf '\033[%sm' "$1"
+    fi
+}
+
+function _ui_r() {
+    if [[ "$UI_USE_COLOR" -eq 1 ]]; then
+        printf '\033[0m'
+    fi
+}
+
+function ui_banner() {
+    local title="$1"
+    local bar="=================================================================="
+    printf '\n'
+    _ui_c '1;36'; printf '%s\n'     "$bar";   _ui_r
+    _ui_c '1;36'; printf '  %s\n'   "$title"; _ui_r
+    _ui_c '1;36'; printf '%s\n'     "$bar";   _ui_r
+    printf '\n'
+}
+
+function ui_heading() {
+    printf '\n'
+    _ui_c '1;34'; printf -- '--- %s ---\n' "$1"; _ui_r
+}
+
+function ui_step() {
+    local n="$1" total="$2" name="$3"
+    printf '\n'
+    _ui_c '1;33'; printf '[%d/%d] %s\n' "$n" "$total" "$name"; _ui_r
+}
+
+function ui_ok()   { _ui_c '32';   printf '  OK    %s\n' "$1"; _ui_r; }
+function ui_warn() { _ui_c '33';   printf '  WARN  %s\n' "$1" >&2; _ui_r; }
+function ui_err()  { _ui_c '1;31'; printf '  ERROR %s\n' "$1" >&2; _ui_r; }
+function ui_info() { _ui_c '36';   printf '  info  %s\n' "$1"; _ui_r; }
+
+function ui_kv() {
+    printf '    %-22s %s\n' "$1" "$2"
+}
+
+# ui_confirm "Prompt" [y|n]  — default is "y" if omitted. Returns 0 for yes, 1 for no.
+function ui_confirm() {
+    local prompt="${1:-Proceed?}"
+    local default="${2:-y}"
+    local hint yn
+    if [[ "$default" == "y" ]]; then
+        hint="[Y/n]"
+    else
+        hint="[y/N]"
+    fi
+    while true; do
+        read -r -p "  ${prompt} ${hint}: " yn
+        yn="${yn,,}"
+        [[ -z "$yn" ]] && yn="$default"
+        case "$yn" in
+            y|yes) return 0 ;;
+            n|no)  return 1 ;;
+            *)     echo "  Please answer y or n." ;;
+        esac
+    done
+}
+
 # Host (outside chroot): prepare tree, debootstrap, run chroot phase, squashfs + ISO
 HOST_CMD=(setup_host debootstrap run_chroot build_iso)
 
@@ -66,7 +140,7 @@ function set_defaults() {
     export TARGET_UBUNTU_MIRROR="${TARGET_UBUNTU_MIRROR:-http://archive.ubuntu.com/ubuntu/}"
     export TARGET_KERNEL_FLAVOR="${TARGET_KERNEL_FLAVOR:-}"
     export TARGET_KERNEL_PACKAGE="${TARGET_KERNEL_PACKAGE:-}"
-    export TARGET_DESKTOP="${TARGET_DESKTOP:-gnome}"
+    export TARGET_DESKTOP="${TARGET_DESKTOP:-}"
     export TARGET_NAME="${TARGET_NAME:-ubuntu}"
     export GRUB_LIVEBOOT_LABEL="${GRUB_LIVEBOOT_LABEL:-Try Ubuntu without installing}"
 }
@@ -493,34 +567,75 @@ function build_iso() {
 
     printf "%s" "$(host_priv du -sx --block-size=1 "$WORKSPACE_CHROOT" | cut -f1)" | host_priv tee "$WORKSPACE_IMAGE/casper/filesystem.size" >/dev/null
 
+    local boot_hybrid_img="$WORKSPACE_CHROOT/usr/lib/grub/i386-pc/boot_hybrid.img"
+    if [[ ! -f "$boot_hybrid_img" ]]; then
+        >&2 echo "Missing $boot_hybrid_img (grub-pc-bin not installed in chroot?). Cannot build hybrid BIOS/UEFI ISO."
+        exit 1
+    fi
+    if [[ ! -f "$WORKSPACE_IMAGE/boot/grub/bios.img" ]]; then
+        >&2 echo "Missing $WORKSPACE_IMAGE/boot/grub/bios.img (build_image step did not produce it). Aborting."
+        exit 1
+    fi
+    if [[ ! -f "$WORKSPACE_IMAGE/boot/grub/efiboot.img" ]]; then
+        >&2 echo "Missing $WORKSPACE_IMAGE/boot/grub/efiboot.img (build_image step did not produce it). Aborting."
+        exit 1
+    fi
+
+    # ISO 9660 volume id: A-Z 0-9 _ only, max 32 chars. Normalize so xorriso doesn't warn.
+    local iso_volid
+    iso_volid="$(printf '%s' "$TARGET_NAME" \
+        | tr '[:lower:]' '[:upper:]' \
+        | tr -c 'A-Z0-9_' '_' \
+        | cut -c1-32)"
+
     pushd "$WORKSPACE_IMAGE" >/dev/null
+
+    # Hybrid BIOS + UEFI El Torito layout (matches what Ubuntu/Debian ship today):
+    #   * Legacy/BIOS boot:  -b boot/grub/bios.img   (must exist inside the ISO tree)
+    #     - bios.img is "cdboot.img + core.img" produced by build_image()
+    #     - --grub2-boot-info patches GRUB's offsets so it finds its core inside the ISO
+    #     - --grub2-mbr embeds boot_hybrid.img as the protective MBR (BIOS hybrid boot)
+    #   * UEFI boot:         efiboot.img is appended as GPT partition 2 (EFI System
+    #     Partition GUID, mixed-endian = 28732ac11ff8d211ba4b00a0c93ec93b), and the
+    #     UEFI alt-boot entry points at that appended partition via the
+    #     `--interval:appended_partition_2:all::` pseudo-path. UEFI firmware mounts the
+    #     ESP partition directly, so the file does NOT also need to live in the ISO9660
+    #     tree (we keep it there too for tooling that still looks for /boot/grub/efiboot.img).
+    # EFI System Partition GUID (C12A7328-F81F-11D2-BA4B-00A0C93EC93B) in the
+    # on-disk mixed-endian byte order that xorriso's -append_partition expects.
+    local esp_type_guid="28732ac11ff8d211ba4b00a0c93ec93b"
+    # Microsoft Basic Data Partition GUID (EBD0A0A2-B9E5-4433-87C0-68B6B72699C7)
+    # in mixed-endian, used as the ISO MBR partition type so the ISO9660 area is
+    # visible as a normal data partition when the stick is inspected.
+    local iso_mbr_type_guid="a2a0d0ebe5b9334487c068b6b72699c7"
 
     host_priv xorriso \
         -as mkisofs \
+        -r -V "$iso_volid" \
+        -J -joliet-long \
+        -l \
         -iso-level 3 \
         -full-iso9660-filenames \
-        -J -J -joliet-long \
-        -volid "$TARGET_NAME" \
-        -output "$SCRIPT_DIR/$TARGET_NAME.iso" \
-      -eltorito-boot boot/grub/bios.img \
-        -no-emul-boot \
-        -boot-load-size 4 \
-        -boot-info-table \
-        --eltorito-catalog boot.catalog \
-        --grub2-boot-info \
-        --grub2-mbr "$WORKSPACE_CHROOT/usr/lib/grub/i386-pc/boot_hybrid.img" \
+        -o "$SCRIPT_DIR/$TARGET_NAME.iso" \
+        \
+        --grub2-mbr "$boot_hybrid_img" \
         -partition_offset 16 \
         --mbr-force-bootable \
-      -eltorito-alt-boot \
-        -no-emul-boot \
-        -e boot/grub/efiboot.img \
-        -append_partition 2 28732ac11ff8d211ba4b00a0c93ec93b boot/grub/efiboot.img \
+        -append_partition 2 "$esp_type_guid" boot/grub/efiboot.img \
         -appended_part_as_gpt \
-        -iso_mbr_part_type a2a0d0ebe5b9334487c068b6b72699c7 \
-        -m "boot/grub/efiboot.img" \
-        -m "boot/grub/bios.img" \
-        -e '--interval:appended_partition_2:::' \
-      .
+        -iso_mbr_part_type "$iso_mbr_type_guid" \
+        \
+        -c boot.catalog \
+        -b boot/grub/bios.img \
+            -no-emul-boot \
+            -boot-load-size 4 \
+            -boot-info-table \
+            --grub2-boot-info \
+        -eltorito-alt-boot \
+        -e '--interval:appended_partition_2:all::' \
+            -no-emul-boot \
+        \
+        .
 
     popd >/dev/null
 
@@ -530,39 +645,29 @@ function build_iso() {
 
 function interactive_release_pick() {
     if [[ ! -t 0 ]]; then
-        >&2 echo "No terminal is available. Use --release=jammy|noble|resolute."
+        ui_err "No terminal is available. Use --release=jammy|noble|resolute."
         exit 1
     fi
 
-    echo
-    echo "Choose the Ubuntu release to build:"
-    PS3="Selection [1-3]: "
-    select _opt in \
-        "jammy (22.04 LTS)" \
-        "noble (24.04 LTS)" \
-        "resolute (26.04 LTS)"; do
-        case "$REPLY" in
-            1)
-                export TARGET_UBUNTU_VERSION="jammy"
-                echo "=> TARGET_UBUNTU_VERSION=jammy"
-                break
-                ;;
-            2)
-                export TARGET_UBUNTU_VERSION="noble"
-                echo "=> TARGET_UBUNTU_VERSION=noble"
-                break
-                ;;
-            3)
-                export TARGET_UBUNTU_VERSION="resolute"
-                echo "=> TARGET_UBUNTU_VERSION=resolute"
-                break
-                ;;
-            *)
-                echo "Invalid selection."
-                ;;
+    ui_heading "Ubuntu release"
+    cat <<'EOF'
+    1) jammy     Ubuntu 22.04 LTS
+    2) noble     Ubuntu 24.04 LTS
+    3) resolute  Ubuntu 26.04 LTS
+EOF
+
+    local choice
+    while true; do
+        read -r -p "  Release [1/2/3]: " choice
+        case "${choice,,}" in
+            1|jammy)    export TARGET_UBUNTU_VERSION="jammy";    break ;;
+            2|noble)    export TARGET_UBUNTU_VERSION="noble";    break ;;
+            3|resolute) export TARGET_UBUNTU_VERSION="resolute"; break ;;
+            "")  ui_warn "Please choose 1, 2, or 3." ;;
+            *)   ui_warn "Invalid selection: '$choice'. Please choose 1, 2, or 3." ;;
         esac
     done
-    echo
+    ui_ok "TARGET_UBUNTU_VERSION=$TARGET_UBUNTU_VERSION"
 }
 
 function resolve_release_choice() {
@@ -581,36 +686,30 @@ function resolve_release_choice() {
 
 function interactive_kernel_pick() {
     if [[ ! -t 0 ]]; then
-        >&2 echo "No terminal is available. Use --kernel=generic|lowlatency."
+        ui_err "No terminal is available. Use --kernel=generic|lowlatency."
         exit 1
     fi
 
     local hv=""
-    hv="$(hwe_version_for_release "$TARGET_UBUNTU_VERSION")"
+    hv="$(hwe_version_for_release "${TARGET_UBUNTU_VERSION:-}")"
 
-    echo
-    echo "Choose the Ubuntu HWE kernel type for $TARGET_UBUNTU_VERSION${hv:+ (*-hwe-${hv})}:"
-    PS3="Selection [1-2]: "
-    select _opt in \
-        "generic (recommended for most systems)" \
-        "lowlatency (better for audio and low-latency workloads)"; do
-        case "$REPLY" in
-            1)
-                export TARGET_KERNEL_FLAVOR="generic"
-                echo "=> TARGET_KERNEL_FLAVOR=generic"
-                break
-                ;;
-            2)
-                export TARGET_KERNEL_FLAVOR="lowlatency"
-                echo "=> TARGET_KERNEL_FLAVOR=lowlatency"
-                break
-                ;;
-            *)
-                echo "Invalid selection."
-                ;;
+    ui_heading "Kernel flavor${hv:+ (HWE stream for Ubuntu ${hv})}"
+    printf '    1) generic     Recommended for most systems%s\n' \
+        "${hv:+  (linux-generic-hwe-${hv})}"
+    printf '    2) lowlatency  Better for audio / low-latency workloads%s\n' \
+        "${hv:+  (linux-lowlatency-hwe-${hv})}"
+
+    local choice
+    while true; do
+        read -r -p "  Kernel [1/2]: " choice
+        case "${choice,,}" in
+            1|g|generic)    export TARGET_KERNEL_FLAVOR="generic";    break ;;
+            2|l|lowlatency) export TARGET_KERNEL_FLAVOR="lowlatency"; break ;;
+            "")  ui_warn "Please choose 1 or 2." ;;
+            *)   ui_warn "Invalid selection: '$choice'. Please choose 1 or 2." ;;
         esac
     done
-    echo
+    ui_ok "TARGET_KERNEL_FLAVOR=$TARGET_KERNEL_FLAVOR"
 }
 
 function resolve_kernel_choice() {
@@ -629,58 +728,46 @@ function resolve_kernel_choice() {
 
 function interactive_desktop_pick() {
     if [[ ! -t 0 ]]; then
-        >&2 echo "No terminal is available. Use --desktop=gnome|xfce|cosmic."
+        ui_err "No terminal is available. Use --desktop=gnome|xfce|cosmic."
         exit 1
     fi
 
-    local desktop_choice
-    local cosmic_line="  3) COSMIC (PPA: hepp3n/cosmic-epoch; noble or resolute only)"
-    local prompt="Desktop [1/2/3, Enter=1]: "
-    local invalid="Invalid selection. Please choose 1 (GNOME), 2 (XFCE)"
-    if [[ "${TARGET_UBUNTU_VERSION:-}" == "noble" || "${TARGET_UBUNTU_VERSION:-}" == "resolute" ]]; then
-        invalid+=", or 3 (COSMIC)."
+    local has_cosmic=0
+    case "${TARGET_UBUNTU_VERSION:-}" in
+        noble|resolute) has_cosmic=1 ;;
+    esac
+
+    ui_heading "Desktop environment"
+    echo "    1) GNOME   Default. vanilla-gnome-desktop (recommends asked next)"
+    echo "    2) XFCE    Lighter. xfce4 + xfce4-goodies + lightdm + slick-greeter"
+    if [[ $has_cosmic -eq 1 ]]; then
+        echo "    3) COSMIC  PPA hepp3n/cosmic-epoch; cosmic-session (noble/resolute)"
     else
-        invalid+="."
+        echo "       COSMIC is available only on noble or resolute."
+    fi
+
+    local choice prompt
+    if [[ $has_cosmic -eq 1 ]]; then
+        prompt="  Desktop [1/2/3, Enter=1]: "
+    else
+        prompt="  Desktop [1/2, Enter=1]: "
     fi
 
     while true; do
-        echo
-        echo "Choose desktop environment:"
-        echo "  1) GNOME (default, recommended for most users)"
-        echo "     - Package: vanilla-gnome-desktop"
-        echo "     - Optional extra recommends prompt appears after this choice"
-        echo "  2) XFCE (lighter and faster)"
-        echo "     - Packages: xfce4 + xfce4-goodies + lightdm + slick-greeter"
-        if [[ "${TARGET_UBUNTU_VERSION:-}" == "noble" || "${TARGET_UBUNTU_VERSION:-}" == "resolute" ]]; then
-            echo "$cosmic_line"
-        fi
-        read -r -p "$prompt" desktop_choice
-
-        case "${desktop_choice,,}" in
-            ""|1|g|gnome)
-                export TARGET_DESKTOP="gnome"
-                echo "=> TARGET_DESKTOP=gnome"
-                break
-                ;;
-            2|x|xfce)
-                export TARGET_DESKTOP="xfce"
-                echo "=> TARGET_DESKTOP=xfce"
-                break
-                ;;
+        read -r -p "$prompt" choice
+        case "${choice,,}" in
+            ""|1|g|gnome) export TARGET_DESKTOP="gnome"; break ;;
+            2|x|xfce)     export TARGET_DESKTOP="xfce";  break ;;
             3|c|cosmic)
-                if [[ "${TARGET_UBUNTU_VERSION:-}" == "noble" || "${TARGET_UBUNTU_VERSION:-}" == "resolute" ]]; then
-                    export TARGET_DESKTOP="cosmic"
-                    echo "=> TARGET_DESKTOP=cosmic"
-                    break
+                if [[ $has_cosmic -ne 1 ]]; then
+                    ui_warn "COSMIC requires --release=noble or --release=resolute."
+                    continue
                 fi
-                echo "COSMIC is available only for Ubuntu 24.04 (noble) or 26.04 (resolute). Choose 1 or 2."
-                ;;
-            *)
-                echo "$invalid"
-                ;;
+                export TARGET_DESKTOP="cosmic"; break ;;
+            *) ui_warn "Invalid selection: '$choice'." ;;
         esac
     done
-    echo
+    ui_ok "TARGET_DESKTOP=$TARGET_DESKTOP"
 }
 
 function resolve_desktop_choice() {
@@ -693,37 +780,24 @@ function resolve_desktop_choice() {
         return 0
     fi
 
-    >&2 echo "TARGET_DESKTOP is not set. Use --desktop=gnome|xfce|cosmic for non-interactive runs."
-    exit 1
+    export TARGET_DESKTOP=gnome
 }
 
 function interactive_cosmic_recommends_pick() {
     if [[ ! -t 0 ]]; then
-        >&2 echo "No terminal is available. Use TARGET_COSMIC_INSTALL_RECOMMENDS=0|1."
+        ui_err "No terminal is available. Use TARGET_COSMIC_INSTALL_RECOMMENDS=0|1."
         exit 1
     fi
 
-    local yn
-    while true; do
-        echo
-        read -r -p "Install recommended packages for cosmic-session? [y/N]: " yn
-        case "${yn,,}" in
-            y|yes)
-                export TARGET_COSMIC_INSTALL_RECOMMENDS="1"
-                echo "=> TARGET_COSMIC_INSTALL_RECOMMENDS=1"
-                break
-                ;;
-            ""|n|no)
-                export TARGET_COSMIC_INSTALL_RECOMMENDS="0"
-                echo "=> TARGET_COSMIC_INSTALL_RECOMMENDS=0"
-                break
-                ;;
-            *)
-                echo "Please answer y or n."
-                ;;
-        esac
-    done
-    echo
+    ui_heading "COSMIC extra recommends"
+    echo "    y) apt install cosmic-session            (fuller set of recommended packages)"
+    echo "    n) apt install --no-install-recommends   (lighter; default)"
+    if ui_confirm "Include recommended packages?" n; then
+        export TARGET_COSMIC_INSTALL_RECOMMENDS="1"
+    else
+        export TARGET_COSMIC_INSTALL_RECOMMENDS="0"
+    fi
+    ui_ok "TARGET_COSMIC_INSTALL_RECOMMENDS=$TARGET_COSMIC_INSTALL_RECOMMENDS"
 }
 
 function resolve_cosmic_recommends_choice() {
@@ -746,31 +820,19 @@ function resolve_cosmic_recommends_choice() {
 
 function interactive_gnome_recommends_pick() {
     if [[ ! -t 0 ]]; then
-        >&2 echo "No terminal is available. Use TARGET_GNOME_INSTALL_RECOMMENDS=0|1."
+        ui_err "No terminal is available. Use TARGET_GNOME_INSTALL_RECOMMENDS=0|1."
         exit 1
     fi
 
-    local yn
-    while true; do
-        echo
-        read -r -p "Install recommended packages for GNOME? [y/N]: " yn
-        case "${yn,,}" in
-            y|yes)
-                export TARGET_GNOME_INSTALL_RECOMMENDS="1"
-                echo "=> TARGET_GNOME_INSTALL_RECOMMENDS=1"
-                break
-                ;;
-            ""|n|no)
-                export TARGET_GNOME_INSTALL_RECOMMENDS="0"
-                echo "=> TARGET_GNOME_INSTALL_RECOMMENDS=0"
-                break
-                ;;
-            *)
-                echo "Please answer y or n."
-                ;;
-        esac
-    done
-    echo
+    ui_heading "GNOME extra recommends"
+    echo "    y) apt install vanilla-gnome-desktop     (fuller GNOME experience)"
+    echo "    n) apt install --no-install-recommends   (lighter; default)"
+    if ui_confirm "Include recommended packages?" n; then
+        export TARGET_GNOME_INSTALL_RECOMMENDS="1"
+    else
+        export TARGET_GNOME_INSTALL_RECOMMENDS="0"
+    fi
+    ui_ok "TARGET_GNOME_INSTALL_RECOMMENDS=$TARGET_GNOME_INSTALL_RECOMMENDS"
 }
 
 function resolve_gnome_recommends_choice() {
@@ -793,42 +855,31 @@ function resolve_gnome_recommends_choice() {
 
 function interactive_installer_pick() {
     if [[ ! -t 0 ]]; then
-        >&2 echo "No terminal is available. Use --installer=calamares|ubiquity."
+        ui_err "No terminal is available. Use --installer=calamares|ubiquity."
         exit 1
     fi
 
-    echo
-    echo "Choose the installer for the live environment:"
-    echo "(Ubiquity is supported only on Ubuntu 22.04 LTS — jammy; use Calamares for noble or resolute.)"
-    PS3="Selection [1-2]: "
-    select _opt in \
-        "Calamares (default; matches this project’s ISO layout)" \
-        "Ubiquity (classic installer; jammy / 22.04 only)"; do
-        case "$REPLY" in
-            1)
-                export TARGET_INSTALLER="calamares"
-                echo "=> TARGET_INSTALLER=calamares"
-                break
-                ;;
-            2)
+    ui_heading "Live installer"
+    echo "    1) Calamares  Default. Project config in scripts/calamares (all releases)"
+    echo "    2) Ubiquity   Classic Ubuntu installer (supported only on jammy / 22.04 LTS)"
+
+    local choice
+    while true; do
+        read -r -p "  Installer [1/2, Enter=1]: " choice
+        case "${choice,,}" in
+            ""|1|c|calamares) export TARGET_INSTALLER="calamares"; break ;;
+            2|u|ubiquity)
                 if [[ "${TARGET_UBUNTU_VERSION:-}" != "jammy" ]]; then
-                    echo >&2
-                    echo >&2 "WARNING: Ubiquity is supported only on Ubuntu 22.04 LTS (jammy)."
-                    echo >&2 "         This build targets '${TARGET_UBUNTU_VERSION:-unknown}'. Choose option 1 (Calamares),"
-                    echo >&2 "         or restart with --release=jammy if you need Ubiquity."
-                    echo >&2
+                    ui_warn "Ubiquity is supported only on Ubuntu 22.04 LTS (jammy)."
+                    ui_warn "Current release: '${TARGET_UBUNTU_VERSION:-unknown}'. Choose 1 (Calamares),"
+                    ui_warn "or restart with --release=jammy if you need Ubiquity."
                     continue
                 fi
-                export TARGET_INSTALLER="ubiquity"
-                echo "=> TARGET_INSTALLER=ubiquity"
-                break
-                ;;
-            *)
-                echo "Invalid selection."
-                ;;
+                export TARGET_INSTALLER="ubiquity"; break ;;
+            *) ui_warn "Invalid selection: '$choice'." ;;
         esac
     done
-    echo
+    ui_ok "TARGET_INSTALLER=$TARGET_INSTALLER"
 }
 
 # Ubiquity is only validated for jammy; Calamares is used for noble and resolute.
@@ -884,6 +935,56 @@ function resolve_workspace_paths() {
         echo "=====> TMPDIR is on a Windows mount (${TMPDIR:-}); using /tmp for extraction." >&2
         export TMPDIR=/tmp
     fi
+}
+
+function print_build_summary() {
+    local hv=""
+    hv="$(hwe_version_for_release "${TARGET_UBUNTU_VERSION:-}")"
+
+    ui_heading "Build configuration"
+    ui_kv "Ubuntu release"  "${TARGET_UBUNTU_VERSION:-?}${hv:+  (Ubuntu ${hv} LTS)}"
+    ui_kv "Kernel"          "${TARGET_KERNEL_FLAVOR:-?}${TARGET_KERNEL_PACKAGE:+  [${TARGET_KERNEL_PACKAGE}]}"
+    ui_kv "Desktop"         "${TARGET_DESKTOP:-?}"
+    case "${TARGET_DESKTOP:-}" in
+        gnome)  ui_kv "  with Recommends" "${TARGET_GNOME_INSTALL_RECOMMENDS:-0}" ;;
+        cosmic) ui_kv "  with Recommends" "${TARGET_COSMIC_INSTALL_RECOMMENDS:-0}" ;;
+    esac
+    ui_kv "Installer"       "${TARGET_INSTALLER:-?}"
+    ui_kv "Target name"     "${TARGET_NAME:-?}"
+    ui_kv "Mirror"          "${TARGET_UBUNTU_MIRROR:-?}"
+    ui_kv "Workspace"       "${WORKSPACE_DIR:-?}"
+    ui_kv "Output ISO"      "${SCRIPT_DIR}/${TARGET_NAME:-ubuntu}.iso"
+    echo
+}
+
+function print_build_result() {
+    local iso_path="${SCRIPT_DIR}/${TARGET_NAME:-ubuntu}.iso"
+    if [[ ! -f "$iso_path" ]]; then
+        ui_heading "Build finished"
+        ui_info "No ISO produced at $iso_path (this is expected for partial runs)."
+        return 0
+    fi
+    local size=""
+    size="$(du -h --apparent-size "$iso_path" 2>/dev/null | awk '{print $1}')"
+
+    ui_heading "Build complete"
+    ui_kv "ISO"    "$iso_path"
+    ui_kv "Size"   "${size:-unknown}"
+    if [[ -f "$iso_path.sha1" ]]; then
+        ui_kv "SHA1"   "$(awk '{print $1}' "$iso_path.sha1")"
+    fi
+    if [[ -f "$iso_path.sha256" ]]; then
+        ui_kv "SHA256" "$(awk '{print $1}' "$iso_path.sha256")"
+    fi
+    echo
+    echo "  Next steps:"
+    echo "    * Write to USB on Linux (replace /dev/sdX with your stick's device):"
+    echo "        sudo dd if=\"$iso_path\" of=/dev/sdX bs=4M status=progress conv=fsync"
+    echo "    * Write to USB on Windows: Rufus or balenaEtcher in ISO/DD image mode"
+    echo "    * Test-boot in QEMU (UEFI):"
+    echo "        qemu-system-x86_64 -m 4G -enable-kvm -cdrom \"$iso_path\" \\"
+    echo "            -bios /usr/share/OVMF/OVMF_CODE.fd"
+    echo
 }
 
 function host_main() {
@@ -957,6 +1058,11 @@ function host_main() {
     cd "$SCRIPT_DIR"
     resolve_workspace_paths
 
+    ui_banner "Ubuntu Vanilla ISO Builder"
+    ui_kv "Script"     "$0"
+    ui_kv "Workspace"  "$WORKSPACE_DIR"
+    ui_kv "Started at" "$(date '+%Y-%m-%d %H:%M:%S %Z')"
+
     HOST_ABORT_CLEANUP_DONE=0
     CHROOT_MOUNTS_ACTIVE=0
     trap host_build_exit_trap EXIT
@@ -988,7 +1094,6 @@ function host_main() {
     fi
     set_installer_and_manifest_defaults
 
-    check_settings
     validate_ubiquity_jammy_only
 
     if [[ "$interactive" -eq 1 || -z "${TARGET_KERNEL_FLAVOR:-}" ]]; then
@@ -1004,6 +1109,7 @@ function host_main() {
         resolve_cosmic_recommends_choice
     fi
 
+    check_settings
     set_target_kernel_package_from_flavor
     check_host_user
 
@@ -1036,12 +1142,25 @@ function host_main() {
         end_index=$((start_index + 1))
     fi
 
+    print_build_summary
+    ui_info "Phases to run: ${HOST_CMD[*]:$start_index:$((end_index - start_index))}"
+    echo
+    if [[ -t 0 ]] && [[ "${NO_CONFIRM:-0}" != "1" ]]; then
+        if ! ui_confirm "Start build now?" y; then
+            echo
+            ui_info "Build cancelled by user. No changes were made."
+            exit 0
+        fi
+    fi
+
+    local total=$((end_index - start_index))
     local i
     for ((i=start_index; i<end_index; i++)); do
+        ui_step "$((i - start_index + 1))" "$total" "${HOST_CMD[i]}"
         "${HOST_CMD[i]}"
     done
 
-    echo "$0 - Initial build is done."
+    print_build_result
 }
 
 function chroot_help() {
@@ -1359,6 +1478,7 @@ function chroot_main() {
     shift
     set_defaults
     set_installer_and_manifest_defaults
+    export TARGET_DESKTOP="${TARGET_DESKTOP:-gnome}"
     validate_ubiquity_jammy_only
     check_settings
     set_target_kernel_package_from_flavor

@@ -22,7 +22,7 @@ The main flow is: build environment → `debootstrap` → work **inside the chro
 
 ## Quick start (recommended)
 
-Run from the `scripts` directory. On a normal terminal, if you omit flags, the script can prompt for the Ubuntu release, installer (**Calamares** or **Ubiquity**), kernel type, desktop (**gnome**, **xfce**, or **cosmic** on noble/resolute), whether to enable GNOME recommends, and (for Cosmic) whether to install `cosmic-session` with or without apt **Recommends**. The kernel metapackage is always installed **with** apt **Recommends** (so firmware and microcode come along). For fully non-interactive runs, pass `--release`, `--kernel`, and optionally `--installer`, `--desktop`, `TARGET_GNOME_INSTALL_RECOMMENDS`, and `TARGET_COSMIC_INSTALL_RECOMMENDS` when using Cosmic:
+Run from the `scripts` directory. On a normal terminal, if you omit flags, the script can prompt for the Ubuntu release, installer (**Calamares** or **Ubiquity**), kernel type, then **desktop** (the first prompt after kernel), whether to enable GNOME recommends, and (for Cosmic) whether to install `cosmic-session` with or without apt **Recommends**. The kernel metapackage is always installed **with** apt **Recommends** (so firmware and microcode come along). For fully non-interactive runs, pass `--release`, `--kernel`, and optionally `--installer`, `--desktop`, `TARGET_GNOME_INSTALL_RECOMMENDS`, and `TARGET_COSMIC_INSTALL_RECOMMENDS` when using Cosmic:
 
 ```shell
 ./build.sh -
@@ -40,13 +40,13 @@ When the script asks for desktop, the interactive menu is:
 
 ```text
 Choose desktop environment:
-  1) GNOME (default, recommended for most users)
-  2) XFCE (lighter and faster)
-  3) COSMIC (only shown on noble or resolute)
-Desktop [1/2/3, Enter=1]:
+  1) COSMIC (PPA: hepp3n/cosmic-epoch; cosmic-session)
+  2) GNOME (default, recommended for most users)
+  3) XFCE (lighter and faster)
+Desktop [1/2/3, Enter=2]:
 ```
 
-On **jammy**, only options **1** and **2** are listed. You can type `1`/`2`/`3` (or `gnome`/`xfce`/`cosmic`). Press **Enter** to accept **GNOME**.
+On **noble** or **resolute**, all three options are shown; **Enter** alone selects **GNOME** (option **2**). On **jammy**, only **GNOME** and **XFCE** are listed (`Desktop [1/2, Enter=1]`). You can type numbers or `cosmic` / `gnome` / `xfce`.
 
 That runs: host setup -> `debootstrap` -> chroot steps (snapd block, chosen installer + disk tools, selected desktop, Brave, Flatpak, customization) -> ISO creation. While the build runs, temporary files live under a **workspace** directory: by default `<repository-root>/workspace` with `chroot/` and `image/` inside it. If the repo is on a WSL Windows mount (`/mnt/...`) or similar, the script uses `~/.cache/ubuntu-vanilla-build/workspace` instead (debootstrap cannot unpack reliably on DrvFs). You can override the parent path with **`UBUNTU_VANILLA_WORKSPACE`**, which becomes `UBUNTU_VANILLA_WORKSPACE/workspace`. After a successful build, the workspace tree is removed; the ISO and checksum files are written under **`scripts/`** (next to `build.sh`) as **`${TARGET_NAME:-ubuntu}.iso`** (default name **`ubuntu.iso`**) plus **`.sha1`** and **`.sha256`**.
 
