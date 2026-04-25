@@ -70,6 +70,31 @@ Presentation
 
     Slide
     {
+        centeredText: qsTr( "Hardware enablement: the selected HWE kernel is installed with its recommended firmware and microcode, so recent CPUs and devices are supported out of the box." )
+    }
+
+    Slide
+    {
+        centeredText: qsTr( "Full-disk encryption with LUKS2 is offered straight from the partitioning step; pick the encrypted layout and the boot partition stays separate so GRUB can still start." )
+    }
+
+    Slide
+    {
+        centeredText: qsTr( "GParted and standard filesystem tools (ext4, btrfs, xfs, ntfs-3g, FAT) ship in the live session, so disk preparation matches exactly what the installer expects." )
+    }
+
+    Slide
+    {
+        centeredText: qsTr( "A curated locale list keeps the welcome and language step quick; the language pack and hunspell dictionary for your chosen locale are added to the new system automatically." )
+    }
+
+    Slide
+    {
+        centeredText: qsTr( "Hybrid boot: the same image boots on UEFI firmware and on legacy BIOS through GRUB only; no Syslinux or Isolinux is used anywhere in the build." )
+    }
+
+    Slide
+    {
         centeredText: qsTr( "When installation finishes, you will be prompted to restart. Remove the installation medium so the computer boots from the new disk." )
     }
 
