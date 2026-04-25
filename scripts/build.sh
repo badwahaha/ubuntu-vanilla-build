@@ -220,6 +220,55 @@ Pin-Priority: -1
 EOF
 }
 
+function apt_install_available() {
+    local label="$1"
+    shift
+
+    local pkg candidate sim_out
+    local -a installable=()
+    local -a skipped=()
+    local -a snapd_blocked=()
+    local -a unresolved=()
+
+    for pkg in "$@"; do
+        candidate="$(apt-cache policy "$pkg" | awk '/Candidate:/ {print $2; exit}')"
+        if [[ -z "$candidate" || "$candidate" == "(none)" ]]; then
+            skipped+=("$pkg")
+            continue
+        fi
+
+        # Validate installability under the current APT policy (including nosnap.pref).
+        if ! sim_out="$(apt-get -s install -y "$pkg" 2>&1)"; then
+            unresolved+=("$pkg")
+            continue
+        fi
+
+        # Extra guard: skip if resolver still plans to install snapd.
+        if [[ "$sim_out" == Inst\ snapd* || "$sim_out" == *$'\nInst snapd '* || "$sim_out" == *$'\nInst snapd:'* ]]; then
+            snapd_blocked+=("$pkg")
+            continue
+        fi
+
+        installable+=("$pkg")
+    done
+
+    if ((${#skipped[@]})); then
+        echo "=====> ${label}: skipping unavailable packages: ${skipped[*]}"
+    fi
+    if ((${#unresolved[@]})); then
+        echo "=====> ${label}: skipping packages with unsatisfied dependencies: ${unresolved[*]}"
+    fi
+    if ((${#snapd_blocked[@]})); then
+        echo "=====> ${label}: skipping packages that would pull snapd: ${snapd_blocked[*]}"
+    fi
+    if ((${#installable[@]})); then
+        echo "=====> ${label}: installing ${installable[*]}"
+        apt-get install -y "${installable[@]}"
+    else
+        echo "=====> ${label}: no installable packages found"
+    fi
+}
+
 function customize_image() {
     block_snapd
 
@@ -284,40 +333,55 @@ function customize_image() {
             ;;
         minimal)
             echo "=====> desktop flavor: minimal"
-            # Target system: install Canonical's curated minimal-server metapackage
-            # (the same `ubuntu-server-minimal` that backs the "Minimal installation"
-            # choice in the Ubuntu Server installer). Default Recommends are kept so
-            # the target gets the full minimal-server profile rather than a guess.
-            echo "=====> target base: ubuntu-server-minimal (with Recommends, like the Server installer's 'Minimal' option)"
-            apt-get install -y ubuntu-server-minimal
+            # Target system: approximate ubuntu-server-minimal without installing
+            # the metapackage, because current resolute metadata makes it depend
+            # on snapd and this image pins snapd as uninstallable. Keep the useful
+            # server/storage/cloud pieces that are present in the enabled Ubuntu
+            # repositories and let APT pull each package's normal dependencies.
+            apt_install_available "minimal server required packages" \
+                apport \
+                bcache-tools \
+                cloud-init \
+                cryptsetup \
+                lvm2 \
+                mdadm \
+                multipath-tools \
+                open-iscsi \
+                pollinate \
+                ubuntu-drivers-common \
+                unminimize
+            apt_install_available "minimal server recommended packages" \
+                hwctl \
+                kdump-tools \
+                needrestart \
+                unattended-upgrades
 
             # Live ISO only: smallest X stack that lets the Calamares GUI render
-            # (xserver + openbox + lightdm). All of these are stripped from the
-            # target by Calamares' packages module (see
-            # scripts/calamares/modules/packages-minimal.conf), so the installed
-            # system stays server-only.
-            echo "=====> live ISO X stack (Calamares-only): xorg + openbox + lightdm + nm-applet"
-            apt-get install -y --no-install-recommends \
-                xserver-xorg \
-                xserver-xorg-input-all \
-                xserver-xorg-video-all \
-                xinit \
-                x11-xserver-utils \
-                openbox \
-                lightdm \
-                lightdm-gtk-greeter \
-                accountsservice \
-                dbus-x11 \
-                network-manager-gnome \
-                xterm \
+            # (xserver + openbox + lightdm). Everything in this array is stripped
+            # from the installed target by Calamares' packages module — keep it
+            # in sync with the remove list in
+            # scripts/calamares/modules/packages-minimal.conf.
+            local -a live_x_pkgs=(
+                xserver-xorg
+                xserver-xorg-input-all
+                xserver-xorg-video-all
+                xinit
+                x11-xserver-utils
+                openbox
+                lightdm
+                lightdm-gtk-greeter
+                accountsservice
+                dbus-x11
+                network-manager-gnome
+                xterm
                 fonts-dejavu-core
+            )
+            echo "=====> live ISO X stack (Calamares-only): ${live_x_pkgs[*]}"
+            apt-get install -y --no-install-recommends "${live_x_pkgs[@]}"
 
             # Auto-login the casper live user (`ubuntu`) into an Openbox session;
             # Openbox autostart launches the Calamares installer with sudo so the
-            # user lands in the installer immediately. Casper already grants the
-            # live user passwordless sudo; the drop-in below also gates calamares
-            # specifically so the autostart works even if casper's sudoers entry
-            # is ever pared back.
+            # user lands in the installer immediately.
             install -d /etc/lightdm/lightdm.conf.d
             cat <<'EOF' > /etc/lightdm/lightdm.conf.d/55-ubuntu-vanilla-minimal.conf
 [Seat:*]
@@ -328,16 +392,31 @@ greeter-hide-users=true
 greeter-show-manual-login=false
 EOF
             install -d /etc/xdg/openbox
-            cat <<'EOF' > /etc/xdg/openbox/autostart
+            cat <<'AUTOSTART' > /etc/xdg/openbox/autostart
 #!/bin/sh
 # Minimal live session: NetworkManager applet + Calamares installer.
+# On successful install the system reboots automatically; on failure
+# an xterm opens for troubleshooting.
+xsetroot -solid '#2c001e'
 nm-applet &
-sudo -E calamares -d &
-EOF
+(
+    sudo -E calamares -d
+    rc=$?
+    if [ $rc -eq 0 ]; then
+        sudo shutdown -r now
+    else
+        xterm -T "Installer exited (code $rc) — open shell for troubleshooting" &
+    fi
+) &
+AUTOSTART
             chmod 0755 /etc/xdg/openbox/autostart
+            # Casper grants passwordless sudo to the live user; this drop-in
+            # gates calamares and shutdown specifically in case casper's
+            # sudoers entry is ever narrowed.
             install -d /etc/sudoers.d
             cat <<'EOF' > /etc/sudoers.d/ubuntu-vanilla-minimal-installer
 ubuntu ALL=(ALL) NOPASSWD: /usr/bin/calamares
+ubuntu ALL=(ALL) NOPASSWD: /sbin/shutdown
 EOF
             chmod 0440 /etc/sudoers.d/ubuntu-vanilla-minimal-installer
             ;;
