@@ -282,21 +282,67 @@ function customize_image() {
                 slick-greeter \
                 labwc
             ;;
-        cosmic)
-            echo "=====> desktop flavor: cosmic (PPA hepp3n/cosmic-epoch)"
-            apt-get install -y software-properties-common
-            add-apt-repository -y ppa:hepp3n/cosmic-epoch
-            apt-get update
-            if [[ "${TARGET_COSMIC_INSTALL_RECOMMENDS:-0}" == "1" ]]; then
-                echo "=====> cosmic-session: install with recommends"
-                apt-get install -y cosmic-session
-            else
-                echo "=====> cosmic-session: install without recommends (default)"
-                apt-get install -y --no-install-recommends cosmic-session
-            fi
+        minimal)
+            echo "=====> desktop flavor: minimal"
+            # Target system: install Canonical's curated minimal-server metapackage
+            # (the same `ubuntu-server-minimal` that backs the "Minimal installation"
+            # choice in the Ubuntu Server installer). Default Recommends are kept so
+            # the target gets the full minimal-server profile rather than a guess.
+            echo "=====> target base: ubuntu-server-minimal (with Recommends, like the Server installer's 'Minimal' option)"
+            apt-get install -y ubuntu-server-minimal
+
+            # Live ISO only: smallest X stack that lets the Calamares GUI render
+            # (xserver + openbox + lightdm). All of these are stripped from the
+            # target by Calamares' packages module (see
+            # scripts/calamares/modules/packages-minimal.conf), so the installed
+            # system stays server-only.
+            echo "=====> live ISO X stack (Calamares-only): xorg + openbox + lightdm + nm-applet"
+            apt-get install -y --no-install-recommends \
+                xserver-xorg \
+                xserver-xorg-input-all \
+                xserver-xorg-video-all \
+                xinit \
+                x11-xserver-utils \
+                openbox \
+                lightdm \
+                lightdm-gtk-greeter \
+                accountsservice \
+                dbus-x11 \
+                network-manager-gnome \
+                xterm \
+                fonts-dejavu-core
+
+            # Auto-login the casper live user (`ubuntu`) into an Openbox session;
+            # Openbox autostart launches the Calamares installer with sudo so the
+            # user lands in the installer immediately. Casper already grants the
+            # live user passwordless sudo; the drop-in below also gates calamares
+            # specifically so the autostart works even if casper's sudoers entry
+            # is ever pared back.
+            install -d /etc/lightdm/lightdm.conf.d
+            cat <<'EOF' > /etc/lightdm/lightdm.conf.d/55-ubuntu-vanilla-minimal.conf
+[Seat:*]
+autologin-user=ubuntu
+autologin-session=openbox
+user-session=openbox
+greeter-hide-users=true
+greeter-show-manual-login=false
+EOF
+            install -d /etc/xdg/openbox
+            cat <<'EOF' > /etc/xdg/openbox/autostart
+#!/bin/sh
+# Minimal live session: NetworkManager applet + Calamares installer.
+nm-applet &
+sudo -E calamares -d &
+EOF
+            chmod 0755 /etc/xdg/openbox/autostart
+            install -d /etc/sudoers.d
+            cat <<'EOF' > /etc/sudoers.d/ubuntu-vanilla-minimal-installer
+ubuntu ALL=(ALL) NOPASSWD: /usr/bin/calamares
+EOF
+            chmod 0440 /etc/sudoers.d/ubuntu-vanilla-minimal-installer
             ;;
         *)
-            >&2 echo "TARGET_DESKTOP must be gnome, xfce, or cosmic (got: '${TARGET_DESKTOP:-}')."
+            >&2 echo "TARGET_DESKTOP must be gnome, xfce, or minimal (got: '${TARGET_DESKTOP:-}')."
             exit 1
             ;;
     esac
@@ -304,31 +350,39 @@ function customize_image() {
 
     apt-get install -y curl apt-transport-https ca-certificates squashfs-tools
 
-    install -d /usr/share/keyrings /etc/apt/sources.list.d
-    curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
-        https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
-    curl -fsSLo /etc/apt/sources.list.d/brave-browser-release.sources \
-        https://brave-browser-apt-release.s3.brave.com/brave-browser.sources
+    if [[ "${TARGET_DESKTOP:-gnome}" != "minimal" ]]; then
+        install -d /usr/share/keyrings /etc/apt/sources.list.d
+        curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
+            https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
+        curl -fsSLo /etc/apt/sources.list.d/brave-browser-release.sources \
+            https://brave-browser-apt-release.s3.brave.com/brave-browser.sources
 
-    apt-get update
-    apt-get install -y brave-browser
+        apt-get update
+        apt-get install -y brave-browser
+    else
+        echo "=====> minimal: skipping Brave Browser install"
+    fi
 
     apt-get install -y \
         git \
         vim \
         nano \
         wget \
-        less \
-        flatpak
+        less
+
+    if [[ "${TARGET_DESKTOP:-gnome}" != "minimal" ]]; then
+        apt-get install -y flatpak
+        flatpak remote-add --if-not-exists --system flathub \
+            https://flathub.org/repo/flathub.flatpakrepo
+    else
+        echo "=====> minimal: skipping Flatpak / Flathub setup"
+    fi
 
     if [[ "${TARGET_DESKTOP:-gnome}" == "gnome" ]]; then
         apt-get install -y \
             gnome-software \
             gnome-software-plugin-flatpak
     fi
-
-    flatpak remote-add --if-not-exists --system flathub \
-        https://flathub.org/repo/flathub.flatpakrepo
 
     apt-get purge -y --ignore-missing \
         transmission-gtk \
@@ -352,37 +406,18 @@ function customize_image() {
 function check_settings() {
     assert_supported_release || exit 1
     case "${TARGET_DESKTOP:-}" in
-        gnome|xfce|cosmic)
+        gnome|xfce|minimal)
             ;;
         *)
-            >&2 echo "TARGET_DESKTOP must be gnome, xfce, or cosmic (got: '${TARGET_DESKTOP:-}')."
+            >&2 echo "TARGET_DESKTOP must be gnome, xfce, or minimal (got: '${TARGET_DESKTOP:-}')."
             exit 1
             ;;
     esac
-    if [[ "${TARGET_DESKTOP:-}" == "cosmic" ]]; then
-        case "${TARGET_UBUNTU_VERSION:-}" in
-            noble|resolute)
-                ;;
-            *)
-                >&2 echo "TARGET_DESKTOP=cosmic is supported only on Ubuntu 24.04 LTS (noble) or 26.04 LTS (resolute)."
-                >&2 echo "This build targets '${TARGET_UBUNTU_VERSION:-unknown}'."
-                exit 1
-                ;;
-        esac
-    fi
     case "${TARGET_GNOME_INSTALL_RECOMMENDS:-0}" in
         0|1)
             ;;
         *)
             >&2 echo "TARGET_GNOME_INSTALL_RECOMMENDS must be 0 or 1 (got: '${TARGET_GNOME_INSTALL_RECOMMENDS:-}')."
-            exit 1
-            ;;
-    esac
-    case "${TARGET_COSMIC_INSTALL_RECOMMENDS:-0}" in
-        0|1)
-            ;;
-        *)
-            >&2 echo "TARGET_COSMIC_INSTALL_RECOMMENDS must be 0 or 1 (got: '${TARGET_COSMIC_INSTALL_RECOMMENDS:-}')."
             exit 1
             ;;
     esac
@@ -404,12 +439,11 @@ function host_help() {
     echo "  --mirror=URL                            Ubuntu package mirror"
     echo "  UBUNTU_VANILLA_WORKSPACE=DIR             Parent directory for build workspace (optional; auto on WSL /mnt/c)"
     echo "  TARGET_INSTALLER=calamares|ubiquity       Live installer (optional; default calamares)"
-    echo "  TARGET_DESKTOP=gnome|xfce|cosmic         Desktop flavor (optional; default gnome)"
+    echo "  TARGET_DESKTOP=gnome|xfce|minimal        Desktop flavor (optional; default gnome; minimal = no DE on target, minimal X env on live ISO so Calamares can run)"
     echo "  TARGET_GNOME_INSTALL_RECOMMENDS=0|1       GNOME install with recommends (optional; default 0)"
-    echo "  TARGET_COSMIC_INSTALL_RECOMMENDS=0|1     Cosmic: apt install cosmic-session (1) or --no-install-recommends (0; default); noble/resolute only"
     echo "  --kernel=generic|lowlatency             Kernel type to install"
     echo "  --installer=calamares|ubiquity           Calamares (default), or Ubiquity (jammy/22.04 only)"
-    echo "  --desktop=gnome|xfce|cosmic              Desktop flavor to install (cosmic: noble or resolute only)"
+    echo "  --desktop=gnome|xfce|minimal             Desktop flavor to install (minimal: server-style target with no DE)"
     echo "  -i, --interactive                       Ask for release, installer, kernel, and desktop on a TTY"
     echo
     echo "Syntax: $0 [options] [start_cmd] [-] [end_cmd]"
@@ -564,7 +598,6 @@ function run_chroot() {
         TARGET_KERNEL_PACKAGE="${TARGET_KERNEL_PACKAGE:-}" \
         TARGET_DESKTOP="${TARGET_DESKTOP:-gnome}" \
         TARGET_GNOME_INSTALL_RECOMMENDS="${TARGET_GNOME_INSTALL_RECOMMENDS:-0}" \
-        TARGET_COSMIC_INSTALL_RECOMMENDS="${TARGET_COSMIC_INSTALL_RECOMMENDS:-0}" \
         TARGET_NAME="${TARGET_NAME}" \
         GRUB_LIVEBOOT_LABEL="${GRUB_LIVEBOOT_LABEL}" \
         TARGET_INSTALLER="${TARGET_INSTALLER:-calamares}" \
@@ -772,42 +805,22 @@ function resolve_kernel_choice() {
 
 function interactive_desktop_pick() {
     if [[ ! -t 0 ]]; then
-        ui_err "No terminal is available. Use --desktop=gnome|xfce|cosmic."
+        ui_err "No terminal is available. Use --desktop=gnome|xfce|minimal."
         exit 1
     fi
 
-    local has_cosmic=0
-    case "${TARGET_UBUNTU_VERSION:-}" in
-        noble|resolute) has_cosmic=1 ;;
-    esac
-
     ui_heading "Desktop environment"
-    echo "    1) GNOME   Default. vanilla-gnome-desktop (recommends asked next)"
-    echo "    2) XFCE    Lighter. xfce4 + xfce4-goodies + lightdm + slick-greeter"
-    if [[ $has_cosmic -eq 1 ]]; then
-        echo "    3) COSMIC  PPA hepp3n/cosmic-epoch; cosmic-session (noble/resolute)"
-    else
-        echo "       COSMIC is available only on noble or resolute."
-    fi
+    echo "    1) GNOME    Default. vanilla-gnome-desktop (recommends asked next)"
+    echo "    2) XFCE     Lighter. xfce4 + xfce4-goodies + lightdm + slick-greeter"
+    echo "    3) MINIMAL  No desktop on the target (server-friendly); live ISO ships a minimal X stack so Calamares can run"
 
-    local choice prompt
-    if [[ $has_cosmic -eq 1 ]]; then
-        prompt="  Desktop [1/2/3, Enter=1]: "
-    else
-        prompt="  Desktop [1/2, Enter=1]: "
-    fi
-
+    local choice
     while true; do
-        read -r -p "$prompt" choice
+        read -r -p "  Desktop [1/2/3, Enter=1]: " choice
         case "${choice,,}" in
-            ""|1|g|gnome) export TARGET_DESKTOP="gnome"; break ;;
-            2|x|xfce)     export TARGET_DESKTOP="xfce";  break ;;
-            3|c|cosmic)
-                if [[ $has_cosmic -ne 1 ]]; then
-                    ui_warn "COSMIC requires --release=noble or --release=resolute."
-                    continue
-                fi
-                export TARGET_DESKTOP="cosmic"; break ;;
+            ""|1|g|gnome)   export TARGET_DESKTOP="gnome";   break ;;
+            2|x|xfce)       export TARGET_DESKTOP="xfce";    break ;;
+            3|m|minimal)    export TARGET_DESKTOP="minimal"; break ;;
             *) ui_warn "Invalid selection: '$choice'." ;;
         esac
     done
@@ -825,41 +838,6 @@ function resolve_desktop_choice() {
     fi
 
     export TARGET_DESKTOP=gnome
-}
-
-function interactive_cosmic_recommends_pick() {
-    if [[ ! -t 0 ]]; then
-        ui_err "No terminal is available. Use TARGET_COSMIC_INSTALL_RECOMMENDS=0|1."
-        exit 1
-    fi
-
-    ui_heading "COSMIC extra recommends"
-    echo "    y) apt install cosmic-session            (fuller set of recommended packages)"
-    echo "    n) apt install --no-install-recommends   (lighter; default)"
-    if ui_confirm "Include recommended packages?" n; then
-        export TARGET_COSMIC_INSTALL_RECOMMENDS="1"
-    else
-        export TARGET_COSMIC_INSTALL_RECOMMENDS="0"
-    fi
-    ui_ok "TARGET_COSMIC_INSTALL_RECOMMENDS=$TARGET_COSMIC_INSTALL_RECOMMENDS"
-}
-
-function resolve_cosmic_recommends_choice() {
-    if [[ "${TARGET_DESKTOP:-gnome}" != "cosmic" ]]; then
-        export TARGET_COSMIC_INSTALL_RECOMMENDS=0
-        return 0
-    fi
-
-    if [[ -n "${TARGET_COSMIC_INSTALL_RECOMMENDS:-}" ]]; then
-        return 0
-    fi
-
-    if [[ -t 0 ]]; then
-        interactive_cosmic_recommends_pick
-        return 0
-    fi
-
-    export TARGET_COSMIC_INSTALL_RECOMMENDS=0
 }
 
 function interactive_gnome_recommends_pick() {
@@ -991,7 +969,6 @@ function print_build_summary() {
     ui_kv "Desktop"         "${TARGET_DESKTOP:-?}"
     case "${TARGET_DESKTOP:-}" in
         gnome)  ui_kv "  with Recommends" "${TARGET_GNOME_INSTALL_RECOMMENDS:-0}" ;;
-        cosmic) ui_kv "  with Recommends" "${TARGET_COSMIC_INSTALL_RECOMMENDS:-0}" ;;
     esac
     ui_kv "Installer"       "${TARGET_INSTALLER:-?}"
     ui_kv "Target name"     "${TARGET_NAME:-?}"
@@ -1080,7 +1057,7 @@ function host_main() {
                 cli_installer="$2"
                 shift 2
                 ;;
-            --desktop=gnome|--desktop=xfce|--desktop=cosmic)
+            --desktop=gnome|--desktop=xfce|--desktop=minimal)
                 cli_desktop="${1#--desktop=}"
                 shift
                 ;;
@@ -1148,9 +1125,6 @@ function host_main() {
     fi
     if [[ "$interactive" -eq 1 || -z "${TARGET_GNOME_INSTALL_RECOMMENDS:-}" ]]; then
         resolve_gnome_recommends_choice
-    fi
-    if [[ "$interactive" -eq 1 || -z "${TARGET_COSMIC_INSTALL_RECOMMENDS:-}" ]]; then
-        resolve_cosmic_recommends_choice
     fi
 
     check_settings
@@ -1283,6 +1257,24 @@ function apply_calamares_custom_config() {
     install -d /etc/calamares/modules
     cp -a /root/calamares-config/settings.conf /etc/calamares/settings.conf
     cp -a /root/calamares-config/modules/. /etc/calamares/modules/
+
+    # Per-variant overlays: the minimal target has no DE, so we drop the
+    # `displaymanager` exec step and replace `packages` with a list that also
+    # strips xorg/openbox/lightdm from the installed system.
+    if [[ "${TARGET_DESKTOP:-gnome}" == "minimal" ]]; then
+        if [[ -f /root/calamares-config/settings-minimal.conf ]]; then
+            echo "=====> Calamares: applying minimal-variant settings.conf overlay"
+            cp -a /root/calamares-config/settings-minimal.conf /etc/calamares/settings.conf
+        fi
+        if [[ -f /root/calamares-config/modules/packages-minimal.conf ]]; then
+            echo "=====> Calamares: applying minimal-variant packages.conf overlay"
+            cp -a /root/calamares-config/modules/packages-minimal.conf /etc/calamares/modules/packages.conf
+        fi
+    fi
+    # The variant-specific files are kept in /etc/calamares/modules/ but they
+    # are not referenced from settings.conf for non-minimal builds, so they are
+    # simply unused there.
+
     if [[ -f /root/calamares-config/i18n/SUPPORTED ]]; then
         install -d /usr/share/i18n
         if [[ -f /usr/share/i18n/SUPPORTED ]]; then
