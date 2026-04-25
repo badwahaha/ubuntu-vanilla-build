@@ -50,6 +50,11 @@ Presentation
 
     Slide
     {
+        centeredText: qsTr( "This build is unofficial and has vanilla desktop experience. More lighter than the original which comes with Snap." )
+    }
+
+    Slide
+    {
         centeredText: qsTr( "Vanilla desktop: a full-featured, stock desktop experience without a flavor's extra packages or layout changes." )
     }
 
