@@ -239,7 +239,7 @@ function customize_image() {
             # Xubuntu-equivalent package set, minus the xubuntu-* branding
             # (no xubuntu-default-settings, xubuntu-artwork, xubuntu-wallpapers*,
             # xubuntu-icon-theme, xubuntu-docs, xubuntu-community-*).
-            apt-get install -y \
+           apt-get install -y \
                 xfce4 \
                 xfce4-goodies \
                 xfce4-terminal \
@@ -269,18 +269,10 @@ function customize_image() {
                 blueman \
                 pulseaudio \
                 pavucontrol \
-                system-config-printer \
-                cups \
-                cups-browsed \
-                printer-driver-gutenprint \
                 software-properties-gtk \
-                update-manager \
-                update-notifier \
-                ubuntu-drivers-common \
                 synaptic \
                 xdg-user-dirs \
                 xdg-user-dirs-gtk \
-                language-selector-gtk \
                 fonts-ubuntu \
                 fonts-noto-core \
                 hunspell-en-us \
