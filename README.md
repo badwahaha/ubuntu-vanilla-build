@@ -22,7 +22,7 @@ The main flow is: build environment → `debootstrap` → work **inside the chro
 
 ## Quick start (recommended)
 
-Run from the `scripts` directory. On a normal terminal, if you omit flags, the script can prompt for the Ubuntu release, installer (**Calamares** or **Ubiquity**), kernel type, then **desktop** (the first prompt after kernel), and — when the desktop is GNOME — whether to enable GNOME recommends. The kernel metapackage is always installed **with** apt **Recommends** (so firmware and microcode come along). For fully non-interactive runs, pass `--release`, `--kernel`, and optionally `--installer`, `--desktop`, and `TARGET_GNOME_INSTALL_RECOMMENDS`:
+Before running it, you need to clone the Git first. After that, Run from the `scripts` directory. On a normal terminal, if you omit flags, the script can prompt for the Ubuntu release, installer (**Calamares** or **Ubiquity**), kernel type, then **desktop** (the first prompt after kernel), and — when the desktop is GNOME — whether to enable GNOME recommends. The kernel metapackage is always installed **with** apt **Recommends** (so firmware and microcode come along). For fully non-interactive runs, pass `--release`, `--kernel`, and optionally `--installer`, `--desktop`, and `TARGET_GNOME_INSTALL_RECOMMENDS`:
 
 ```shell
 ./build.sh -
