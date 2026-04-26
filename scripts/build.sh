@@ -312,13 +312,9 @@ function customize_image() {
                 gigolo \
                 galculator \
                 xarchiver \
-                simple-scan \
-                gnome-disk-utility \
-                network-manager-gnome \
                 blueman \
                 pulseaudio \
                 pavucontrol \
-                software-properties-gtk \
                 synaptic \
                 xdg-user-dirs \
                 xdg-user-dirs-gtk \
@@ -331,97 +327,8 @@ function customize_image() {
                 slick-greeter \
                 labwc
             ;;
-        minimal)
-            echo "=====> desktop flavor: minimal"
-            # Target system: approximate ubuntu-server-minimal without installing
-            # the metapackage, because current resolute metadata makes it depend
-            # on snapd and this image pins snapd as uninstallable. Keep the useful
-            # server/storage/cloud pieces that are present in the enabled Ubuntu
-            # repositories and let APT pull each package's normal dependencies.
-            apt_install_available "minimal server required packages" \
-                apport \
-                bcache-tools \
-                cloud-init \
-                cryptsetup \
-                lvm2 \
-                mdadm \
-                multipath-tools \
-                open-iscsi \
-                pollinate \
-                ubuntu-drivers-common \
-                unminimize
-            apt_install_available "minimal server recommended packages" \
-                hwctl \
-                kdump-tools \
-                needrestart \
-                unattended-upgrades
-
-            # Live ISO only: smallest X stack that lets the Calamares GUI render
-            # (xserver + openbox + lightdm). Everything in this array is stripped
-            # from the installed target by Calamares' packages module — keep it
-            # in sync with the remove list in
-            # scripts/calamares/modules/packages-minimal.conf.
-            local -a live_x_pkgs=(
-                xserver-xorg
-                xserver-xorg-input-all
-                xserver-xorg-video-all
-                xinit
-                x11-xserver-utils
-                openbox
-                lightdm
-                lightdm-gtk-greeter
-                accountsservice
-                dbus-x11
-                network-manager-gnome
-                xterm
-                fonts-dejavu-core
-            )
-            echo "=====> live ISO X stack (Calamares-only): ${live_x_pkgs[*]}"
-            apt-get install -y --no-install-recommends "${live_x_pkgs[@]}"
-
-            # Auto-login the casper live user (`ubuntu`) into an Openbox session;
-            # Openbox autostart launches the Calamares installer with sudo so the
-            # user lands in the installer immediately.
-            install -d /etc/lightdm/lightdm.conf.d
-            cat <<'EOF' > /etc/lightdm/lightdm.conf.d/55-ubuntu-vanilla-minimal.conf
-[Seat:*]
-autologin-user=ubuntu
-autologin-session=openbox
-user-session=openbox
-greeter-hide-users=true
-greeter-show-manual-login=false
-EOF
-            install -d /etc/xdg/openbox
-            cat <<'AUTOSTART' > /etc/xdg/openbox/autostart
-#!/bin/sh
-# Minimal live session: NetworkManager applet + Calamares installer.
-# On successful install the system reboots automatically; on failure
-# an xterm opens for troubleshooting.
-xsetroot -solid '#2c001e'
-nm-applet &
-(
-    sudo -E calamares -d
-    rc=$?
-    if [ $rc -eq 0 ]; then
-        sudo shutdown -r now
-    else
-        xterm -T "Installer exited (code $rc) — open shell for troubleshooting" &
-    fi
-) &
-AUTOSTART
-            chmod 0755 /etc/xdg/openbox/autostart
-            # Casper grants passwordless sudo to the live user; this drop-in
-            # gates calamares and shutdown specifically in case casper's
-            # sudoers entry is ever narrowed.
-            install -d /etc/sudoers.d
-            cat <<'EOF' > /etc/sudoers.d/ubuntu-vanilla-minimal-installer
-ubuntu ALL=(ALL) NOPASSWD: /usr/bin/calamares
-ubuntu ALL=(ALL) NOPASSWD: /sbin/shutdown
-EOF
-            chmod 0440 /etc/sudoers.d/ubuntu-vanilla-minimal-installer
-            ;;
         *)
-            >&2 echo "TARGET_DESKTOP must be gnome, xfce, or minimal (got: '${TARGET_DESKTOP:-}')."
+            >&2 echo "TARGET_DESKTOP must be gnome or xfce (got: '${TARGET_DESKTOP:-}')."
             exit 1
             ;;
     esac
@@ -429,18 +336,14 @@ EOF
 
     apt-get install -y curl apt-transport-https ca-certificates squashfs-tools
 
-    if [[ "${TARGET_DESKTOP:-gnome}" != "minimal" ]]; then
-        install -d /usr/share/keyrings /etc/apt/sources.list.d
-        curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
-            https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
-        curl -fsSLo /etc/apt/sources.list.d/brave-browser-release.sources \
-            https://brave-browser-apt-release.s3.brave.com/brave-browser.sources
+    install -d /usr/share/keyrings /etc/apt/sources.list.d
+    curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
+        https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
+    curl -fsSLo /etc/apt/sources.list.d/brave-browser-release.sources \
+        https://brave-browser-apt-release.s3.brave.com/brave-browser.sources
 
-        apt-get update
-        apt-get install -y brave-browser
-    else
-        echo "=====> minimal: skipping Brave Browser install"
-    fi
+    apt-get update
+    apt-get install -y brave-browser
 
     apt-get install -y \
         git \
@@ -449,13 +352,9 @@ EOF
         wget \
         less
 
-    if [[ "${TARGET_DESKTOP:-gnome}" != "minimal" ]]; then
-        apt-get install -y flatpak
-        flatpak remote-add --if-not-exists --system flathub \
-            https://flathub.org/repo/flathub.flatpakrepo
-    else
-        echo "=====> minimal: skipping Flatpak / Flathub setup"
-    fi
+    apt-get install -y flatpak
+    flatpak remote-add --if-not-exists --system flathub \
+        https://flathub.org/repo/flathub.flatpakrepo
 
     if [[ "${TARGET_DESKTOP:-gnome}" == "gnome" ]]; then
         apt-get install -y \
@@ -485,10 +384,10 @@ EOF
 function check_settings() {
     assert_supported_release || exit 1
     case "${TARGET_DESKTOP:-}" in
-        gnome|xfce|minimal)
+        gnome|xfce)
             ;;
         *)
-            >&2 echo "TARGET_DESKTOP must be gnome, xfce, or minimal (got: '${TARGET_DESKTOP:-}')."
+            >&2 echo "TARGET_DESKTOP must be gnome or xfce (got: '${TARGET_DESKTOP:-}')."
             exit 1
             ;;
     esac
@@ -518,11 +417,11 @@ function host_help() {
     echo "  --mirror=URL                            Ubuntu package mirror"
     echo "  UBUNTU_VANILLA_WORKSPACE=DIR             Parent directory for build workspace (optional; auto on WSL /mnt/c)"
     echo "  TARGET_INSTALLER=calamares|ubiquity       Live installer (optional; default calamares)"
-    echo "  TARGET_DESKTOP=gnome|xfce|minimal        Desktop flavor (optional; default gnome; minimal = no DE on target, minimal X env on live ISO so Calamares can run)"
+    echo "  TARGET_DESKTOP=gnome|xfce                Desktop flavor (optional; default gnome)"
     echo "  TARGET_GNOME_INSTALL_RECOMMENDS=0|1       GNOME install with recommends (optional; default 0)"
     echo "  --kernel=generic|lowlatency             Kernel type to install"
     echo "  --installer=calamares|ubiquity           Calamares (default), or Ubiquity (jammy/22.04 only)"
-    echo "  --desktop=gnome|xfce|minimal             Desktop flavor to install (minimal: server-style target with no DE)"
+    echo "  --desktop=gnome|xfce                     Desktop flavor to install"
     echo "  -i, --interactive                       Ask for release, installer, kernel, and desktop on a TTY"
     echo
     echo "Syntax: $0 [options] [start_cmd] [-] [end_cmd]"
@@ -884,22 +783,20 @@ function resolve_kernel_choice() {
 
 function interactive_desktop_pick() {
     if [[ ! -t 0 ]]; then
-        ui_err "No terminal is available. Use --desktop=gnome|xfce|minimal."
+        ui_err "No terminal is available. Use --desktop=gnome|xfce."
         exit 1
     fi
 
     ui_heading "Desktop environment"
     echo "    1) GNOME    Default. vanilla-gnome-desktop (recommends asked next)"
     echo "    2) XFCE     Lighter. xfce4 + xfce4-goodies + lightdm + slick-greeter"
-    echo "    3) MINIMAL  No desktop on the target (server-friendly); live ISO ships a minimal X stack so Calamares can run"
 
     local choice
     while true; do
-        read -r -p "  Desktop [1/2/3, Enter=1]: " choice
+        read -r -p "  Desktop [1/2, Enter=1]: " choice
         case "${choice,,}" in
             ""|1|g|gnome)   export TARGET_DESKTOP="gnome";   break ;;
             2|x|xfce)       export TARGET_DESKTOP="xfce";    break ;;
-            3|m|minimal)    export TARGET_DESKTOP="minimal"; break ;;
             *) ui_warn "Invalid selection: '$choice'." ;;
         esac
     done
@@ -1136,7 +1033,7 @@ function host_main() {
                 cli_installer="$2"
                 shift 2
                 ;;
-            --desktop=gnome|--desktop=xfce|--desktop=minimal)
+            --desktop=gnome|--desktop=xfce)
                 cli_desktop="${1#--desktop=}"
                 shift
                 ;;
@@ -1336,23 +1233,6 @@ function apply_calamares_custom_config() {
     install -d /etc/calamares/modules
     cp -a /root/calamares-config/settings.conf /etc/calamares/settings.conf
     cp -a /root/calamares-config/modules/. /etc/calamares/modules/
-
-    # Per-variant overlays: the minimal target has no DE, so we drop the
-    # `displaymanager` exec step and replace `packages` with a list that also
-    # strips xorg/openbox/lightdm from the installed system.
-    if [[ "${TARGET_DESKTOP:-gnome}" == "minimal" ]]; then
-        if [[ -f /root/calamares-config/settings-minimal.conf ]]; then
-            echo "=====> Calamares: applying minimal-variant settings.conf overlay"
-            cp -a /root/calamares-config/settings-minimal.conf /etc/calamares/settings.conf
-        fi
-        if [[ -f /root/calamares-config/modules/packages-minimal.conf ]]; then
-            echo "=====> Calamares: applying minimal-variant packages.conf overlay"
-            cp -a /root/calamares-config/modules/packages-minimal.conf /etc/calamares/modules/packages.conf
-        fi
-    fi
-    # The variant-specific files are kept in /etc/calamares/modules/ but they
-    # are not referenced from settings.conf for non-minimal builds, so they are
-    # simply unused there.
 
     if [[ -f /root/calamares-config/i18n/SUPPORTED ]]; then
         install -d /usr/share/i18n
