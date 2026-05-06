@@ -60,12 +60,12 @@ Presentation
 
     Slide
     {
-        centeredText: qsTr( "No Snap: snapd is not installed. Use APT, Flatpak, and your preferred formats instead of Snap, unless you add it yourself later." )
+        centeredText: qsTr( "No Snap: snapd is not installed by default. Use APT, Flatpak, and your preferred formats instead of Snap, unless you add it yourself later." )
     }
 
     Slide
     {
-        centeredText: qsTr( "Flatpak, Brave, and more useful extras are set up on the live session; they will be on your new system as configured by this build." )
+        centeredText: qsTr( "Flatpak is already installed by default plus APT sources for Brave, Librewolf, and Firefox are set up so you can install or update those browsers after install; whichever were pre-installed on this ISO also carry over to your new system." )
     }
 
     Slide

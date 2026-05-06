@@ -141,6 +141,10 @@ function set_defaults() {
     export TARGET_KERNEL_FLAVOR="${TARGET_KERNEL_FLAVOR:-}"
     export TARGET_KERNEL_PACKAGE="${TARGET_KERNEL_PACKAGE:-}"
     export TARGET_DESKTOP="${TARGET_DESKTOP:-}"
+    export TARGET_BROWSER="${TARGET_BROWSER:-}"
+    export TARGET_BRAVE_CHANNEL="${TARGET_BRAVE_CHANNEL:-}"
+    export TARGET_LIBREWOLF="${TARGET_LIBREWOLF:-}"
+    export TARGET_FIREFOX="${TARGET_FIREFOX:-}"
     export TARGET_NAME="${TARGET_NAME:-ubuntu}"
     export GRUB_LIVEBOOT_LABEL="${GRUB_LIVEBOOT_LABEL:-Try Ubuntu without installing}"
 }
@@ -334,22 +338,76 @@ function customize_image() {
     esac
     apt-get install -y plymouth plymouth-label plymouth-theme-ubuntu-text
 
-    apt-get install -y curl apt-transport-https ca-certificates squashfs-tools
+    apt-get install -y curl wget apt-transport-https ca-certificates squashfs-tools gnupg
 
-    install -d /usr/share/keyrings /etc/apt/sources.list.d
+    install -d /usr/share/keyrings /etc/apt/sources.list.d /etc/apt/preferences.d
+
+    echo "=====> Browser APT sources (always): Brave release + beta, Librewolf, Mozilla — install packages only when selected"
     curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
         https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
     curl -fsSLo /etc/apt/sources.list.d/brave-browser-release.sources \
         https://brave-browser-apt-release.s3.brave.com/brave-browser.sources
+    curl -fsSLo /usr/share/keyrings/brave-browser-beta-archive-keyring.gpg \
+        https://brave-browser-apt-beta.s3.brave.com/brave-browser-beta-archive-keyring.gpg
+    curl -fsSLo /etc/apt/sources.list.d/brave-browser-beta.sources \
+        https://brave-browser-apt-beta.s3.brave.com/brave-browser.sources
+
+    curl -fsSL https://repo.librewolf.net/pubkey.gpg | gpg --dearmor -o /usr/share/keyrings/librewolf.gpg
+    printf '%s\n' \
+        "deb [arch=amd64 signed-by=/usr/share/keyrings/librewolf.gpg] https://repo.librewolf.net/ librewolf main" \
+        > /etc/apt/sources.list.d/librewolf.list
+
+    wget -q https://packages.mozilla.org/apt/repo-signing-key.gpg -O- \
+        > /usr/share/keyrings/packages.mozilla.org.asc
+    printf '%s\n' \
+        "deb [signed-by=/usr/share/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main" \
+        > /etc/apt/sources.list.d/mozilla.list
+    cat <<'EOF' > /etc/apt/preferences.d/mozilla
+Package: *
+Pin: origin packages.mozilla.org
+Pin-Priority: 1000
+
+Package: firefox
+Pin: release o=Ubuntu
+Pin-Priority: -1
+EOF
 
     apt-get update
-    apt-get install -y brave-browser
+
+    case "${TARGET_BRAVE_CHANNEL:-release}" in
+        release)
+            echo "=====> install: Brave stable"
+            apt-get install -y brave-browser
+            ;;
+        origin-beta)
+            echo "=====> install: Brave Origin beta"
+            apt-get install -y brave-origin-beta
+            ;;
+        none)
+            echo "=====> Brave: not pre-installed (apt install brave-browser | brave-origin-beta when ready)"
+            ;;
+        *)
+            >&2 echo "TARGET_BRAVE_CHANNEL must be none, release, or origin-beta (got: '${TARGET_BRAVE_CHANNEL:-}')."
+            exit 1
+            ;;
+    esac
+
+    if [[ "${TARGET_LIBREWOLF:-0}" == "1" ]]; then
+        apt-get install -y librewolf
+    else
+        echo "=====> Librewolf: not pre-installed (apt install librewolf when ready)"
+    fi
+
+    if [[ "${TARGET_FIREFOX:-0}" == "1" ]]; then
+        apt-get install -y firefox
+    else
+        echo "=====> Firefox: not pre-installed (apt install firefox when ready — Mozilla APT already pinned)"
+    fi
 
     apt-get install -y \
         git \
         vim \
         nano \
-        wget \
         less
 
     apt-get install -y flatpak
@@ -399,6 +457,38 @@ function check_settings() {
             exit 1
             ;;
     esac
+    case "${TARGET_BROWSER:-}" in
+        ""|release|origin-beta)
+            ;;
+        *)
+            >&2 echo "TARGET_BROWSER legacy env must be empty, release, or origin-beta (got: '${TARGET_BROWSER:-}'). Use TARGET_BRAVE_CHANNEL."
+            exit 1
+            ;;
+    esac
+    case "${TARGET_BRAVE_CHANNEL:-release}" in
+        none|release|origin-beta)
+            ;;
+        *)
+            >&2 echo "TARGET_BRAVE_CHANNEL must be none, release, or origin-beta (got: '${TARGET_BRAVE_CHANNEL:-}')."
+            exit 1
+            ;;
+    esac
+    case "${TARGET_LIBREWOLF:-0}" in
+        0|1)
+            ;;
+        *)
+            >&2 echo "TARGET_LIBREWOLF must be 0 or 1 (got: '${TARGET_LIBREWOLF:-}')."
+            exit 1
+            ;;
+    esac
+    case "${TARGET_FIREFOX:-0}" in
+        0|1)
+            ;;
+        *)
+            >&2 echo "TARGET_FIREFOX must be 0 or 1 (got: '${TARGET_FIREFOX:-}')."
+            exit 1
+            ;;
+    esac
 }
 
 function host_help() {
@@ -418,11 +508,19 @@ function host_help() {
     echo "  UBUNTU_VANILLA_WORKSPACE=DIR             Parent directory for build workspace (optional; auto on WSL /mnt/c)"
     echo "  TARGET_INSTALLER=calamares|ubiquity       Live installer (optional; default calamares)"
     echo "  TARGET_DESKTOP=gnome|xfce                Desktop flavor (optional; default gnome)"
+    echo "  TARGET_BRAVE_CHANNEL=none|release|origin-beta   Pre-install Brave build (both Brave APT repos always added)"
+    echo "  TARGET_BROWSER=release|origin-beta               Legacy alias for Brave channel if TARGET_BRAVE_CHANNEL unset"
+    echo "  TARGET_LIBREWOLF=0|1                    Pre-install Librewolf (optional; default 0; repo always added)"
+    echo "  TARGET_FIREFOX=0|1                       Pre-install Firefox from Mozilla APT (optional; default 0; repo always added)"
     echo "  TARGET_GNOME_INSTALL_RECOMMENDS=0|1       GNOME install with recommends (optional; default 0)"
     echo "  --kernel=generic|lowlatency             Kernel type to install"
     echo "  --installer=calamares|ubiquity           Calamares (default), or Ubiquity (jammy/22.04 only)"
     echo "  --desktop=gnome|xfce                     Desktop flavor to install"
-    echo "  -i, --interactive                       Ask for release, installer, kernel, and desktop on a TTY"
+    echo "  --brave=none|release|origin-beta       Brave channel (default release; none skips Brave)"
+    echo "  --browser=release|origin-beta            Same as --brave for the two Brave archives (legacy)"
+    echo "  --librewolf / --no-librewolf             Pre-install Librewolf (APT repo always configured)"
+    echo "  --firefox / --no-firefox               Pre-install Firefox (Mozilla APT always configured)"
+    echo "  -i, --interactive                       Ask for release, installer, kernel, desktop, Brave, extras on a TTY"
     echo
     echo "Syntax: $0 [options] [start_cmd] [-] [end_cmd]"
     echo "  Run from start_cmd to end_cmd"
@@ -575,6 +673,10 @@ function run_chroot() {
         TARGET_KERNEL_FLAVOR="${TARGET_KERNEL_FLAVOR:-}" \
         TARGET_KERNEL_PACKAGE="${TARGET_KERNEL_PACKAGE:-}" \
         TARGET_DESKTOP="${TARGET_DESKTOP:-gnome}" \
+        TARGET_BROWSER="${TARGET_BROWSER:-}" \
+        TARGET_BRAVE_CHANNEL="${TARGET_BRAVE_CHANNEL:-release}" \
+        TARGET_LIBREWOLF="${TARGET_LIBREWOLF:-0}" \
+        TARGET_FIREFOX="${TARGET_FIREFOX:-0}" \
         TARGET_GNOME_INSTALL_RECOMMENDS="${TARGET_GNOME_INSTALL_RECOMMENDS:-0}" \
         TARGET_NAME="${TARGET_NAME}" \
         GRUB_LIVEBOOT_LABEL="${GRUB_LIVEBOOT_LABEL}" \
@@ -851,6 +953,75 @@ function resolve_gnome_recommends_choice() {
     export TARGET_GNOME_INSTALL_RECOMMENDS=0
 }
 
+function interactive_brave_channel_pick() {
+    if [[ ! -t 0 ]]; then
+        ui_err "No terminal is available. Set TARGET_BRAVE_CHANNEL=none|release|origin-beta (or legacy TARGET_BROWSER=release|origin-beta)."
+        exit 1
+    fi
+
+    ui_heading "Brave Browser"
+    echo "    1) Stable (brave-browser) — release APT repository  [default]"
+    echo "    2) Origin beta (brave-origin-beta)"
+    echo "    3) Skip Brave"
+
+    local choice
+    while true; do
+        read -r -p "  Brave [1/2/3, Enter=1]: " choice
+        case "${choice,,}" in
+            ""|1|r|release|stable)
+                export TARGET_BRAVE_CHANNEL="release"
+                break
+                ;;
+            2|o|origin|origin-beta|beta)
+                export TARGET_BRAVE_CHANNEL="origin-beta"
+                break
+                ;;
+            3|n|none|skip)
+                export TARGET_BRAVE_CHANNEL="none"
+                break
+                ;;
+            *) ui_warn "Invalid selection: '$choice'." ;;
+        esac
+    done
+    ui_ok "TARGET_BRAVE_CHANNEL=$TARGET_BRAVE_CHANNEL"
+}
+
+function resolve_browser_selection() {
+    local interactive_flag="${1:-0}"
+
+    if [[ -n "${TARGET_BROWSER:-}" && -z "${TARGET_BRAVE_CHANNEL:-}" ]]; then
+        export TARGET_BRAVE_CHANNEL="$TARGET_BROWSER"
+    fi
+
+    if [[ -z "${TARGET_BRAVE_CHANNEL:-}" ]]; then
+        if [[ -t 0 ]]; then
+            interactive_brave_channel_pick
+        else
+            export TARGET_BRAVE_CHANNEL="release"
+        fi
+    fi
+
+    if [[ "${interactive_flag}" -eq 1 ]]; then
+        if [[ -z "${TARGET_LIBREWOLF+x}" ]]; then
+            if ui_confirm "Pre-install Librewolf? (APT source is added either way)" n; then
+                export TARGET_LIBREWOLF="1"
+            else
+                export TARGET_LIBREWOLF="0"
+            fi
+        fi
+        if [[ -z "${TARGET_FIREFOX+x}" ]]; then
+            if ui_confirm "Pre-install Firefox? (Mozilla APT is configured either way)" n; then
+                export TARGET_FIREFOX="1"
+            else
+                export TARGET_FIREFOX="0"
+            fi
+        fi
+    fi
+
+    export TARGET_LIBREWOLF="${TARGET_LIBREWOLF:-0}"
+    export TARGET_FIREFOX="${TARGET_FIREFOX:-0}"
+}
+
 function interactive_installer_pick() {
     if [[ ! -t 0 ]]; then
         ui_err "No terminal is available. Use --installer=calamares|ubiquity."
@@ -947,6 +1118,15 @@ function print_build_summary() {
         gnome)  ui_kv "  with Recommends" "${TARGET_GNOME_INSTALL_RECOMMENDS:-0}" ;;
     esac
     ui_kv "Installer"       "${TARGET_INSTALLER:-?}"
+    local _bs=""
+    case "${TARGET_BRAVE_CHANNEL:-release}" in
+        none)              _bs="Brave: none" ;;
+        release)           _bs="Brave: stable" ;;
+        origin-beta)       _bs="Brave: origin-beta" ;;
+    esac
+    [[ "${TARGET_LIBREWOLF:-0}" == "1" ]] && _bs="${_bs:+${_bs}; }Librewolf"
+    [[ "${TARGET_FIREFOX:-0}" == "1" ]] && _bs="${_bs:+${_bs}; }Firefox"
+    ui_kv "Browsers"       "${_bs}"
     ui_kv "Target name"     "${TARGET_NAME:-?}"
     ui_kv "Mirror"          "${TARGET_UBUNTU_MIRROR:-?}"
     ui_kv "Workspace"       "${WORKSPACE_DIR:-?}"
@@ -991,6 +1171,12 @@ function host_main() {
     local cli_mirror=""
     local cli_installer=""
     local cli_desktop=""
+    local cli_browser=""
+    local cli_brave=""
+    local cli_librewolf_set=0
+    local cli_librewolf=0
+    local cli_firefox_set=0
+    local cli_firefox=0
     local args=()
 
     set_defaults
@@ -1041,6 +1227,42 @@ function host_main() {
                 cli_desktop="$2"
                 shift 2
                 ;;
+            --browser=release|--browser=origin-beta)
+                cli_browser="${1#--browser=}"
+                shift
+                ;;
+            --browser)
+                cli_browser="$2"
+                shift 2
+                ;;
+            --brave=none|--brave=release|--brave=origin-beta)
+                cli_brave="${1#--brave=}"
+                shift
+                ;;
+            --brave)
+                cli_brave="$2"
+                shift 2
+                ;;
+            --librewolf)
+                cli_librewolf_set=1
+                cli_librewolf=1
+                shift
+                ;;
+            --no-librewolf)
+                cli_librewolf_set=1
+                cli_librewolf=0
+                shift
+                ;;
+            --firefox)
+                cli_firefox_set=1
+                cli_firefox=1
+                shift
+                ;;
+            --no-firefox)
+                cli_firefox_set=1
+                cli_firefox=0
+                shift
+                ;;
             -h|--help)
                 host_help
                 ;;
@@ -1081,6 +1303,18 @@ function host_main() {
     if [[ -n "$cli_desktop" ]]; then
         export TARGET_DESKTOP="$cli_desktop"
     fi
+    if [[ -n "$cli_browser" ]]; then
+        export TARGET_BROWSER="$cli_browser"
+    fi
+    if [[ -n "$cli_brave" ]]; then
+        export TARGET_BRAVE_CHANNEL="$cli_brave"
+    fi
+    if [[ "$cli_librewolf_set" -eq 1 ]]; then
+        export TARGET_LIBREWOLF="$cli_librewolf"
+    fi
+    if [[ "$cli_firefox_set" -eq 1 ]]; then
+        export TARGET_FIREFOX="$cli_firefox"
+    fi
 
     if [[ "$interactive" -eq 1 || -z "${TARGET_UBUNTU_VERSION:-}" ]]; then
         resolve_release_choice
@@ -1102,6 +1336,7 @@ function host_main() {
     if [[ "$interactive" -eq 1 || -z "${TARGET_GNOME_INSTALL_RECOMMENDS:-}" ]]; then
         resolve_gnome_recommends_choice
     fi
+    resolve_browser_selection "$interactive"
 
     check_settings
     set_target_kernel_package_from_flavor
@@ -1474,6 +1709,12 @@ function chroot_main() {
     set_defaults
     set_installer_and_manifest_defaults
     export TARGET_DESKTOP="${TARGET_DESKTOP:-gnome}"
+    if [[ -n "${TARGET_BROWSER:-}" && -z "${TARGET_BRAVE_CHANNEL:-}" ]]; then
+        export TARGET_BRAVE_CHANNEL="$TARGET_BROWSER"
+    fi
+    export TARGET_BRAVE_CHANNEL="${TARGET_BRAVE_CHANNEL:-release}"
+    export TARGET_LIBREWOLF="${TARGET_LIBREWOLF:-0}"
+    export TARGET_FIREFOX="${TARGET_FIREFOX:-0}"
     validate_ubiquity_jammy_only
     check_settings
     set_target_kernel_package_from_flavor
