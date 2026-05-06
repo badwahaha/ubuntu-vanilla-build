@@ -145,6 +145,7 @@ function set_defaults() {
     export TARGET_BRAVE_CHANNEL="${TARGET_BRAVE_CHANNEL:-}"
     export TARGET_LIBREWOLF="${TARGET_LIBREWOLF:-}"
     export TARGET_FIREFOX="${TARGET_FIREFOX:-}"
+    export TARGET_UBUNTU_STUDIO="${TARGET_UBUNTU_STUDIO:-}"
     export TARGET_NAME="${TARGET_NAME:-ubuntu}"
     export GRUB_LIVEBOOT_LABEL="${GRUB_LIVEBOOT_LABEL:-Try Ubuntu without installing}"
 }
@@ -404,6 +405,25 @@ EOF
         echo "=====> Firefox: not pre-installed (apt install firefox when ready — Mozilla APT already pinned)"
     fi
 
+    echo "=====> Pacstall (official installer from https://pacstall.dev/q/install — not Chaotic PPR / apt package)"
+    # Subshell: restore DEBIAN_FRONTEND after upstream script. Pipe declines optional axel; GITHUB_ACTIONS quiets apt.
+    (
+        export DEBIAN_FRONTEND=noninteractive
+        printf 'n\n' | env GITHUB_ACTIONS=true bash -c "$(curl -fsSL https://pacstall.dev/q/install)"
+    )
+
+    if [[ "${TARGET_UBUNTU_STUDIO:-0}" == "1" ]]; then
+        apt_install_available "Ubuntu Studio metapackages" \
+            ubuntustudio-audio \
+            ubuntustudio-graphics \
+            ubuntustudio-photography \
+            ubuntustudio-publishing \
+            ubuntustudio-video \
+            ubuntustudio-wallpapers \
+            ubuntustudio-menu \
+            ubuntu-edu-music
+    fi
+
     apt-get install -y \
         git \
         vim \
@@ -489,6 +509,14 @@ function check_settings() {
             exit 1
             ;;
     esac
+    case "${TARGET_UBUNTU_STUDIO:-0}" in
+        0|1)
+            ;;
+        *)
+            >&2 echo "TARGET_UBUNTU_STUDIO must be 0 or 1 (got: '${TARGET_UBUNTU_STUDIO:-}')."
+            exit 1
+            ;;
+    esac
 }
 
 function host_help() {
@@ -512,6 +540,7 @@ function host_help() {
     echo "  TARGET_BROWSER=release|origin-beta               Legacy alias for Brave channel if TARGET_BRAVE_CHANNEL unset"
     echo "  TARGET_LIBREWOLF=0|1                    Pre-install Librewolf (optional; default 0; repo always added)"
     echo "  TARGET_FIREFOX=0|1                       Pre-install Firefox from Mozilla APT (optional; default 0; repo always added)"
+    echo "  TARGET_UBUNTU_STUDIO=0|1                 Ubuntu Studio metapackages (optional; default 0)"
     echo "  TARGET_GNOME_INSTALL_RECOMMENDS=0|1       GNOME install with recommends (optional; default 0)"
     echo "  --kernel=generic|lowlatency             Kernel type to install"
     echo "  --installer=calamares|ubiquity           Calamares (default), or Ubiquity (jammy/22.04 only)"
@@ -520,7 +549,8 @@ function host_help() {
     echo "  --browser=release|origin-beta            Same as --brave for the two Brave archives (legacy)"
     echo "  --librewolf / --no-librewolf             Pre-install Librewolf (APT repo always configured)"
     echo "  --firefox / --no-firefox               Pre-install Firefox (Mozilla APT always configured)"
-    echo "  -i, --interactive                       Ask for release, installer, kernel, desktop, Brave, extras on a TTY"
+    echo "  --ubuntu-studio / --no-ubuntu-studio     Ubuntu Studio metapackage set (heavy)"
+    echo "  -i, --interactive                       Ask for release, installer, kernel, desktop, Brave extras (Librewolf/Firefox)"
     echo
     echo "Syntax: $0 [options] [start_cmd] [-] [end_cmd]"
     echo "  Run from start_cmd to end_cmd"
@@ -677,6 +707,7 @@ function run_chroot() {
         TARGET_BRAVE_CHANNEL="${TARGET_BRAVE_CHANNEL:-release}" \
         TARGET_LIBREWOLF="${TARGET_LIBREWOLF:-0}" \
         TARGET_FIREFOX="${TARGET_FIREFOX:-0}" \
+        TARGET_UBUNTU_STUDIO="${TARGET_UBUNTU_STUDIO:-0}" \
         TARGET_GNOME_INSTALL_RECOMMENDS="${TARGET_GNOME_INSTALL_RECOMMENDS:-0}" \
         TARGET_NAME="${TARGET_NAME}" \
         GRUB_LIVEBOOT_LABEL="${GRUB_LIVEBOOT_LABEL}" \
@@ -1022,6 +1053,41 @@ function resolve_browser_selection() {
     export TARGET_FIREFOX="${TARGET_FIREFOX:-0}"
 }
 
+function resolve_ubuntu_studio_choice() {
+    if [[ -n "${TARGET_UBUNTU_STUDIO+x}" ]]; then
+        export TARGET_UBUNTU_STUDIO="${TARGET_UBUNTU_STUDIO:-0}"
+        return 0
+    fi
+
+    if [[ -t 0 ]]; then
+        ui_heading "Ubuntu Studio"
+        echo "    Large bundle: ubuntustudio-audio/graphics/photography/publishing/video,"
+        echo "    ubuntustudio-wallpapers, ubuntustudio-menu, ubuntu-edu-music."
+        local yn
+        while true; do
+            read -r -p "  Do you want to install Ubuntu Studio packages? (y/N) " yn
+            yn="${yn,,}"
+            [[ -z "$yn" ]] && yn="n"
+            case "$yn" in
+                y|yes)
+                    export TARGET_UBUNTU_STUDIO="1"
+                    break
+                    ;;
+                n|no)
+                    export TARGET_UBUNTU_STUDIO="0"
+                    break
+                    ;;
+                *)
+                    echo "  Please answer y or n."
+                    ;;
+            esac
+        done
+        ui_ok "TARGET_UBUNTU_STUDIO=$TARGET_UBUNTU_STUDIO"
+    else
+        export TARGET_UBUNTU_STUDIO=0
+    fi
+}
+
 function interactive_installer_pick() {
     if [[ ! -t 0 ]]; then
         ui_err "No terminal is available. Use --installer=calamares|ubiquity."
@@ -1127,6 +1193,7 @@ function print_build_summary() {
     [[ "${TARGET_LIBREWOLF:-0}" == "1" ]] && _bs="${_bs:+${_bs}; }Librewolf"
     [[ "${TARGET_FIREFOX:-0}" == "1" ]] && _bs="${_bs:+${_bs}; }Firefox"
     ui_kv "Browsers"       "${_bs}"
+    ui_kv "Ubuntu Studio"  "${TARGET_UBUNTU_STUDIO:-0}"
     ui_kv "Target name"     "${TARGET_NAME:-?}"
     ui_kv "Mirror"          "${TARGET_UBUNTU_MIRROR:-?}"
     ui_kv "Workspace"       "${WORKSPACE_DIR:-?}"
@@ -1177,6 +1244,8 @@ function host_main() {
     local cli_librewolf=0
     local cli_firefox_set=0
     local cli_firefox=0
+    local cli_ubuntustudio_set=0
+    local cli_ubuntustudio=0
     local args=()
 
     set_defaults
@@ -1263,6 +1332,16 @@ function host_main() {
                 cli_firefox=0
                 shift
                 ;;
+            --ubuntu-studio)
+                cli_ubuntustudio_set=1
+                cli_ubuntustudio=1
+                shift
+                ;;
+            --no-ubuntu-studio)
+                cli_ubuntustudio_set=1
+                cli_ubuntustudio=0
+                shift
+                ;;
             -h|--help)
                 host_help
                 ;;
@@ -1315,6 +1394,9 @@ function host_main() {
     if [[ "$cli_firefox_set" -eq 1 ]]; then
         export TARGET_FIREFOX="$cli_firefox"
     fi
+    if [[ "$cli_ubuntustudio_set" -eq 1 ]]; then
+        export TARGET_UBUNTU_STUDIO="$cli_ubuntustudio"
+    fi
 
     if [[ "$interactive" -eq 1 || -z "${TARGET_UBUNTU_VERSION:-}" ]]; then
         resolve_release_choice
@@ -1337,6 +1419,7 @@ function host_main() {
         resolve_gnome_recommends_choice
     fi
     resolve_browser_selection "$interactive"
+    resolve_ubuntu_studio_choice
 
     check_settings
     set_target_kernel_package_from_flavor
@@ -1715,6 +1798,7 @@ function chroot_main() {
     export TARGET_BRAVE_CHANNEL="${TARGET_BRAVE_CHANNEL:-release}"
     export TARGET_LIBREWOLF="${TARGET_LIBREWOLF:-0}"
     export TARGET_FIREFOX="${TARGET_FIREFOX:-0}"
+    export TARGET_UBUNTU_STUDIO="${TARGET_UBUNTU_STUDIO:-0}"
     validate_ubiquity_jammy_only
     check_settings
     set_target_kernel_package_from_flavor

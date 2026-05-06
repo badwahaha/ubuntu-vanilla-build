@@ -65,7 +65,7 @@ Presentation
 
     Slide
     {
-        centeredText: qsTr( "Flatpak is already installed by default plus APT sources for Brave, Librewolf, and Firefox are set up so you can install or update those browsers after install; whichever were pre-installed on this ISO also carry over to your new system." )
+        centeredText: qsTr( "Flatpak is installed by default, and APT is set up for Brave, Librewolf, and Firefox; Pacstall is installed via the official installer for AUR-style packages. Browsers already on the live image are kept on the installed system." )
     }
 
     Slide
