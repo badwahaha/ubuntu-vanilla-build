@@ -14,22 +14,6 @@ CHROOT_MOUNTS_ACTIVE=0
 # Prevents duplicate teardown when both a signal handler and EXIT run.
 HOST_ABORT_CLEANUP_DONE=0
 DATE="$(TZ="UTC" date +"%y%m%d-%H%M%S")"
-DEBUG_SESSION_ID="5d03ce"
-DEBUG_LOG_PATH="debug-5d03ce.log"
-
-function agent_debug_log() {
-    local run_id="$1"
-    local hypothesis_id="$2"
-    local location="$3"
-    local message="$4"
-    local data="$5"
-    local ts
-    ts="$(date +%s%3N)"
-    #region agent log
-    printf '{"sessionId":"%s","runId":"%s","hypothesisId":"%s","location":"%s","message":"%s","data":"%s","timestamp":%s}\n' \
-        "$DEBUG_SESSION_ID" "$run_id" "$hypothesis_id" "$location" "$message" "$data" "$ts" >> "$DEBUG_LOG_PATH"
-    #endregion
-}
 
 # ---------------------------------------------------------------------------
 # UI helpers: consistent colored output, headings, step counters, prompts.
@@ -143,10 +127,11 @@ function set_defaults() {
     export TARGET_DESKTOP="${TARGET_DESKTOP:-}"
     export TARGET_BROWSER="${TARGET_BROWSER:-}"
     export TARGET_BRAVE_CHANNEL="${TARGET_BRAVE_CHANNEL:-}"
-    export TARGET_LIBREWOLF="${TARGET_LIBREWOLF:-}"
-    export TARGET_FIREFOX="${TARGET_FIREFOX:-}"
-    export TARGET_UBUNTU_STUDIO="${TARGET_UBUNTU_STUDIO:-}"
-    export TARGET_NAME="${TARGET_NAME:-ubuntu}"
+    # TARGET_LIBREWOLF, TARGET_FIREFOX, TARGET_UBUNTU_STUDIO: intentionally left
+    # unset here so that resolve_browser_selection() and resolve_ubuntu_studio_choice()
+    # can distinguish "user never specified" (unset) from "user explicitly set to 0/1"
+    # via ${VAR+x}. Only env/CLI paths should set these.
+    export TARGET_NAME="${TARGET_NAME:-}"
     export GRUB_LIVEBOOT_LABEL="${GRUB_LIVEBOOT_LABEL:-Try Ubuntu without installing}"
 }
 
@@ -170,6 +155,32 @@ function hwe_version_for_release() {
         resolute) echo "26.04" ;;
         *)        echo "" ;;
     esac
+}
+
+function release_version_for_iso_name() {
+    case "$1" in
+        jammy)    echo "22.04" ;;
+        noble)    echo "24.04" ;;
+        resolute) echo "26.04" ;;
+        *)        echo "00.00" ;;
+    esac
+}
+
+function default_target_name() {
+    local version desktop
+    version="$(release_version_for_iso_name "${TARGET_UBUNTU_VERSION:-}")"
+    desktop="${TARGET_DESKTOP:-gnome}"
+    echo "ubuntu-${version}-${desktop}-amd64"
+}
+
+function normalize_desktop_variant() {
+    local desktop="${TARGET_DESKTOP:-gnome}"
+    desktop="${desktop,,}"
+    if [[ ! "$desktop" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+        >&2 echo "TARGET_DESKTOP must be a slug like gnome, xfce, or kde-plasma (got: '${TARGET_DESKTOP:-}')."
+        exit 1
+    fi
+    export TARGET_DESKTOP="$desktop"
 }
 
 function assert_supported_release() {
@@ -333,7 +344,7 @@ function customize_image() {
                 labwc
             ;;
         *)
-            >&2 echo "TARGET_DESKTOP must be gnome or xfce (got: '${TARGET_DESKTOP:-}')."
+            >&2 echo "Unsupported desktop variant '${TARGET_DESKTOP:-}'. Add install logic for this variant in customize_image()."
             exit 1
             ;;
     esac
@@ -464,14 +475,7 @@ EOF
 
 function check_settings() {
     assert_supported_release || exit 1
-    case "${TARGET_DESKTOP:-}" in
-        gnome|xfce)
-            ;;
-        *)
-            >&2 echo "TARGET_DESKTOP must be gnome or xfce (got: '${TARGET_DESKTOP:-}')."
-            exit 1
-            ;;
-    esac
+    normalize_desktop_variant
     case "${TARGET_GNOME_INSTALL_RECOMMENDS:-0}" in
         0|1)
             ;;
@@ -538,7 +542,7 @@ function host_help() {
     echo "  --mirror=URL                            Ubuntu package mirror"
     echo "  UBUNTU_VANILLA_WORKSPACE=DIR             Parent directory for build workspace (optional; auto on WSL /mnt/c)"
     echo "  TARGET_INSTALLER=calamares|ubiquity       Live installer (optional; default calamares)"
-    echo "  TARGET_DESKTOP=gnome|xfce                Desktop flavor (optional; default gnome)"
+    echo "  TARGET_DESKTOP=<desktop>                  Desktop variant slug (optional; default gnome)"
     echo "  TARGET_BRAVE_CHANNEL=none|release|origin-beta   Pre-install Brave build (both Brave APT repos always added)"
     echo "  TARGET_BROWSER=release|origin-beta               Legacy alias for Brave channel if TARGET_BRAVE_CHANNEL unset"
     echo "  TARGET_LIBREWOLF=0|1                    Pre-install Librewolf (optional; default 0; repo always added)"
@@ -547,7 +551,7 @@ function host_help() {
     echo "  TARGET_GNOME_INSTALL_RECOMMENDS=0|1       GNOME install with recommends (optional; default 0)"
     echo "  --kernel=generic|lowlatency             Kernel type to install"
     echo "  --installer=calamares|ubiquity           Calamares (default), or Ubiquity (jammy/22.04 only)"
-    echo "  --desktop=gnome|xfce                     Desktop flavor to install"
+    echo "  --desktop=<desktop>                      Desktop variant to install"
     echo "  --brave=none|release|origin-beta       Brave channel (default release; none skips Brave)"
     echo "  --browser=release|origin-beta            Same as --brave for the two Brave archives (legacy)"
     echo "  --librewolf / --no-librewolf             Pre-install Librewolf (APT repo always configured)"
@@ -919,7 +923,7 @@ function resolve_kernel_choice() {
 
 function interactive_desktop_pick() {
     if [[ ! -t 0 ]]; then
-        ui_err "No terminal is available. Use --desktop=gnome|xfce."
+                ui_err "No terminal is available. Use --desktop=<desktop> (e.g. gnome or xfce)."
         exit 1
     fi
 
@@ -1085,8 +1089,6 @@ function interactive_firefox_pick() {
 }
 
 function resolve_browser_selection() {
-    local interactive_flag="${1:-0}"
-
     if [[ -n "${TARGET_BROWSER:-}" && -z "${TARGET_BRAVE_CHANNEL:-}" ]]; then
         export TARGET_BRAVE_CHANNEL="$TARGET_BROWSER"
     fi
@@ -1099,12 +1101,19 @@ function resolve_browser_selection() {
         fi
     fi
 
-    if [[ "${interactive_flag}" -eq 1 ]]; then
-        if [[ -z "${TARGET_LIBREWOLF+x}" ]]; then
+    if [[ -z "${TARGET_LIBREWOLF+x}" ]]; then
+        if [[ -t 0 ]]; then
             interactive_librewolf_pick
+        else
+            export TARGET_LIBREWOLF="0"
         fi
-        if [[ -z "${TARGET_FIREFOX+x}" ]]; then
+    fi
+
+    if [[ -z "${TARGET_FIREFOX+x}" ]]; then
+        if [[ -t 0 ]]; then
             interactive_firefox_pick
+        else
+            export TARGET_FIREFOX="0"
         fi
     fi
 
@@ -1347,7 +1356,7 @@ function host_main() {
                 cli_installer="$2"
                 shift 2
                 ;;
-            --desktop=gnome|--desktop=xfce)
+            --desktop=*)
                 cli_desktop="${1#--desktop=}"
                 shift
                 ;;
@@ -1474,10 +1483,15 @@ function host_main() {
     if [[ "$interactive" -eq 1 || -z "${TARGET_DESKTOP:-}" ]]; then
         resolve_desktop_choice
     fi
+    normalize_desktop_variant
+    if [[ -z "${TARGET_NAME:-}" ]]; then
+        export TARGET_NAME
+        TARGET_NAME="$(default_target_name)"
+    fi
     if [[ "$interactive" -eq 1 || -z "${TARGET_GNOME_INSTALL_RECOMMENDS:-}" ]]; then
         resolve_gnome_recommends_choice
     fi
-    resolve_browser_selection "$interactive"
+    resolve_browser_selection
     resolve_ubuntu_studio_choice
 
     check_settings
@@ -1851,6 +1865,7 @@ function chroot_main() {
     set_defaults
     set_installer_and_manifest_defaults
     export TARGET_DESKTOP="${TARGET_DESKTOP:-gnome}"
+    normalize_desktop_variant
     if [[ -n "${TARGET_BROWSER:-}" && -z "${TARGET_BRAVE_CHANNEL:-}" ]]; then
         export TARGET_BRAVE_CHANNEL="$TARGET_BROWSER"
     fi
