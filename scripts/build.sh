@@ -126,6 +126,7 @@ function set_defaults() {
     export TARGET_KERNEL_PACKAGE="${TARGET_KERNEL_PACKAGE:-}"
     export TARGET_DESKTOP="${TARGET_DESKTOP:-}"
     export TARGET_KDE_PACKAGE="${TARGET_KDE_PACKAGE:-}"
+    export TARGET_MATE_PACKAGE="${TARGET_MATE_PACKAGE:-}"
     export TARGET_BROWSER="${TARGET_BROWSER:-}"
     export TARGET_BRAVE_CHANNEL="${TARGET_BRAVE_CHANNEL:-}"
     # TARGET_LIBREWOLF, TARGET_FIREFOX, TARGET_UBUNTU_STUDIO: intentionally left
@@ -183,7 +184,7 @@ function normalize_desktop_variant() {
             ;;
     esac
     if [[ ! "$desktop" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
-        >&2 echo "TARGET_DESKTOP must be a slug like gnome, xfce, or kde-plasma (got: '${TARGET_DESKTOP:-}')."
+        >&2 echo "TARGET_DESKTOP must be a slug like gnome, xfce, lxde, lxqt, mate, cinnamon, budgie, or kde-plasma (got: '${TARGET_DESKTOP:-}')."
         exit 1
     fi
     export TARGET_DESKTOP="$desktop"
@@ -310,7 +311,8 @@ function customize_image() {
             # Xubuntu-equivalent package set, minus the xubuntu-* branding
             # (no xubuntu-default-settings, xubuntu-artwork, xubuntu-wallpapers*,
             # xubuntu-icon-theme, xubuntu-docs, xubuntu-community-*).
-           apt-get install -y \
+            # labwc provides a lightweight Wayland compositor for optional Wayland sessions.
+            apt-get install -y \
                 xfce4 \
                 xfce4-goodies \
                 xfce4-terminal \
@@ -348,6 +350,52 @@ function customize_image() {
                 lightdm \
                 slick-greeter \
                 labwc
+            ;;
+        lxde)
+            echo "=====> desktop flavor: lxde"
+            # Legacy LXDE stack (Openbox + PCManFM + lxpanel); lighter than XFCE for low-spec hardware.
+            apt-get install -y \
+                lxde \
+                xorg \
+                lightdm \
+                slick-greeter
+            ;;
+        lxqt)
+            echo "=====> desktop flavor: lxqt"
+            # LXQt via upstream metapackage + SDDM (no lubuntu-desktop / lubuntu-* branding stack).
+            apt-get install -y \
+                lxqt \
+                sddm \
+                xorg
+            ;;
+        mate)
+            echo "=====> desktop flavor: mate"
+            echo "=====> MATE metapackage: ${TARGET_MATE_PACKAGE:-mate-desktop-environment}"
+            apt-get install -y \
+                "${TARGET_MATE_PACKAGE:-mate-desktop-environment}" \
+                xorg \
+                lightdm \
+                slick-greeter
+            if [[ "${TARGET_MATE_EXTRAS:-0}" == "1" ]]; then
+                echo "=====> MATE extras: mate-desktop-environment-extras"
+                apt-get install -y mate-desktop-environment-extras
+            fi
+            ;;
+        cinnamon)
+            echo "=====> desktop flavor: cinnamon"
+            apt-get install -y \
+                cinnamon-desktop-environment \
+                xorg \
+                lightdm \
+                slick-greeter
+            ;;
+        budgie)
+            echo "=====> desktop flavor: budgie"
+            apt-get install -y \
+                budgie-desktop-environment \
+                xorg \
+                lightdm \
+                slick-greeter
             ;;
         kde-plasma)
             echo "=====> desktop flavor: kde-plasma"
@@ -551,6 +599,32 @@ function check_settings() {
             exit 1
             ;;
     esac
+    if [[ "${TARGET_DESKTOP:-}" == "mate" ]]; then
+        case "${TARGET_MATE_PACKAGE:-mate-desktop-environment}" in
+            full)
+                export TARGET_MATE_PACKAGE="mate-desktop-environment"
+                ;;
+            core)
+                export TARGET_MATE_PACKAGE="mate-desktop-environment-core"
+                ;;
+        esac
+        case "${TARGET_MATE_PACKAGE:-mate-desktop-environment}" in
+            mate-desktop-environment|mate-desktop-environment-core)
+                ;;
+            *)
+                >&2 echo "TARGET_MATE_PACKAGE must be mate-desktop-environment or mate-desktop-environment-core (got: '${TARGET_MATE_PACKAGE:-}'). Use --mate=full|core or full APT names."
+                exit 1
+                ;;
+        esac
+        case "${TARGET_MATE_EXTRAS:-0}" in
+            0|1)
+                ;;
+            *)
+                >&2 echo "TARGET_MATE_EXTRAS must be 0 or 1 (got: '${TARGET_MATE_EXTRAS:-}')."
+                exit 1
+                ;;
+        esac
+    fi
 }
 
 function host_help() {
@@ -571,6 +645,8 @@ function host_help() {
     echo "  TARGET_INSTALLER=calamares|ubiquity       Live installer (optional; default calamares)"
     echo "  TARGET_DESKTOP=<desktop>                  Desktop variant slug (optional; default gnome)"
     echo "  TARGET_KDE_PACKAGE=kde-full|kde-standard|kde-plasma-desktop  KDE package when desktop is kde-plasma (optional; default kde-standard)"
+    echo "  TARGET_MATE_PACKAGE=mate-desktop-environment|mate-desktop-environment-core  MATE metapackage when desktop is mate (optional; full|core aliases OK)"
+    echo "  TARGET_MATE_EXTRAS=0|1            Also install mate-desktop-environment-extras when desktop is mate (optional; default 0)"
     echo "  TARGET_BRAVE_CHANNEL=none|release|origin-beta   Pre-install Brave build (both Brave APT repos always added)"
     echo "  TARGET_BROWSER=release|origin-beta               Legacy alias for Brave channel if TARGET_BRAVE_CHANNEL unset"
     echo "  TARGET_LIBREWOLF=0|1                    Pre-install Librewolf (optional; default 0; repo always added)"
@@ -579,8 +655,10 @@ function host_help() {
     echo "  TARGET_GNOME_INSTALL_RECOMMENDS=0|1       GNOME install with recommends (optional; default 0)"
     echo "  --kernel=generic|lowlatency             Kernel type to install"
     echo "  --installer=calamares|ubiquity           Calamares (default), or Ubiquity (jammy/22.04 only)"
-    echo "  --desktop=<desktop>                      Desktop variant to install"
+    echo "  --desktop=<desktop>                      Desktop variant (gnome, xfce, lxde, lxqt, mate, cinnamon, budgie, kde-plasma)"
     echo "  --kde=kde-full|kde-standard|kde-plasma-desktop  KDE package tier (used with --desktop=kde-plasma)"
+    echo "  --mate=full|core|mate-desktop-environment|mate-desktop-environment-core  MATE tier (used with --desktop=mate; default full)"
+    echo "  --mate-extras / --no-mate-extras        Pre-install mate-desktop-environment-extras (with --desktop=mate)"
     echo "  --brave=none|release|origin-beta       Brave channel (default release; none skips Brave)"
     echo "  --browser=release|origin-beta            Same as --brave for the two Brave archives (legacy)"
     echo "  --librewolf / --no-librewolf             Pre-install Librewolf (APT repo always configured)"
@@ -739,6 +817,8 @@ function run_chroot() {
         TARGET_KERNEL_PACKAGE="${TARGET_KERNEL_PACKAGE:-}" \
         TARGET_DESKTOP="${TARGET_DESKTOP:-gnome}" \
         TARGET_KDE_PACKAGE="${TARGET_KDE_PACKAGE:-kde-standard}" \
+        TARGET_MATE_PACKAGE="${TARGET_MATE_PACKAGE:-mate-desktop-environment}" \
+        TARGET_MATE_EXTRAS="${TARGET_MATE_EXTRAS:-0}" \
         TARGET_BROWSER="${TARGET_BROWSER:-}" \
         TARGET_BRAVE_CHANNEL="${TARGET_BRAVE_CHANNEL:-release}" \
         TARGET_LIBREWOLF="${TARGET_LIBREWOLF:-0}" \
@@ -952,22 +1032,33 @@ function resolve_kernel_choice() {
 
 function interactive_desktop_pick() {
     if [[ ! -t 0 ]]; then
-        ui_err "No terminal is available. Use --desktop=<desktop> (e.g. gnome, xfce, or kde-plasma)."
+        ui_err "No terminal is available. Use --desktop=<desktop> (e.g. gnome, xfce, lxde, lxqt, mate, cinnamon, budgie, or kde-plasma)."
         exit 1
     fi
 
     ui_heading "Desktop environment"
-    echo "    1) GNOME    Default. vanilla-gnome-desktop (recommends asked next)"
-    echo "    2) XFCE     Lighter. xfce4 + xfce4-goodies + lightdm + slick-greeter"
-    echo "    3) KDE      Plasma desktop (choose kde-full / kde-standard / kde-plasma-desktop next)"
+    echo "    (Ordered A-Z by desktop name.)"
+    echo "    1) Budgie         Modern GTK desktop with Raven applets/sidebar. budgie-desktop-environment; lightdm + slick-greeter."
+    echo "    2) Cinnamon       Familiar bottom panel and menu layout. cinnamon-desktop-environment; lightdm + slick-greeter."
+    echo "    3) GNOME          Modern, full-featured desktop (similar to stock Ubuntu). Installs vanilla-gnome-desktop; next prompt offers optional extra apps (APT recommends)."
+    echo "    4) KDE            KDE Plasma - flexible and customizable. Next you choose package set: kde-full, kde-standard, or kde-plasma-desktop."
+    echo "    5) LXDE           Very light; best for low-spec or older PCs. lxde metapackage; lightdm + slick-greeter (classic LXDE stack)."
+    echo "    6) LXQt           Lightweight Qt desktop. lxqt + sddm + xorg (no Lubuntu branding metapackages)."
+    echo "    7) MATE           Traditional two-panel layout (GNOME 2 style). You choose full vs core MATE metapackage next, then optional extras."
+    echo "    8) XFCE           Lighter weight, classic taskbar layout. xfce4 + add-ons; display manager lightdm + slick-greeter; includes labwc for an optional Wayland session."
 
     local choice
     while true; do
-        read -r -p "  Desktop [1/2/3, Enter=1]: " choice
+        read -r -p "  Desktop [1-8, A-Z by name; Enter=GNOME]: " choice
         case "${choice,,}" in
-            ""|1|g|gnome)   export TARGET_DESKTOP="gnome";   break ;;
-            2|x|xfce)       export TARGET_DESKTOP="xfce";    break ;;
-            3|k|kde|kde-plasma) export TARGET_DESKTOP="kde-plasma"; break ;;
+            ""|3|g|gnome)               export TARGET_DESKTOP="gnome";   break ;;
+            1|b|budgie)                export TARGET_DESKTOP="budgie";   break ;;
+            2|c|cinnamon)             export TARGET_DESKTOP="cinnamon"; break ;;
+            4|k|kde|kde-plasma)        export TARGET_DESKTOP="kde-plasma"; break ;;
+            5|l|lxde)                  export TARGET_DESKTOP="lxde";    break ;;
+            6|q|lxqt)                  export TARGET_DESKTOP="lxqt";    break ;;
+            7|m|mate)                  export TARGET_DESKTOP="mate";    break ;;
+            8|x|xfce)                  export TARGET_DESKTOP="xfce";    break ;;
             *) ui_warn "Invalid selection: '$choice'." ;;
         esac
     done
@@ -1027,6 +1118,77 @@ function resolve_kde_package_choice() {
     fi
 
     export TARGET_KDE_PACKAGE="kde-standard"
+}
+
+function resolve_mate_choice() {
+    if [[ "${TARGET_DESKTOP:-gnome}" != "mate" ]]; then
+        export TARGET_MATE_PACKAGE="${TARGET_MATE_PACKAGE:-mate-desktop-environment}"
+        export TARGET_MATE_EXTRAS=0
+        return 0
+    fi
+
+    case "${TARGET_MATE_PACKAGE:-}" in
+        full)
+            export TARGET_MATE_PACKAGE="mate-desktop-environment"
+            ;;
+        core)
+            export TARGET_MATE_PACKAGE="mate-desktop-environment-core"
+            ;;
+    esac
+
+    if [[ -n "${TARGET_MATE_PACKAGE:-}" ]] && [[ -v TARGET_MATE_EXTRAS ]]; then
+        return 0
+    fi
+
+    if [[ -t 0 ]]; then
+        interactive_mate_options_pick
+        return 0
+    fi
+
+    export TARGET_MATE_PACKAGE="${TARGET_MATE_PACKAGE:-mate-desktop-environment}"
+    export TARGET_MATE_EXTRAS="${TARGET_MATE_EXTRAS:-0}"
+}
+
+function interactive_mate_options_pick() {
+    if [[ ! -t 0 ]]; then
+        ui_err "No terminal is available. Use --mate=full|core, --mate-extras / --no-mate-extras, or set TARGET_MATE_PACKAGE and TARGET_MATE_EXTRAS=0|1."
+        exit 1
+    fi
+
+    if [[ -z "${TARGET_MATE_PACKAGE:-}" ]]; then
+        ui_heading "MATE desktop metapackage"
+        echo "    1) mate-desktop-environment       Full MATE desktop  [default]"
+        echo "    2) mate-desktop-environment-core  Core only (smaller install)"
+
+        local choice
+        while true; do
+            read -r -p "  MATE metapackage [1/2, Enter=1]: " choice
+            case "${choice,,}" in
+                ""|1|full|mate-desktop-environment)
+                    export TARGET_MATE_PACKAGE="mate-desktop-environment"
+                    break
+                    ;;
+                2|core|mate-desktop-environment-core)
+                    export TARGET_MATE_PACKAGE="mate-desktop-environment-core"
+                    break
+                    ;;
+                *) ui_warn "Invalid selection: '$choice'." ;;
+            esac
+        done
+        ui_ok "TARGET_MATE_PACKAGE=$TARGET_MATE_PACKAGE"
+    fi
+
+    if [[ ! -v TARGET_MATE_EXTRAS ]]; then
+        ui_heading "MATE extras"
+        echo "    y) Also install mate-desktop-environment-extras (extra MATE apps and utilities)"
+        echo "    n) Skip extras  [default]"
+        if ui_confirm "Install mate-desktop-environment-extras?" n; then
+            export TARGET_MATE_EXTRAS=1
+        else
+            export TARGET_MATE_EXTRAS=0
+        fi
+        ui_ok "TARGET_MATE_EXTRAS=$TARGET_MATE_EXTRAS"
+    fi
 }
 
 function interactive_gnome_recommends_pick() {
@@ -1324,6 +1486,10 @@ function print_build_summary() {
     case "${TARGET_DESKTOP:-}" in
         gnome)  ui_kv "  with Recommends" "${TARGET_GNOME_INSTALL_RECOMMENDS:-0}" ;;
         kde-plasma) ui_kv "  KDE package" "${TARGET_KDE_PACKAGE:-kde-standard}" ;;
+        mate)
+            ui_kv "  MATE metapackage" "${TARGET_MATE_PACKAGE:-mate-desktop-environment}"
+            ui_kv "  MATE extras" "${TARGET_MATE_EXTRAS:-0}"
+            ;;
     esac
     ui_kv "Installer"       "${TARGET_INSTALLER:-?}"
     local _bs=""
@@ -1380,6 +1546,9 @@ function host_main() {
     local cli_installer=""
     local cli_desktop=""
     local cli_kde=""
+    local cli_mate=""
+    local cli_mate_extras_set=0
+    local cli_mate_extras=0
     local cli_browser=""
     local cli_brave=""
     local cli_librewolf_set=0
@@ -1441,6 +1610,24 @@ function host_main() {
             --kde)
                 cli_kde="$2"
                 shift 2
+                ;;
+            --mate=*)
+                cli_mate="${1#--mate=}"
+                shift
+                ;;
+            --mate)
+                cli_mate="$2"
+                shift 2
+                ;;
+            --mate-extras)
+                cli_mate_extras_set=1
+                cli_mate_extras=1
+                shift
+                ;;
+            --no-mate-extras)
+                cli_mate_extras_set=1
+                cli_mate_extras=0
+                shift
                 ;;
             --browser=release|--browser=origin-beta)
                 cli_browser="${1#--browser=}"
@@ -1531,6 +1718,12 @@ function host_main() {
     if [[ -n "$cli_kde" ]]; then
         export TARGET_KDE_PACKAGE="$cli_kde"
     fi
+    if [[ -n "$cli_mate" ]]; then
+        export TARGET_MATE_PACKAGE="$cli_mate"
+    fi
+    if [[ "$cli_mate_extras_set" -eq 1 ]]; then
+        export TARGET_MATE_EXTRAS="$cli_mate_extras"
+    fi
     if [[ -n "$cli_browser" ]]; then
         export TARGET_BROWSER="$cli_browser"
     fi
@@ -1573,6 +1766,7 @@ function host_main() {
         resolve_gnome_recommends_choice
     fi
     resolve_kde_package_choice
+    resolve_mate_choice
     resolve_browser_selection
     resolve_ubuntu_studio_choice
 
@@ -1948,6 +2142,8 @@ function chroot_main() {
     set_installer_and_manifest_defaults
     export TARGET_DESKTOP="${TARGET_DESKTOP:-gnome}"
     export TARGET_KDE_PACKAGE="${TARGET_KDE_PACKAGE:-kde-standard}"
+    export TARGET_MATE_PACKAGE="${TARGET_MATE_PACKAGE:-mate-desktop-environment}"
+    export TARGET_MATE_EXTRAS="${TARGET_MATE_EXTRAS:-0}"
     normalize_desktop_variant
     if [[ -n "${TARGET_BROWSER:-}" && -z "${TARGET_BRAVE_CHANNEL:-}" ]]; then
         export TARGET_BRAVE_CHANNEL="$TARGET_BROWSER"

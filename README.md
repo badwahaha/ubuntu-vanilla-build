@@ -12,7 +12,12 @@ This project is designed for:
 - A bootable ISO with **GRUB for UEFI and BIOS**.
 - Desktop choices:
   - `gnome` (default, based on `vanilla-gnome-desktop`)
-  - `xfce` (Xubuntu-like functional stack, without `xubuntu-*` branding packages)
+  - `xfce` (Xubuntu-like functional stack, without `xubuntu-*` branding packages; includes `labwc` for Wayland)
+  - `lxde` (lightweight LXDE stack with `lightdm` and `slick-greeter`, for low-spec systems)
+  - `lxqt` (LXQt via `lxqt` + `sddm` + `xorg`; no `lubuntu-desktop` / Lubuntu branding metapackages)
+  - `mate` (`mate-desktop-environment` or lighter `mate-desktop-environment-core`, plus optional `mate-desktop-environment-extras`; `lightdm` + `slick-greeter`)
+  - `cinnamon` (`cinnamon-desktop-environment` with `lightdm` and `slick-greeter`)
+  - `budgie` (`budgie-desktop-environment` with `lightdm` and `slick-greeter`)
   - `kde-plasma` (KDE Plasma with selectable APT metapackage: `kde-full`, `kde-standard`, or `kde-plasma-desktop`)
   - Additional variants can be added by extending desktop install logic in `scripts/build.sh`.
 - Installer choices:
@@ -90,6 +95,24 @@ If you prefer fewer prompts, provide required non-interactive arguments:
 # Jammy + Calamares + XFCE
 ./build.sh --release=jammy --kernel=generic --installer=calamares --desktop=xfce -
 
+# Jammy + Calamares + LXDE (lightweight desktop)
+./build.sh --release=jammy --kernel=generic --installer=calamares --desktop=lxde -
+
+# Jammy + Calamares + LXQt (SDDM, no Lubuntu branding stack)
+./build.sh --release=jammy --kernel=generic --installer=calamares --desktop=lxqt -
+
+# Jammy + Calamares + MATE
+./build.sh --release=jammy --kernel=generic --installer=calamares --desktop=mate -
+
+# Jammy + MATE core + extras (non-interactive)
+./build.sh --release=jammy --kernel=generic --desktop=mate --mate=core --mate-extras -
+
+# Jammy + Calamares + Cinnamon
+./build.sh --release=jammy --kernel=generic --installer=calamares --desktop=cinnamon -
+
+# Jammy + Calamares + Budgie
+./build.sh --release=jammy --kernel=generic --installer=calamares --desktop=budgie -
+
 # Jammy + KDE Plasma desktop using the standard package set
 ./build.sh --release=jammy --kernel=generic --desktop=kde-plasma --kde=kde-standard -
 
@@ -145,8 +168,9 @@ When running with a TTY and values are not pre-set, script can ask for:
 - Release (`jammy`/`noble`/`resolute`)
 - Installer (`calamares`/`ubiquity`, with release validation)
 - Kernel flavor (`generic`/`lowlatency`)
-- Desktop (`gnome`/`xfce`/`kde-plasma`)
+- Desktop (`gnome`/`xfce`/`lxde`/`lxqt`/`mate`/`cinnamon`/`budgie`/`kde-plasma`)
 - KDE package tier when desktop is `kde-plasma` (`kde-standard`/`kde-plasma-desktop`/`kde-full`)
+- MATE metapackage (`mate-desktop-environment` vs `mate-desktop-environment-core`) and optional `mate-desktop-environment-extras` when desktop is `mate`
 - GNOME recommends toggle (GNOME only)
 - Brave channel (`release`/`origin-beta`/`none`)
 - Librewolf preinstall toggle
@@ -162,6 +186,7 @@ Defaults when not explicitly set:
 - Firefox: disabled
 - Ubuntu Studio: disabled
 - GNOME recommends: disabled
+- MATE (when selected interactively): full metapackage by default; extras off unless you choose them
 
 ## Command-Line Options
 
@@ -171,8 +196,10 @@ Defaults when not explicitly set:
 - `--mirror=URL`
 - `--kernel=generic|lowlatency`
 - `--installer=calamares|ubiquity`
-- `--desktop=<desktop>` (currently implemented: `gnome`, `xfce`, `kde-plasma`)
+- `--desktop=<desktop>` (currently implemented: `gnome`, `xfce`, `lxde`, `lxqt`, `mate`, `cinnamon`, `budgie`, `kde-plasma`)
 - `--kde=kde-full|kde-standard|kde-plasma-desktop` (used with `--desktop=kde-plasma`; default `kde-standard`)
+- `--mate=full|core|mate-desktop-environment|mate-desktop-environment-core` (used with `--desktop=mate`; default full metapackage)
+- `--mate-extras` / `--no-mate-extras` (optional `mate-desktop-environment-extras` with `--desktop=mate`)
 - `--brave=none|release|origin-beta`
 - `--browser=release|origin-beta` (legacy alias for Brave selection)
 - `--librewolf` / `--no-librewolf`
@@ -205,6 +232,8 @@ Main variables:
 - `TARGET_INSTALLER`
 - `TARGET_DESKTOP`
 - `TARGET_KDE_PACKAGE` (`kde-full|kde-standard|kde-plasma-desktop`, for `TARGET_DESKTOP=kde-plasma`)
+- `TARGET_MATE_PACKAGE` (`mate-desktop-environment|mate-desktop-environment-core`, or aliases `full|core`, for `TARGET_DESKTOP=mate`)
+- `TARGET_MATE_EXTRAS` (`0|1`, also install `mate-desktop-environment-extras` when `TARGET_DESKTOP=mate`)
 - `TARGET_BRAVE_CHANNEL`
 - `TARGET_BROWSER` (legacy Brave alias if `TARGET_BRAVE_CHANNEL` unset)
 - `TARGET_LIBREWOLF=0|1`
@@ -229,7 +258,12 @@ Main variables:
 - **No Snap**: `snapd` blocked via APT pinning (`Pin-Priority: -1`).
 - **Calamares**: project config from `scripts/calamares` is used.
 - **Kernel**: HWE metapackage resolved by release + selected flavor (unless `TARGET_KERNEL_PACKAGE` is explicitly provided).
-- **XFCE profile**: installs functional XFCE stack and utilities while excluding `xubuntu-*` branding packages.
+- **XFCE profile**: installs functional XFCE stack and utilities while excluding `xubuntu-*` branding packages; includes `labwc` for optional Wayland sessions.
+- **LXDE profile**: installs the `lxde` metapackage with `xorg`, `lightdm`, and `slick-greeter`.
+- **LXQt profile**: installs `lxqt`, `sddm`, and `xorg` (upstream-style stack without `lubuntu-desktop` / Lubuntu branding metapackages).
+- **MATE profile**: installs `mate-desktop-environment` or `mate-desktop-environment-core` (your choice), with `xorg`, `lightdm`, and `slick-greeter`. Optionally adds `mate-desktop-environment-extras` when enabled (`TARGET_MATE_EXTRAS=1`, `--mate-extras`, or the interactive prompt).
+- **Cinnamon profile**: installs `cinnamon-desktop-environment` with `xorg`, `lightdm`, and `slick-greeter`.
+- **Budgie profile**: installs `budgie-desktop-environment` with `xorg`, `lightdm`, and `slick-greeter`.
 - **KDE profile**: installs one selected KDE metapackage (`kde-full`, `kde-standard`, or `kde-plasma-desktop`).
 - **Browsers**: repositories are always configured; flags only control pre-install into live filesystem.
 - **Pacstall**: installed unconditionally via official script.
