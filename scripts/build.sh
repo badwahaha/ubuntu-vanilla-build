@@ -375,6 +375,9 @@ EOF
 
     apt-get update
 
+    echo "=====> Browser vendor APT: Brave (release + beta), Librewolf, and Mozilla sources + keyrings are always on disk"
+    echo "       (optional installs below only; you can apt install later without re-adding repositories)."
+
     case "${TARGET_BRAVE_CHANNEL:-release}" in
         release)
             echo "=====> install: Brave stable"
@@ -385,7 +388,7 @@ EOF
             apt-get install -y brave-origin-beta
             ;;
         none)
-            echo "=====> Brave: not pre-installed (apt install brave-browser | brave-origin-beta when ready)"
+            echo "=====> Brave: not pre-installed (Brave APT sources above remain; apt install brave-browser | brave-origin-beta when ready)"
             ;;
         *)
             >&2 echo "TARGET_BRAVE_CHANNEL must be none, release, or origin-beta (got: '${TARGET_BRAVE_CHANNEL:-}')."
@@ -396,13 +399,13 @@ EOF
     if [[ "${TARGET_LIBREWOLF:-0}" == "1" ]]; then
         apt-get install -y librewolf
     else
-        echo "=====> Librewolf: not pre-installed (apt install librewolf when ready)"
+        echo "=====> Librewolf: not pre-installed (Librewolf repo above remains; apt install librewolf when ready)"
     fi
 
     if [[ "${TARGET_FIREFOX:-0}" == "1" ]]; then
         apt-get install -y firefox
     else
-        echo "=====> Firefox: not pre-installed (apt install firefox when ready — Mozilla APT already pinned)"
+        echo "=====> Firefox: not pre-installed (Mozilla repo + pin above remain; apt install firefox when ready)"
     fi
 
     echo "=====> Pacstall (official installer from https://pacstall.dev/q/install — not Chaotic PPR / apt package)"
@@ -1017,6 +1020,70 @@ function interactive_brave_channel_pick() {
     ui_ok "TARGET_BRAVE_CHANNEL=$TARGET_BRAVE_CHANNEL"
 }
 
+function interactive_librewolf_pick() {
+    if [[ ! -t 0 ]]; then
+        ui_err "No terminal is available. Set TARGET_LIBREWOLF=0|1."
+        exit 1
+    fi
+
+    ui_heading "Librewolf"
+    echo "    1) Pre-install librewolf (repo is configured either way)"
+    echo "    2) Skip Librewolf  [default]"
+
+    local choice
+    while true; do
+        read -r -p "  Librewolf [1/2/3, Enter=2]: " choice
+        case "${choice,,}" in
+            ""|2|n|no|off|skip|s)
+                export TARGET_LIBREWOLF="0"
+                break
+                ;;
+            1|y|yes|install|pre|on)
+                export TARGET_LIBREWOLF="1"
+                break
+                ;;
+            3|none)
+                export TARGET_LIBREWOLF="0"
+                break
+                ;;
+            *) ui_warn "Invalid selection: '$choice'." ;;
+        esac
+    done
+    ui_ok "TARGET_LIBREWOLF=$TARGET_LIBREWOLF"
+}
+
+function interactive_firefox_pick() {
+    if [[ ! -t 0 ]]; then
+        ui_err "No terminal is available. Set TARGET_FIREFOX=0|1."
+        exit 1
+    fi
+
+    ui_heading "Firefox (Mozilla APT)"
+    echo "    1) Pre-install firefox (Mozilla repo + pin are configured either way)"
+    echo "    2) Skip Firefox  [default]"
+
+    local choice
+    while true; do
+        read -r -p "  Firefox [1/2/3, Enter=2]: " choice
+        case "${choice,,}" in
+            ""|2|n|no|off|skip|s)
+                export TARGET_FIREFOX="0"
+                break
+                ;;
+            1|y|yes|install|pre|on)
+                export TARGET_FIREFOX="1"
+                break
+                ;;
+            3|none)
+                export TARGET_FIREFOX="0"
+                break
+                ;;
+            *) ui_warn "Invalid selection: '$choice'." ;;
+        esac
+    done
+    ui_ok "TARGET_FIREFOX=$TARGET_FIREFOX"
+}
+
 function resolve_browser_selection() {
     local interactive_flag="${1:-0}"
 
@@ -1034,18 +1101,10 @@ function resolve_browser_selection() {
 
     if [[ "${interactive_flag}" -eq 1 ]]; then
         if [[ -z "${TARGET_LIBREWOLF+x}" ]]; then
-            if ui_confirm "Pre-install Librewolf? (APT source is added either way)" n; then
-                export TARGET_LIBREWOLF="1"
-            else
-                export TARGET_LIBREWOLF="0"
-            fi
+            interactive_librewolf_pick
         fi
         if [[ -z "${TARGET_FIREFOX+x}" ]]; then
-            if ui_confirm "Pre-install Firefox? (Mozilla APT is configured either way)" n; then
-                export TARGET_FIREFOX="1"
-            else
-                export TARGET_FIREFOX="0"
-            fi
+            interactive_firefox_pick
         fi
     fi
 
