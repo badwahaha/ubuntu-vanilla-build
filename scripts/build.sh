@@ -125,6 +125,7 @@ function set_defaults() {
     export TARGET_KERNEL_FLAVOR="${TARGET_KERNEL_FLAVOR:-}"
     export TARGET_KERNEL_PACKAGE="${TARGET_KERNEL_PACKAGE:-}"
     export TARGET_DESKTOP="${TARGET_DESKTOP:-}"
+    export TARGET_KDE_PACKAGE="${TARGET_KDE_PACKAGE:-}"
     export TARGET_BROWSER="${TARGET_BROWSER:-}"
     export TARGET_BRAVE_CHANNEL="${TARGET_BRAVE_CHANNEL:-}"
     # TARGET_LIBREWOLF, TARGET_FIREFOX, TARGET_UBUNTU_STUDIO: intentionally left
@@ -176,6 +177,11 @@ function default_target_name() {
 function normalize_desktop_variant() {
     local desktop="${TARGET_DESKTOP:-gnome}"
     desktop="${desktop,,}"
+    case "$desktop" in
+        kde)
+            desktop="kde-plasma"
+            ;;
+    esac
     if [[ ! "$desktop" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
         >&2 echo "TARGET_DESKTOP must be a slug like gnome, xfce, or kde-plasma (got: '${TARGET_DESKTOP:-}')."
         exit 1
@@ -343,6 +349,19 @@ function customize_image() {
                 slick-greeter \
                 labwc
             ;;
+        kde-plasma)
+            echo "=====> desktop flavor: kde-plasma"
+            case "${TARGET_KDE_PACKAGE:-kde-standard}" in
+                kde-full|kde-standard|kde-plasma-desktop)
+                    echo "=====> KDE package: ${TARGET_KDE_PACKAGE:-kde-standard}"
+                    apt-get install -y "${TARGET_KDE_PACKAGE:-kde-standard}"
+                    ;;
+                *)
+                    >&2 echo "TARGET_KDE_PACKAGE must be kde-full, kde-standard, or kde-plasma-desktop (got: '${TARGET_KDE_PACKAGE:-}')."
+                    exit 1
+                    ;;
+            esac
+            ;;
         *)
             >&2 echo "Unsupported desktop variant '${TARGET_DESKTOP:-}'. Add install logic for this variant in customize_image()."
             exit 1
@@ -484,6 +503,14 @@ function check_settings() {
             exit 1
             ;;
     esac
+    case "${TARGET_KDE_PACKAGE:-kde-standard}" in
+        kde-full|kde-standard|kde-plasma-desktop)
+            ;;
+        *)
+            >&2 echo "TARGET_KDE_PACKAGE must be kde-full, kde-standard, or kde-plasma-desktop (got: '${TARGET_KDE_PACKAGE:-}')."
+            exit 1
+            ;;
+    esac
     case "${TARGET_BROWSER:-}" in
         ""|release|origin-beta)
             ;;
@@ -543,6 +570,7 @@ function host_help() {
     echo "  UBUNTU_VANILLA_WORKSPACE=DIR             Parent directory for build workspace (optional; auto on WSL /mnt/c)"
     echo "  TARGET_INSTALLER=calamares|ubiquity       Live installer (optional; default calamares)"
     echo "  TARGET_DESKTOP=<desktop>                  Desktop variant slug (optional; default gnome)"
+    echo "  TARGET_KDE_PACKAGE=kde-full|kde-standard|kde-plasma-desktop  KDE package when desktop is kde-plasma (optional; default kde-standard)"
     echo "  TARGET_BRAVE_CHANNEL=none|release|origin-beta   Pre-install Brave build (both Brave APT repos always added)"
     echo "  TARGET_BROWSER=release|origin-beta               Legacy alias for Brave channel if TARGET_BRAVE_CHANNEL unset"
     echo "  TARGET_LIBREWOLF=0|1                    Pre-install Librewolf (optional; default 0; repo always added)"
@@ -552,12 +580,12 @@ function host_help() {
     echo "  --kernel=generic|lowlatency             Kernel type to install"
     echo "  --installer=calamares|ubiquity           Calamares (default), or Ubiquity (jammy/22.04 only)"
     echo "  --desktop=<desktop>                      Desktop variant to install"
+    echo "  --kde=kde-full|kde-standard|kde-plasma-desktop  KDE package tier (used with --desktop=kde-plasma)"
     echo "  --brave=none|release|origin-beta       Brave channel (default release; none skips Brave)"
     echo "  --browser=release|origin-beta            Same as --brave for the two Brave archives (legacy)"
     echo "  --librewolf / --no-librewolf             Pre-install Librewolf (APT repo always configured)"
     echo "  --firefox / --no-firefox               Pre-install Firefox (Mozilla APT always configured)"
     echo "  --ubuntu-studio / --no-ubuntu-studio     Ubuntu Studio metapackage set (heavy)"
-    echo "  -i, --interactive                       Ask for release, installer, kernel, desktop, Brave extras (Librewolf/Firefox)"
     echo
     echo "Syntax: $0 [options] [start_cmd] [-] [end_cmd]"
     echo "  Run from start_cmd to end_cmd"
@@ -710,6 +738,7 @@ function run_chroot() {
         TARGET_KERNEL_FLAVOR="${TARGET_KERNEL_FLAVOR:-}" \
         TARGET_KERNEL_PACKAGE="${TARGET_KERNEL_PACKAGE:-}" \
         TARGET_DESKTOP="${TARGET_DESKTOP:-gnome}" \
+        TARGET_KDE_PACKAGE="${TARGET_KDE_PACKAGE:-kde-standard}" \
         TARGET_BROWSER="${TARGET_BROWSER:-}" \
         TARGET_BRAVE_CHANNEL="${TARGET_BRAVE_CHANNEL:-release}" \
         TARGET_LIBREWOLF="${TARGET_LIBREWOLF:-0}" \
@@ -923,20 +952,22 @@ function resolve_kernel_choice() {
 
 function interactive_desktop_pick() {
     if [[ ! -t 0 ]]; then
-                ui_err "No terminal is available. Use --desktop=<desktop> (e.g. gnome or xfce)."
+        ui_err "No terminal is available. Use --desktop=<desktop> (e.g. gnome, xfce, or kde-plasma)."
         exit 1
     fi
 
     ui_heading "Desktop environment"
     echo "    1) GNOME    Default. vanilla-gnome-desktop (recommends asked next)"
     echo "    2) XFCE     Lighter. xfce4 + xfce4-goodies + lightdm + slick-greeter"
+    echo "    3) KDE      Plasma desktop (choose kde-full / kde-standard / kde-plasma-desktop next)"
 
     local choice
     while true; do
-        read -r -p "  Desktop [1/2, Enter=1]: " choice
+        read -r -p "  Desktop [1/2/3, Enter=1]: " choice
         case "${choice,,}" in
             ""|1|g|gnome)   export TARGET_DESKTOP="gnome";   break ;;
             2|x|xfce)       export TARGET_DESKTOP="xfce";    break ;;
+            3|k|kde|kde-plasma) export TARGET_DESKTOP="kde-plasma"; break ;;
             *) ui_warn "Invalid selection: '$choice'." ;;
         esac
     done
@@ -954,6 +985,48 @@ function resolve_desktop_choice() {
     fi
 
     export TARGET_DESKTOP=gnome
+}
+
+function interactive_kde_package_pick() {
+    if [[ ! -t 0 ]]; then
+        ui_err "No terminal is available. Use --kde=kde-full|kde-standard|kde-plasma-desktop."
+        exit 1
+    fi
+
+    ui_heading "KDE package selection"
+    echo "    1) kde-standard        Balanced KDE software set  [default]"
+    echo "    2) kde-plasma-desktop  Minimal KDE Plasma desktop"
+    echo "    3) kde-full            Full KDE software collection"
+
+    local choice
+    while true; do
+        read -r -p "  KDE package [1/2/3, Enter=1]: " choice
+        case "${choice,,}" in
+            ""|1|kde-standard|standard) export TARGET_KDE_PACKAGE="kde-standard"; break ;;
+            2|kde-plasma-desktop|plasma|minimal) export TARGET_KDE_PACKAGE="kde-plasma-desktop"; break ;;
+            3|kde-full|full) export TARGET_KDE_PACKAGE="kde-full"; break ;;
+            *) ui_warn "Invalid selection: '$choice'." ;;
+        esac
+    done
+    ui_ok "TARGET_KDE_PACKAGE=$TARGET_KDE_PACKAGE"
+}
+
+function resolve_kde_package_choice() {
+    if [[ "${TARGET_DESKTOP:-gnome}" != "kde-plasma" ]]; then
+        export TARGET_KDE_PACKAGE="kde-standard"
+        return 0
+    fi
+
+    if [[ -n "${TARGET_KDE_PACKAGE:-}" ]]; then
+        return 0
+    fi
+
+    if [[ -t 0 ]]; then
+        interactive_kde_package_pick
+        return 0
+    fi
+
+    export TARGET_KDE_PACKAGE="kde-standard"
 }
 
 function interactive_gnome_recommends_pick() {
@@ -1250,6 +1323,7 @@ function print_build_summary() {
     ui_kv "Desktop"         "${TARGET_DESKTOP:-?}"
     case "${TARGET_DESKTOP:-}" in
         gnome)  ui_kv "  with Recommends" "${TARGET_GNOME_INSTALL_RECOMMENDS:-0}" ;;
+        kde-plasma) ui_kv "  KDE package" "${TARGET_KDE_PACKAGE:-kde-standard}" ;;
     esac
     ui_kv "Installer"       "${TARGET_INSTALLER:-?}"
     local _bs=""
@@ -1300,12 +1374,12 @@ function print_build_result() {
 }
 
 function host_main() {
-    local interactive=0
     local cli_kernel=""
     local cli_release=""
     local cli_mirror=""
     local cli_installer=""
     local cli_desktop=""
+    local cli_kde=""
     local cli_browser=""
     local cli_brave=""
     local cli_librewolf_set=0
@@ -1344,10 +1418,6 @@ function host_main() {
                 cli_mirror="$2"
                 shift 2
                 ;;
-            -i|--interactive)
-                interactive=1
-                shift
-                ;;
             --installer=calamares|--installer=ubiquity)
                 cli_installer="${1#--installer=}"
                 shift
@@ -1362,6 +1432,14 @@ function host_main() {
                 ;;
             --desktop)
                 cli_desktop="$2"
+                shift 2
+                ;;
+            --kde=kde-full|--kde=kde-standard|--kde=kde-plasma-desktop)
+                cli_kde="${1#--kde=}"
+                shift
+                ;;
+            --kde)
+                cli_kde="$2"
                 shift 2
                 ;;
             --browser=release|--browser=origin-beta)
@@ -1450,6 +1528,9 @@ function host_main() {
     if [[ -n "$cli_desktop" ]]; then
         export TARGET_DESKTOP="$cli_desktop"
     fi
+    if [[ -n "$cli_kde" ]]; then
+        export TARGET_KDE_PACKAGE="$cli_kde"
+    fi
     if [[ -n "$cli_browser" ]]; then
         export TARGET_BROWSER="$cli_browser"
     fi
@@ -1466,21 +1547,21 @@ function host_main() {
         export TARGET_UBUNTU_STUDIO="$cli_ubuntustudio"
     fi
 
-    if [[ "$interactive" -eq 1 || -z "${TARGET_UBUNTU_VERSION:-}" ]]; then
+    if [[ -z "${TARGET_UBUNTU_VERSION:-}" ]]; then
         resolve_release_choice
     fi
 
-    if [[ "$interactive" -eq 1 || -z "${TARGET_INSTALLER:-}" ]]; then
+    if [[ -z "${TARGET_INSTALLER:-}" ]]; then
         resolve_installer_choice
     fi
     set_installer_and_manifest_defaults
 
     validate_ubiquity_jammy_only
 
-    if [[ "$interactive" -eq 1 || -z "${TARGET_KERNEL_FLAVOR:-}" ]]; then
+    if [[ -z "${TARGET_KERNEL_FLAVOR:-}" ]]; then
         resolve_kernel_choice
     fi
-    if [[ "$interactive" -eq 1 || -z "${TARGET_DESKTOP:-}" ]]; then
+    if [[ -z "${TARGET_DESKTOP:-}" ]]; then
         resolve_desktop_choice
     fi
     normalize_desktop_variant
@@ -1488,9 +1569,10 @@ function host_main() {
         export TARGET_NAME
         TARGET_NAME="$(default_target_name)"
     fi
-    if [[ "$interactive" -eq 1 || -z "${TARGET_GNOME_INSTALL_RECOMMENDS:-}" ]]; then
+    if [[ -z "${TARGET_GNOME_INSTALL_RECOMMENDS:-}" ]]; then
         resolve_gnome_recommends_choice
     fi
+    resolve_kde_package_choice
     resolve_browser_selection
     resolve_ubuntu_studio_choice
 
@@ -1865,6 +1947,7 @@ function chroot_main() {
     set_defaults
     set_installer_and_manifest_defaults
     export TARGET_DESKTOP="${TARGET_DESKTOP:-gnome}"
+    export TARGET_KDE_PACKAGE="${TARGET_KDE_PACKAGE:-kde-standard}"
     normalize_desktop_variant
     if [[ -n "${TARGET_BROWSER:-}" && -z "${TARGET_BRAVE_CHANNEL:-}" ]]; then
         export TARGET_BRAVE_CHANNEL="$TARGET_BROWSER"

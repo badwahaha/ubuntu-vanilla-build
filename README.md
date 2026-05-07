@@ -13,6 +13,7 @@ This project is designed for:
 - Desktop choices:
   - `gnome` (default, based on `vanilla-gnome-desktop`)
   - `xfce` (Xubuntu-like functional stack, without `xubuntu-*` branding packages)
+  - `kde-plasma` (KDE Plasma with selectable APT metapackage: `kde-full`, `kde-standard`, or `kde-plasma-desktop`)
   - Additional variants can be added by extending desktop install logic in `scripts/build.sh`.
 - Installer choices:
   - `calamares` (default, all supported releases)
@@ -65,10 +66,10 @@ Pipeline:
 
 1. Clone this repository.
 2. Open terminal and go to `scripts/`.
-3. Run interactive build:
+3. Run build:
 
 ```bash
-./build.sh -i -
+./build.sh -
 ```
 
 If you prefer fewer prompts, provide required non-interactive arguments:
@@ -88,6 +89,15 @@ If you prefer fewer prompts, provide required non-interactive arguments:
 
 # Jammy + Calamares + XFCE
 ./build.sh --release=jammy --kernel=generic --installer=calamares --desktop=xfce -
+
+# Jammy + KDE Plasma desktop using the standard package set
+./build.sh --release=jammy --kernel=generic --desktop=kde-plasma --kde=kde-standard -
+
+# Noble + KDE Plasma desktop with full KDE package set
+./build.sh --release=noble --kernel=generic --desktop=kde-plasma --kde=kde-full -
+
+# Resolute + KDE Plasma desktop with minimal package set
+./build.sh --release=resolute --kernel=generic --desktop=kde-plasma --kde=kde-plasma-desktop -
 
 # Jammy + GNOME + Librewolf and Firefox preinstalled
 ./build.sh --release=jammy --kernel=generic --desktop=gnome --librewolf --firefox -
@@ -128,12 +138,15 @@ TARGET_GNOME_INSTALL_RECOMMENDS=1 ./build.sh --release=resolute --kernel=generic
 
 ## Interactive Prompts
 
+The script is interactive by default on a TTY when required values are missing (no `-i`/`--interactive` flag is used).
+
 When running with a TTY and values are not pre-set, script can ask for:
 
 - Release (`jammy`/`noble`/`resolute`)
 - Installer (`calamares`/`ubiquity`, with release validation)
 - Kernel flavor (`generic`/`lowlatency`)
-- Desktop (`gnome`/`xfce`)
+- Desktop (`gnome`/`xfce`/`kde-plasma`)
+- KDE package tier when desktop is `kde-plasma` (`kde-standard`/`kde-plasma-desktop`/`kde-full`)
 - GNOME recommends toggle (GNOME only)
 - Brave channel (`release`/`origin-beta`/`none`)
 - Librewolf preinstall toggle
@@ -158,13 +171,13 @@ Defaults when not explicitly set:
 - `--mirror=URL`
 - `--kernel=generic|lowlatency`
 - `--installer=calamares|ubiquity`
-- `--desktop=<desktop>` (currently implemented: `gnome`, `xfce`)
+- `--desktop=<desktop>` (currently implemented: `gnome`, `xfce`, `kde-plasma`)
+- `--kde=kde-full|kde-standard|kde-plasma-desktop` (used with `--desktop=kde-plasma`; default `kde-standard`)
 - `--brave=none|release|origin-beta`
 - `--browser=release|origin-beta` (legacy alias for Brave selection)
 - `--librewolf` / `--no-librewolf`
 - `--firefox` / `--no-firefox`
 - `--ubuntu-studio` / `--no-ubuntu-studio`
-- `-i`, `--interactive`
 
 Advanced execution syntax:
 
@@ -191,6 +204,7 @@ Main variables:
 - `TARGET_KERNEL_PACKAGE` (advanced override)
 - `TARGET_INSTALLER`
 - `TARGET_DESKTOP`
+- `TARGET_KDE_PACKAGE` (`kde-full|kde-standard|kde-plasma-desktop`, for `TARGET_DESKTOP=kde-plasma`)
 - `TARGET_BRAVE_CHANNEL`
 - `TARGET_BROWSER` (legacy Brave alias if `TARGET_BRAVE_CHANNEL` unset)
 - `TARGET_LIBREWOLF=0|1`
@@ -216,6 +230,7 @@ Main variables:
 - **Calamares**: project config from `scripts/calamares` is used.
 - **Kernel**: HWE metapackage resolved by release + selected flavor (unless `TARGET_KERNEL_PACKAGE` is explicitly provided).
 - **XFCE profile**: installs functional XFCE stack and utilities while excluding `xubuntu-*` branding packages.
+- **KDE profile**: installs one selected KDE metapackage (`kde-full`, `kde-standard`, or `kde-plasma-desktop`).
 - **Browsers**: repositories are always configured; flags only control pre-install into live filesystem.
 - **Pacstall**: installed unconditionally via official script.
 - **Ubuntu Studio**: optional heavy package set; unavailable/snap-pulling dependencies are skipped with logs.
