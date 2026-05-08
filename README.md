@@ -13,7 +13,7 @@ This project is designed for:
 - Desktop choices:
   - `gnome` (default, based on `vanilla-gnome-desktop`)
   - `xfce` (Xubuntu-like functional stack, without `xubuntu-*` branding packages; includes `labwc` for Wayland)
-  - `lxde` (lightweight LXDE stack with `lightdm` and `slick-greeter`, for low-spec systems)
+  - `lxde` (lightweight LXDE stack with `lightdm` and `slick-greeter`, for low-spec systems; see **LXDE + Calamares** below if the installed system only offers Openbox until you go online)
   - `lxqt` (LXQt via `lxqt` + `sddm` + `xorg`; no `lubuntu-desktop` / Lubuntu branding metapackages)
   - `mate` (`mate-desktop-environment` or lighter `mate-desktop-environment-core`, plus optional `mate-desktop-environment-extras`; `lightdm` + `slick-greeter`)
   - `cinnamon` (`cinnamon-desktop-environment` with `lightdm` and `slick-greeter`)
@@ -256,10 +256,11 @@ Main variables:
 ## Package and Policy Details
 
 - **No Snap**: `snapd` blocked via APT pinning (`Pin-Priority: -1`).
-- **Calamares**: project config from `scripts/calamares` is used.
+- **Calamares**: project config from `scripts/calamares` is used. For the **LXDE** desktop variant, Calamares runs an extra step (`shellprocess@lxde-repair`) when the live image looks like an Openbox-based LXDE build but the **LXDE** session is missing on the target (for example you only see **Openbox** at the login session menu after install). That step runs `apt-get update` and then `apt-get install --no-install-recommends lxde` inside the target root. **It only applies `lxde` when the machine has working network during install** (offline installs skip the repair and the installer still completes). If you installed offline, see **LXDE ISO bug (Openbox-only until you’re online)** below.
 - **Kernel**: HWE metapackage resolved by release + selected flavor (unless `TARGET_KERNEL_PACKAGE` is explicitly provided).
 - **XFCE profile**: installs functional XFCE stack and utilities while excluding `xubuntu-*` branding packages; includes `labwc` for optional Wayland sessions.
 - **LXDE profile**: installs the `lxde` metapackage with `xorg`, `lightdm`, and `slick-greeter`.
+- **LXDE + Calamares**: the repair step above is the supported workaround when the unpacked system does not get a full **LXDE** session; it requires **Internet during Calamares** to run `apt` successfully.
 - **LXQt profile**: installs `lxqt`, `sddm`, and `xorg` (upstream-style stack without `lubuntu-desktop` / Lubuntu branding metapackages).
 - **MATE profile**: installs `mate-desktop-environment` or `mate-desktop-environment-core` (your choice), with `xorg`, `lightdm`, and `slick-greeter`. Optionally adds `mate-desktop-environment-extras` when enabled (`TARGET_MATE_EXTRAS=1`, `--mate-extras`, or the interactive prompt).
 - **Cinnamon profile**: installs `cinnamon-desktop-environment` with `xorg`, `lightdm`, and `slick-greeter`.
@@ -285,6 +286,21 @@ sha1sum -c "${TARGET_NAME:-ubuntu-<yy>.04-<desktop>-amd64}.iso.sha1"
 - **Debian host keyring error**: install `ubuntu-archive-keyring`.
 - **Build on WSL Windows mount fails/unreliable**: keep repo on Linux filesystem or rely on workspace auto-relocation.
 - **Missing package in chosen release**: script logs and skips unavailable/uninstallable packages where applicable.
+- **LXDE installed system shows only Openbox**: connect during Calamares so the LXDE repair step can reach the mirrors, or after boot run `sudo apt update && sudo apt install lxde` (see **Package and Policy Details** → Calamares).
+
+## LXDE ISO bug (Openbox-only until you’re online)
+If you install an **LXDE** ISO while the installer machine is **offline**, the system may end up booting to **Openbox only** (instead of an LXDE session).
+
+Fix after you get internet:
+1. Boot into the installed system and enter the **Openbox** session.
+2. Open a terminal and run:
+   - `sudo apt update`
+   - `sudo apt install --no-install-recommends lxde`
+3. Log out (or reboot).
+4. At the login screen, select **LXDE Session**, then log in again.
+
+If the taskbar/right-side panel looks wrong or missing:
+- In the LXDE panel, remove the applets **Desktop Pager** and **Desktop Spacer** (right-click the panel -> Edit Panel/Panel Preferences -> delete those applets).
 
 ## License
 

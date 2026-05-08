@@ -50,12 +50,12 @@ Presentation
 
     Slide
     {
-        centeredText: qsTr( "This build is unofficial and has vanilla desktop experience. More lighter than the original which comes with Snap." )
+        centeredText: qsTr( "This is an unofficial image: snapd is blocked by APT policy here, unlike default Ubuntu Desktop which ships Snap integration out of the box." )
     }
 
     Slide
     {
-        centeredText: qsTr( "Vanilla desktop: a full-featured, stock desktop experience without a flavor's extra packages or layout changes." )
+        centeredText: qsTr( "The desktop on this ISO matches how it was built—for example GNOME images use vanilla-gnome-desktop instead of ubuntu-desktop; other builds install XFCE, KDE Plasma, MATE, Cinnamon, Budgie, or LXDE/LXQt stacks as selected, without snapd." )
     }
 
     Slide
@@ -65,12 +65,12 @@ Presentation
 
     Slide
     {
-        centeredText: qsTr( "Flatpak is installed by default, and APT is set up for Brave, Librewolf, and Firefox; Pacstall is installed via the official installer for AUR-style packages. Browsers already on the live image are kept on the installed system." )
+        centeredText: qsTr( "Flatpak with Flathub is installed. Vendor APT sources for Brave (release and beta), Librewolf, and Mozilla Firefox are always configured; which of those browsers are preinstalled depends on how this ISO was built. Pacstall is installed via the upstream official script. Browsers present on the live system are kept after installation." )
     }
 
     Slide
     {
-        centeredText: qsTr( "Hardware enablement: the selected HWE kernel is installed with its recommended firmware and microcode, so recent CPUs and devices are supported out of the box." )
+        centeredText: qsTr( "The Ubuntu HWE kernel metapackage for this release is installed (generic or low-latency, per build) with recommended packages, including firmware and CPU microcode where Ubuntu provides them for that kernel." )
     }
 
     Slide
@@ -85,7 +85,7 @@ Presentation
 
     Slide
     {
-        centeredText: qsTr( "A curated locale list keeps the welcome and language step quick; the language pack and hunspell dictionary for your chosen locale are added to the new system automatically." )
+        centeredText: qsTr( "A curated locale list keeps the language step responsive; the installer then adds language packs, hunspell data, and LibreOffice localization for your locale when those packages exist." )
     }
 
     Slide
