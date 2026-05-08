@@ -256,7 +256,12 @@ Main variables:
 ## Package and Policy Details
 
 - **No Snap**: `snapd` blocked via APT pinning (`Pin-Priority: -1`).
-- **Calamares**: project config from `scripts/calamares` is used. For the **LXDE** desktop variant, Calamares runs an extra step (`shellprocess@lxde-repair`) when the live image looks like an Openbox-based LXDE build but the **LXDE** session is missing on the target (for example you only see **Openbox** at the login session menu after install). That step runs `apt-get update` and then `apt-get install --no-install-recommends lxde` inside the target root. **It only applies `lxde` when the machine has working network during install** (offline installs skip the repair and the installer still completes). If you installed offline, see **LXDE ISO bug (Openbox-only until you’re online)** below.
+- **Calamares**: project config from `scripts/calamares` is used.
+- **Calamares install type**: installer now includes an **Installation Type** step:
+  - `Full installation` keeps the live-image desktop profile.
+  - `Minimal installation` applies target-side package operations inside the installed root (post-`unpackfs`) to keep a core system + networking tools (`netplan.io`, `network-manager`, `network-manager-gnome`, `wpasupplicant`, `wireless-regdb`) and remove full desktop environment stacks.
+  - This behavior is installer-driven and separate from the manual debootstrap workflow documented in `install-arch-way/README.md`.
+- **LXDE + Calamares repair**: for the **LXDE** desktop variant, Calamares runs an extra step (`shellprocess@lxde-repair`) when the live image looks like an Openbox-based LXDE build but the **LXDE** session is missing on the target (for example you only see **Openbox** at the login session menu after install). That step runs `apt-get update` and then `apt-get install --no-install-recommends lxde` inside the target root. **It only applies `lxde` when the machine has working network during install** (offline installs skip the repair and the installer still completes). If you installed offline, see **LXDE ISO bug (Openbox-only until you’re online)** below.
 - **Kernel**: HWE metapackage resolved by release + selected flavor (unless `TARGET_KERNEL_PACKAGE` is explicitly provided).
 - **XFCE profile**: installs functional XFCE stack and utilities while excluding `xubuntu-*` branding packages; includes `labwc` for optional Wayland sessions.
 - **LXDE profile**: installs the `lxde` metapackage with `xorg`, `lightdm`, and `slick-greeter`.

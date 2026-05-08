@@ -75,6 +75,11 @@ Presentation
 
     Slide
     {
+        centeredText: qsTr( "Calamares now offers Full or Minimal install. Minimal keeps a core base with networking tools only and removes full desktop environments, while Full preserves the complete live-image desktop stack." )
+    }
+
+    Slide
+    {
         centeredText: qsTr( "Full-disk encryption with LUKS2 is offered straight from the partitioning step; pick the encrypted layout and the boot partition stays separate so GRUB can still start." )
     }
 
