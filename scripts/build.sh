@@ -89,6 +89,70 @@ function ui_confirm() {
     done
 }
 
+# assert_bool_var VAR_NAME [DEFAULT]  — validate that $VAR_NAME is 0 or 1.
+function assert_bool_var() {
+    local name="$1" default="${2:-0}"
+    local val="${!name:-$default}"
+    case "$val" in
+        0|1) ;;
+        *)
+            >&2 echo "${name} must be 0 or 1 (got: '${val}')."
+            exit 1
+            ;;
+    esac
+}
+
+# cmd_find_index CMD ARRAY_NAME HELP_FN  — set $index to the position of CMD in
+# the named array, or call HELP_FN with an error message if not found.
+function cmd_find_index() {
+    local cmd="$1" arr_name="$2" help_fn="$3"
+    local -n _arr="$arr_name"
+    local i
+    for ((i=0; i<${#_arr[*]}; i++)); do
+        if [[ "${_arr[i]}" == "$cmd" ]]; then
+            index=$i
+            return
+        fi
+    done
+    "$help_fn" "Command not found: $cmd"
+}
+
+# parse_cmd_range ARRAY_NAME HELP_FN ARGS...  — compute start_index / end_index
+# from the [start_cmd] [-] [end_cmd] syntax used by both host and chroot phases.
+# Sets shell variables: start_index, end_index.
+function parse_cmd_range() {
+    local arr_name="$1" help_fn="$2"
+    shift 2
+    local -n _arr="$arr_name"
+
+    if [[ $# == 0 ]]; then
+        set -- "-"
+    fi
+    if [[ $# -gt 3 ]]; then
+        "$help_fn"
+    fi
+
+    local dash_flag=false
+    start_index=0
+    end_index=${#_arr[*]}
+    local ii
+    for ii in "$@"; do
+        if [[ $ii == "-" ]]; then
+            dash_flag=true
+            continue
+        fi
+        cmd_find_index "$ii" "$arr_name" "$help_fn"
+        if [[ $dash_flag == false ]]; then
+            start_index=$index
+        else
+            end_index=$((index + 1))
+        fi
+    done
+    if [[ $dash_flag == false ]]; then
+        end_index=$((start_index + 1))
+    fi
+}
+
 # Host (outside chroot): prepare tree, debootstrap, run chroot phase, squashfs + ISO
 HOST_CMD=(setup_host debootstrap run_chroot build_iso)
 
@@ -150,7 +214,9 @@ function set_installer_and_manifest_defaults() {
     export TARGET_PACKAGE_REMOVE="${TARGET_PACKAGE_REMOVE:-$(default_target_package_remove)}"
 }
 
-function hwe_version_for_release() {
+# Canonical release-codename-to-version map. Used for HWE suffix, ISO naming,
+# and branding. Returns "" for unknown codenames.
+function release_version() {
     case "$1" in
         jammy)    echo "22.04" ;;
         noble)    echo "24.04" ;;
@@ -159,18 +225,9 @@ function hwe_version_for_release() {
     esac
 }
 
-function release_version_for_iso_name() {
-    case "$1" in
-        jammy)    echo "22.04" ;;
-        noble)    echo "24.04" ;;
-        resolute) echo "26.04" ;;
-        *)        echo "00.00" ;;
-    esac
-}
-
 function default_target_name() {
     local version desktop
-    version="$(release_version_for_iso_name "${TARGET_UBUNTU_VERSION:-}")"
+    version="$(release_version "${TARGET_UBUNTU_VERSION:-}")"
     desktop="${TARGET_DESKTOP:-gnome}"
     echo "ubuntu-${version}-${desktop}-amd64"
 }
@@ -218,7 +275,7 @@ function set_target_kernel_package_from_flavor() {
     esac
 
     local hv
-    hv="$(hwe_version_for_release "$TARGET_UBUNTU_VERSION")"
+    hv="$(release_version "$TARGET_UBUNTU_VERSION")"
     if [[ -z "$hv" ]]; then
         >&2 echo "Internal error: no HWE suffix for TARGET_UBUNTU_VERSION='$TARGET_UBUNTU_VERSION'."
         exit 1
@@ -292,6 +349,11 @@ function apt_install_available() {
     fi
 }
 
+# install_lightdm_desktop PKG...  — install desktop packages with xorg + lightdm + slick-greeter.
+function install_lightdm_desktop() {
+    apt-get install -y "$@" xorg lightdm slick-greeter
+}
+
 function customize_image() {
     block_snapd
 
@@ -312,7 +374,7 @@ function customize_image() {
             # (no xubuntu-default-settings, xubuntu-artwork, xubuntu-wallpapers*,
             # xubuntu-icon-theme, xubuntu-docs, xubuntu-community-*).
             # labwc provides a lightweight Wayland compositor for optional Wayland sessions.
-            apt-get install -y \
+            install_lightdm_desktop \
                 xfce4 \
                 xfce4-goodies \
                 xfce4-terminal \
@@ -346,19 +408,12 @@ function customize_image() {
                 fonts-noto-core \
                 hunspell-en-us \
                 onboard \
-                xorg \
-                lightdm \
-                slick-greeter \
                 labwc
             ;;
         lxde)
             echo "=====> desktop flavor: lxde"
             # Legacy LXDE stack (Openbox + PCManFM + lxpanel); lighter than XFCE for low-spec hardware.
-            apt-get install -y \
-                lxde \
-                xorg \
-                lightdm \
-                slick-greeter
+            install_lightdm_desktop lxde
             ;;
         lxqt)
             echo "=====> desktop flavor: lxqt"
@@ -371,11 +426,7 @@ function customize_image() {
         mate)
             echo "=====> desktop flavor: mate"
             echo "=====> MATE metapackage: ${TARGET_MATE_PACKAGE:-mate-desktop-environment}"
-            apt-get install -y \
-                "${TARGET_MATE_PACKAGE:-mate-desktop-environment}" \
-                xorg \
-                lightdm \
-                slick-greeter
+            install_lightdm_desktop "${TARGET_MATE_PACKAGE:-mate-desktop-environment}"
             if [[ "${TARGET_MATE_EXTRAS:-0}" == "1" ]]; then
                 echo "=====> MATE extras: mate-desktop-environment-extras"
                 apt-get install -y mate-desktop-environment-extras
@@ -383,19 +434,11 @@ function customize_image() {
             ;;
         cinnamon)
             echo "=====> desktop flavor: cinnamon"
-            apt-get install -y \
-                cinnamon-desktop-environment \
-                xorg \
-                lightdm \
-                slick-greeter
+            install_lightdm_desktop cinnamon-desktop-environment
             ;;
         budgie)
             echo "=====> desktop flavor: budgie"
-            apt-get install -y \
-                budgie-desktop-environment \
-                xorg \
-                lightdm \
-                slick-greeter
+            install_lightdm_desktop budgie-desktop-environment
             ;;
         kde-plasma)
             echo "=====> desktop flavor: kde-plasma"
@@ -569,14 +612,7 @@ function check_settings() {
         >&2 echo "TARGET_UBUNTU_MIRROR must be a valid http:// or https:// URL (got: '${TARGET_UBUNTU_MIRROR:-}')."
         exit 1
     fi
-    case "${TARGET_GNOME_INSTALL_RECOMMENDS:-0}" in
-        0|1)
-            ;;
-        *)
-            >&2 echo "TARGET_GNOME_INSTALL_RECOMMENDS must be 0 or 1 (got: '${TARGET_GNOME_INSTALL_RECOMMENDS:-}')."
-            exit 1
-            ;;
-    esac
+    assert_bool_var TARGET_GNOME_INSTALL_RECOMMENDS
     case "${TARGET_KDE_PACKAGE:-kde-standard}" in
         kde-full|kde-standard|kde-plasma-desktop)
             ;;
@@ -601,30 +637,9 @@ function check_settings() {
             exit 1
             ;;
     esac
-    case "${TARGET_LIBREWOLF:-0}" in
-        0|1)
-            ;;
-        *)
-            >&2 echo "TARGET_LIBREWOLF must be 0 or 1 (got: '${TARGET_LIBREWOLF:-}')."
-            exit 1
-            ;;
-    esac
-    case "${TARGET_FIREFOX:-0}" in
-        0|1)
-            ;;
-        *)
-            >&2 echo "TARGET_FIREFOX must be 0 or 1 (got: '${TARGET_FIREFOX:-}')."
-            exit 1
-            ;;
-    esac
-    case "${TARGET_UBUNTU_STUDIO:-0}" in
-        0|1)
-            ;;
-        *)
-            >&2 echo "TARGET_UBUNTU_STUDIO must be 0 or 1 (got: '${TARGET_UBUNTU_STUDIO:-}')."
-            exit 1
-            ;;
-    esac
+    assert_bool_var TARGET_LIBREWOLF
+    assert_bool_var TARGET_FIREFOX
+    assert_bool_var TARGET_UBUNTU_STUDIO
     if [[ "${TARGET_DESKTOP:-}" == "mate" ]]; then
         case "${TARGET_MATE_PACKAGE:-mate-desktop-environment}" in
             full)
@@ -642,14 +657,7 @@ function check_settings() {
                 exit 1
                 ;;
         esac
-        case "${TARGET_MATE_EXTRAS:-0}" in
-            0|1)
-                ;;
-            *)
-                >&2 echo "TARGET_MATE_EXTRAS must be 0 or 1 (got: '${TARGET_MATE_EXTRAS:-}')."
-                exit 1
-                ;;
-        esac
+        assert_bool_var TARGET_MATE_EXTRAS
     fi
 }
 
@@ -699,17 +707,6 @@ function host_help() {
     echo "  Use '-' by itself to run all commands explicitly"
     echo
     exit 0
-}
-
-function host_find_index() {
-    local i
-    for ((i=0; i<${#HOST_CMD[*]}; i++)); do
-        if [ "${HOST_CMD[i]}" == "$1" ]; then
-            index=$i
-            return
-        fi
-    done
-    host_help "Command not found: $1"
 }
 
 function check_host_user() {
@@ -799,20 +796,14 @@ function host_build_exit_trap() {
     exit "$_st"
 }
 
-function host_build_int_trap() {
+# host_build_signal_trap EXIT_CODE  — shared handler for INT (130) and TERM (143).
+function host_build_signal_trap() {
+    local code="$1"
     if [[ "${HOST_ABORT_CLEANUP_DONE:-0}" -eq 1 ]]; then
-        exit 130
+        exit "$code"
     fi
     host_abort_cleanup
-    exit 130
-}
-
-function host_build_term_trap() {
-    if [[ "${HOST_ABORT_CLEANUP_DONE:-0}" -eq 1 ]]; then
-        exit 143
-    fi
-    host_abort_cleanup
-    exit 143
+    exit "$code"
 }
 
 function setup_host() {
@@ -1026,7 +1017,7 @@ function interactive_kernel_pick() {
     fi
 
     local hv=""
-    hv="$(hwe_version_for_release "${TARGET_UBUNTU_VERSION:-}")"
+    hv="$(release_version "${TARGET_UBUNTU_VERSION:-}")"
 
     ui_heading "Kernel flavor${hv:+ (HWE stream for Ubuntu ${hv})}"
     printf '    1) generic     Recommended for most systems%s\n' \
@@ -1290,68 +1281,56 @@ function interactive_brave_channel_pick() {
     ui_ok "TARGET_BRAVE_CHANNEL=$TARGET_BRAVE_CHANNEL"
 }
 
-function interactive_librewolf_pick() {
+# interactive_toggle_pick VAR_NAME HEADING INSTALL_LABEL SKIP_LABEL PROMPT_LABEL
+#   Generic yes/no pre-install toggle. Default answer is "skip" (0).
+function interactive_toggle_pick() {
+    local var_name="$1" heading="$2" install_label="$3" skip_label="$4" prompt_label="$5"
+
     if [[ ! -t 0 ]]; then
-        ui_err "No terminal is available. Set TARGET_LIBREWOLF=0|1."
+        ui_err "No terminal is available. Set ${var_name}=0|1."
         exit 1
     fi
 
-    ui_heading "Librewolf"
-    echo "    1) Pre-install librewolf (repo is configured either way)"
-    echo "    2) Skip Librewolf  [default]"
+    ui_heading "$heading"
+    echo "    1) ${install_label}"
+    echo "    2) ${skip_label}  [default]"
 
     local choice
     while true; do
-        read -r -p "  Librewolf [1/2/3, Enter=2]: " choice
+        read -r -p "  ${prompt_label} [1/2/3, Enter=2]: " choice
         case "${choice,,}" in
             ""|2|n|no|off|skip|s)
-                export TARGET_LIBREWOLF="0"
+                export "$var_name"="0"
                 break
                 ;;
             1|y|yes|install|pre|on)
-                export TARGET_LIBREWOLF="1"
+                export "$var_name"="1"
                 break
                 ;;
             3|none)
-                export TARGET_LIBREWOLF="0"
+                export "$var_name"="0"
                 break
                 ;;
             *) ui_warn "Invalid selection: '$choice'." ;;
         esac
     done
-    ui_ok "TARGET_LIBREWOLF=$TARGET_LIBREWOLF"
+    ui_ok "${var_name}=${!var_name}"
+}
+
+function interactive_librewolf_pick() {
+    interactive_toggle_pick TARGET_LIBREWOLF \
+        "Librewolf" \
+        "Pre-install librewolf (repo is configured either way)" \
+        "Skip Librewolf" \
+        "Librewolf"
 }
 
 function interactive_firefox_pick() {
-    if [[ ! -t 0 ]]; then
-        ui_err "No terminal is available. Set TARGET_FIREFOX=0|1."
-        exit 1
-    fi
-
-    ui_heading "Firefox (Mozilla APT)"
-    echo "    1) Pre-install firefox (Mozilla repo + pin are configured either way)"
-    echo "    2) Skip Firefox  [default]"
-
-    local choice
-    while true; do
-        read -r -p "  Firefox [1/2/3, Enter=2]: " choice
-        case "${choice,,}" in
-            ""|2|n|no|off|skip|s)
-                export TARGET_FIREFOX="0"
-                break
-                ;;
-            1|y|yes|install|pre|on)
-                export TARGET_FIREFOX="1"
-                break
-                ;;
-            3|none)
-                export TARGET_FIREFOX="0"
-                break
-                ;;
-            *) ui_warn "Invalid selection: '$choice'." ;;
-        esac
-    done
-    ui_ok "TARGET_FIREFOX=$TARGET_FIREFOX"
+    interactive_toggle_pick TARGET_FIREFOX \
+        "Firefox (Mozilla APT)" \
+        "Pre-install firefox (Mozilla repo + pin are configured either way)" \
+        "Skip Firefox" \
+        "Firefox"
 }
 
 function resolve_browser_selection() {
@@ -1508,7 +1487,7 @@ function resolve_workspace_paths() {
 
 function print_build_summary() {
     local hv=""
-    hv="$(hwe_version_for_release "${TARGET_UBUNTU_VERSION:-}")"
+    hv="$(release_version "${TARGET_UBUNTU_VERSION:-}")"
 
     ui_heading "Build configuration"
     ui_kv "Ubuntu release"  "${TARGET_UBUNTU_VERSION:-?}${hv:+  (Ubuntu ${hv} LTS)}"
@@ -1728,8 +1707,8 @@ function host_main() {
     HOST_ABORT_CLEANUP_DONE=0
     CHROOT_MOUNTS_ACTIVE=0
     trap host_build_exit_trap EXIT
-    trap host_build_int_trap INT
-    trap host_build_term_trap TERM
+    trap 'host_build_signal_trap 130' INT
+    trap 'host_build_signal_trap 143' TERM
 
     if [[ -n "$cli_release" ]]; then
         export TARGET_UBUNTU_VERSION="$cli_release"
@@ -1805,34 +1784,8 @@ function host_main() {
     set_target_kernel_package_from_flavor
     check_host_user
 
-    # With no [start_cmd] [-] [end_cmd], run the full host pipeline (same as '-').
-    if [[ $# == 0 ]]; then
-        set -- "-"
-    fi
-
-    if [[ $# > 3 ]]; then
-        host_help
-    fi
-
-    local dash_flag=false
-    local start_index=0
-    local end_index=${#HOST_CMD[*]}
-    local ii
-    for ii in "$@"; do
-        if [[ $ii == "-" ]]; then
-            dash_flag=true
-            continue
-        fi
-        host_find_index "$ii"
-        if [[ $dash_flag == false ]]; then
-            start_index=$index
-        else
-            end_index=$((index + 1))
-        fi
-    done
-    if [[ $dash_flag == false ]]; then
-        end_index=$((start_index + 1))
-    fi
+    local start_index end_index
+    parse_cmd_range HOST_CMD host_help "$@"
 
     print_build_summary
     ui_info "Phases to run: ${HOST_CMD[*]:$start_index:$((end_index - start_index))}"
@@ -1868,17 +1821,6 @@ function chroot_help() {
     echo "Syntax: $0 --chroot-internal [start_cmd] [-] [end_cmd]"
     echo
     exit 0
-}
-
-function chroot_find_index() {
-    local i
-    for ((i=0; i<${#CHROOT_CMD[*]}; i++)); do
-        if [ "${CHROOT_CMD[i]}" == "$1" ]; then
-            index=$i
-            return
-        fi
-    done
-    chroot_help "Command not found: $1"
 }
 
 function check_chroot_root() {
@@ -1944,7 +1886,7 @@ function apply_calamares_custom_config() {
     # shows "Ubuntu 24.04 LTS" / "Ubuntu 26.04 LTS" instead of the stock Calamares default
     # ("Fancy GNU/Linux ..."). Matches calamares-settings-ubuntu's per-flavor branding approach.
     local ubuntu_version
-    ubuntu_version="$(hwe_version_for_release "$TARGET_UBUNTU_VERSION")"
+    ubuntu_version="$(release_version "$TARGET_UBUNTU_VERSION")"
     if [[ -z "$ubuntu_version" ]]; then
         >&2 echo "Internal error: no Ubuntu marketing version for TARGET_UBUNTU_VERSION='$TARGET_UBUNTU_VERSION'."
         exit 1
@@ -2205,29 +2147,8 @@ function chroot_main() {
     set_target_kernel_package_from_flavor
     check_chroot_root
 
-    if [[ $# == 0 || $# > 3 ]]; then
-        chroot_help
-    fi
-
-    local dash_flag=false
-    local start_index=0
-    local end_index=${#CHROOT_CMD[*]}
-    local ii
-    for ii in "$@"; do
-        if [[ $ii == "-" ]]; then
-            dash_flag=true
-            continue
-        fi
-        chroot_find_index "$ii"
-        if [[ $dash_flag == false ]]; then
-            start_index=$index
-        else
-            end_index=$((index + 1))
-        fi
-    done
-    if [[ $dash_flag == false ]]; then
-        end_index=$((start_index + 1))
-    fi
+    local start_index end_index
+    parse_cmd_range CHROOT_CMD chroot_help "$@"
 
     local i
     for ((i=start_index; i<end_index; i++)); do
