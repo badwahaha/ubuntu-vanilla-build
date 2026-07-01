@@ -502,7 +502,7 @@ EOF
     fi
     (
         export DEBIAN_FRONTEND=noninteractive
-        printf 'n\n' | env GITHUB_ACTIONS=true bash "$_pacstall_installer"
+        printf 'n\n' | env GITHUB_ACTIONS=true bash -e "$_pacstall_installer"
     )
     rm -f "$_pacstall_installer"
 
@@ -547,10 +547,19 @@ EOF
             gnome-sudoku
     fi
 
-    apt-get purge -y --ignore-missing \
-        ubiquity-slideshow-ubuntu \
-        calamares-slideshow-ubuntu \
-        || true
+    # These slideshow packages may not exist in the target release's repos at all
+    # (not just "not installed"). Filter to only packages dpkg knows about to avoid
+    # "Unable to locate package" errors that would obscure real failures.
+    local _purge_slideshow=()
+    local _pkg
+    for _pkg in ubiquity-slideshow-ubuntu calamares-slideshow-ubuntu; do
+        if dpkg -s "$_pkg" &>/dev/null; then
+            _purge_slideshow+=("$_pkg")
+        fi
+    done
+    if [[ ${#_purge_slideshow[@]} -gt 0 ]]; then
+        apt-get purge -y "${_purge_slideshow[@]}"
+    fi
 }
 
 function check_settings() {
@@ -756,11 +765,16 @@ function chroot_exit_teardown() {
     CHROOT_MOUNTS_ACTIVE=0
     [[ -z "${WORKSPACE_CHROOT:-}" ]] && return 0
     # Unmount from the host so we still unwind if chroot is unusable; order: inner mounts, then bind mounts.
-    host_priv umount -l "$WORKSPACE_CHROOT/dev/pts" 2>/dev/null || true
-    host_priv umount -l "$WORKSPACE_CHROOT/proc" 2>/dev/null || true
-    host_priv umount -l "$WORKSPACE_CHROOT/sys" 2>/dev/null || true
-    host_priv umount -l "$WORKSPACE_CHROOT/run" 2>/dev/null || true
-    host_priv umount -l "$WORKSPACE_CHROOT/dev" 2>/dev/null || true
+    local _mp _rc
+    for _mp in "$WORKSPACE_CHROOT/dev/pts" "$WORKSPACE_CHROOT/proc" "$WORKSPACE_CHROOT/sys" "$WORKSPACE_CHROOT/run" "$WORKSPACE_CHROOT/dev"; do
+        if mountpoint -q "$_mp" 2>/dev/null; then
+            _rc=0
+            host_priv umount -l "$_mp" 2>/dev/null || _rc=$?
+            if [[ $_rc -ne 0 ]]; then
+                echo "  WARN  umount -l '$_mp' failed (exit $_rc); mount may be stale" >&2
+            fi
+        fi
+    done
 }
 
 # On failed or interrupted host build: drop chroot mounts (if any) and remove the workspace tree so leftover
@@ -2117,6 +2131,13 @@ EOF
 #define TOTALNUM0  1
 EOF
 
+    local _efi_src
+    for _efi_src in /usr/lib/shim/shimx64.efi.signed.previous /usr/lib/shim/mmx64.efi /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed; do
+        if [[ ! -f "$_efi_src" ]]; then
+            echo "ERROR: Required EFI binary '$_efi_src' not found. Ensure shim-signed and grub-efi-amd64-signed are installed." >&2
+            exit 1
+        fi
+    done
     cp /usr/lib/shim/shimx64.efi.signed.previous EFI/boot/bootx64.efi
     cp /usr/lib/shim/mmx64.efi EFI/boot/mmx64.efi
     cp /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed EFI/boot/grubx64.efi
@@ -2144,7 +2165,10 @@ EOF
 
     cat /usr/lib/grub/i386-pc/cdboot.img boot/grub/core.img > boot/grub/bios.img
 
-    /bin/bash -c "(find . -type f -print0 | xargs -0 md5sum | grep -v -e 'boot/grub/efiboot.img' -e 'boot/grub/bios.img' > md5sum.txt)"
+    find . -type f -print0 \
+        | xargs -0 md5sum \
+        | grep -v -e 'boot/grub/efiboot.img' -e 'boot/grub/bios.img' -e 'md5sum.txt' \
+        > md5sum.txt
 
     popd >/dev/null
 }
