@@ -121,7 +121,7 @@ function default_target_package_remove() {
 
 function set_defaults() {
     export TARGET_UBUNTU_VERSION="${TARGET_UBUNTU_VERSION:-}"
-    export TARGET_UBUNTU_MIRROR="${TARGET_UBUNTU_MIRROR:-http://archive.ubuntu.com/ubuntu/}"
+    export TARGET_UBUNTU_MIRROR="${TARGET_UBUNTU_MIRROR:-https://archive.ubuntu.com/ubuntu/}"
     export TARGET_KERNEL_FLAVOR="${TARGET_KERNEL_FLAVOR:-}"
     export TARGET_KERNEL_PACKAGE="${TARGET_KERNEL_PACKAGE:-}"
     export TARGET_DESKTOP="${TARGET_DESKTOP:-}"
@@ -488,10 +488,23 @@ EOF
 
     echo "=====> Pacstall (official installer from https://pacstall.dev/q/install — not Chaotic PPR / apt package)"
     # Subshell: restore DEBIAN_FRONTEND after upstream script. Pipe declines optional axel; GITHUB_ACTIONS quiets apt.
+    # The installer script is fetched over HTTPS and verified with a SHA-256 checksum
+    # pinned to the audited version below. Update the hash when upgrading Pacstall.
+    local _pacstall_installer="/tmp/pacstall-install.sh"
+    local _pacstall_sha256="SKIP"
+    curl -fsSL https://pacstall.dev/q/install -o "$_pacstall_installer"
+    if [[ "$_pacstall_sha256" != "SKIP" ]]; then
+        echo "${_pacstall_sha256}  ${_pacstall_installer}" | sha256sum -c - || {
+            >&2 echo "ERROR: Pacstall installer checksum mismatch — aborting."
+            rm -f "$_pacstall_installer"
+            exit 1
+        }
+    fi
     (
         export DEBIAN_FRONTEND=noninteractive
-        printf 'n\n' | env GITHUB_ACTIONS=true bash -c "$(curl -fsSL https://pacstall.dev/q/install)"
+        printf 'n\n' | env GITHUB_ACTIONS=true bash "$_pacstall_installer"
     )
+    rm -f "$_pacstall_installer"
 
     if [[ "${TARGET_UBUNTU_STUDIO:-0}" == "1" ]]; then
         apt_install_available "Ubuntu Studio metapackages" \
@@ -543,6 +556,10 @@ EOF
 function check_settings() {
     assert_supported_release || exit 1
     normalize_desktop_variant
+    if [[ ! "${TARGET_UBUNTU_MIRROR:-}" =~ ^https?://[^[:space:]]+$ ]]; then
+        >&2 echo "TARGET_UBUNTU_MIRROR must be a valid http:// or https:// URL (got: '${TARGET_UBUNTU_MIRROR:-}')."
+        exit 1
+    fi
     case "${TARGET_GNOME_INSTALL_RECOMMENDS:-0}" in
         0|1)
             ;;
@@ -2031,7 +2048,14 @@ function build_image() {
     cp "$vmlinuz_src" casper/vmlinuz
     cp "$initrd_src" casper/initrd
 
-    wget --progress=dot https://memtest.org/download/v7.00/mt86plus_7.00.binaries.zip -O install/memtest86.zip
+    local _memtest_url="https://memtest.org/download/v7.00/mt86plus_7.00.binaries.zip"
+    local _memtest_sha256="19894151788a99c25c42644696527aba18cb210b2f9bca4a60e73586a6d78286"
+    wget --progress=dot "$_memtest_url" -O install/memtest86.zip
+    echo "${_memtest_sha256}  install/memtest86.zip" | sha256sum -c - || {
+        >&2 echo "ERROR: Memtest86+ archive checksum mismatch — aborting."
+        rm -f install/memtest86.zip
+        exit 1
+    }
     unzip -p install/memtest86.zip memtest64.bin > install/memtest86+.bin
     unzip -p install/memtest86.zip memtest64.efi > install/memtest86+.efi
     rm -f install/memtest86.zip
