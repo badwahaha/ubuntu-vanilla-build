@@ -193,7 +193,7 @@ function set_defaults() {
     export TARGET_MATE_PACKAGE="${TARGET_MATE_PACKAGE:-}"
     export TARGET_BROWSER="${TARGET_BROWSER:-}"
     export TARGET_BRAVE_CHANNEL="${TARGET_BRAVE_CHANNEL:-}"
-    # TARGET_LIBREWOLF, TARGET_FIREFOX, TARGET_UBUNTU_STUDIO: intentionally left
+    # TARGET_LIBREWOLF, TARGET_FIREFOX, TARGET_FIREFOX_ESR, TARGET_THUNDERBIRD, TARGET_UBUNTU_STUDIO: intentionally left
     # unset here so that resolve_browser_selection() and resolve_ubuntu_studio_choice()
     # can distinguish "user never specified" (unset) from "user explicitly set to 0/1"
     # via ${VAR+x}. Only env/CLI paths should set these.
@@ -464,15 +464,11 @@ function customize_image() {
 
     install -d /usr/share/keyrings /etc/apt/sources.list.d /etc/apt/preferences.d
 
-    echo "=====> Browser APT sources (always): Brave release + beta, Librewolf, Mozilla — install packages only when selected"
+    echo "=====> Browser APT sources (always): Brave release, Librewolf, Mozilla — install packages only when selected"
     curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
         https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
     curl -fsSLo /etc/apt/sources.list.d/brave-browser-release.sources \
         https://brave-browser-apt-release.s3.brave.com/brave-browser.sources
-    curl -fsSLo /usr/share/keyrings/brave-browser-beta-archive-keyring.gpg \
-        https://brave-browser-apt-beta.s3.brave.com/brave-browser-beta-archive-keyring.gpg
-    curl -fsSLo /etc/apt/sources.list.d/brave-browser-beta.sources \
-        https://brave-browser-apt-beta.s3.brave.com/brave-browser.sources
 
     curl -fsSL https://repo.librewolf.net/pubkey.gpg | gpg --dearmor -o /usr/share/keyrings/librewolf.gpg
     printf '%s\n' \
@@ -484,6 +480,7 @@ function customize_image() {
     printf '%s\n' \
         "deb [signed-by=/usr/share/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main" \
         > /etc/apt/sources.list.d/mozilla.list
+    add-apt-repository ppa:mozillateam/ppa -y
     cat <<'EOF' > /etc/apt/preferences.d/mozilla
 Package: *
 Pin: origin packages.mozilla.org
@@ -492,11 +489,23 @@ Pin-Priority: 1000
 Package: firefox
 Pin: release o=Ubuntu
 Pin-Priority: -1
+
+Package: firefox
+Pin: origin ppa.launchpadcontent.net
+Pin-Priority: -1
+
+Package: firefox-esr
+Pin: origin ppa.launchpadcontent.net
+Pin-Priority: 1000
+
+Package: thunderbird
+Pin: origin ppa.launchpadcontent.net
+Pin-Priority: 1000
 EOF
 
     apt-get update
 
-    echo "=====> Browser vendor APT: Brave (release + beta), Librewolf, and Mozilla sources + keyrings are always on disk"
+    echo "=====> Browser vendor APT: Brave (release), Librewolf, and Mozilla sources + keyrings are always on disk"
     echo "       (optional installs below only; you can apt install later without re-adding repositories)."
 
     case "${TARGET_BRAVE_CHANNEL:-release}" in
@@ -504,15 +513,15 @@ EOF
             echo "=====> install: Brave stable"
             apt-get install -y brave-browser
             ;;
-        origin-beta)
-            echo "=====> install: Brave Origin beta"
-            apt-get install -y brave-origin-beta
+        origin)
+            echo "=====> install: Brave Origin"
+            apt-get install -y brave-origin
             ;;
         none)
-            echo "=====> Brave: not pre-installed (Brave APT sources above remain; apt install brave-browser | brave-origin-beta when ready)"
+            echo "=====> Brave: not pre-installed (Brave APT sources above remain; apt install brave-browser | brave-origin when ready)"
             ;;
         *)
-            >&2 echo "TARGET_BRAVE_CHANNEL must be none, release, or origin-beta (got: '${TARGET_BRAVE_CHANNEL:-}')."
+            >&2 echo "TARGET_BRAVE_CHANNEL must be none, release, or origin (got: '${TARGET_BRAVE_CHANNEL:-}')."
             exit 1
             ;;
     esac
@@ -527,6 +536,18 @@ EOF
         apt-get install -y firefox
     else
         echo "=====> Firefox: not pre-installed (Mozilla repo + pin above remain; apt install firefox when ready)"
+    fi
+
+    if [[ "${TARGET_FIREFOX_ESR:-0}" == "1" ]]; then
+        apt-get install -y firefox-esr
+    else
+        echo "=====> Firefox ESR: not pre-installed (Mozilla PPA + pin above remain; apt install firefox-esr when ready)"
+    fi
+
+    if [[ "${TARGET_THUNDERBIRD:-0}" == "1" ]]; then
+        apt-get install -y thunderbird
+    else
+        echo "=====> Thunderbird: not pre-installed (Mozilla PPA + pin above remain; apt install thunderbird when ready)"
     fi
 
     echo "=====> Pacstall (official installer from https://pacstall.dev/q/install — not Chaotic PPR / apt package)"
@@ -622,23 +643,25 @@ function check_settings() {
             ;;
     esac
     case "${TARGET_BROWSER:-}" in
-        ""|release|origin-beta)
+        ""|release|origin)
             ;;
         *)
-            >&2 echo "TARGET_BROWSER legacy env must be empty, release, or origin-beta (got: '${TARGET_BROWSER:-}'). Use TARGET_BRAVE_CHANNEL."
+            >&2 echo "TARGET_BROWSER legacy env must be empty, release, or origin (got: '${TARGET_BROWSER:-}'). Use TARGET_BRAVE_CHANNEL."
             exit 1
             ;;
     esac
     case "${TARGET_BRAVE_CHANNEL:-release}" in
-        none|release|origin-beta)
+        none|release|origin)
             ;;
         *)
-            >&2 echo "TARGET_BRAVE_CHANNEL must be none, release, or origin-beta (got: '${TARGET_BRAVE_CHANNEL:-}')."
+            >&2 echo "TARGET_BRAVE_CHANNEL must be none, release, or origin (got: '${TARGET_BRAVE_CHANNEL:-}')."
             exit 1
             ;;
     esac
     assert_bool_var TARGET_LIBREWOLF
     assert_bool_var TARGET_FIREFOX
+    assert_bool_var TARGET_FIREFOX_ESR
+    assert_bool_var TARGET_THUNDERBIRD
     assert_bool_var TARGET_UBUNTU_STUDIO
     if [[ "${TARGET_DESKTOP:-}" == "mate" ]]; then
         case "${TARGET_MATE_PACKAGE:-mate-desktop-environment}" in
@@ -681,10 +704,12 @@ function host_help() {
     echo "  TARGET_KDE_PACKAGE=kde-full|kde-standard|kde-plasma-desktop  KDE package when desktop is kde-plasma (optional; default kde-standard)"
     echo "  TARGET_MATE_PACKAGE=mate-desktop-environment|mate-desktop-environment-core  MATE metapackage when desktop is mate (optional; full|core aliases OK)"
     echo "  TARGET_MATE_EXTRAS=0|1            Also install mate-desktop-environment-extras when desktop is mate (optional; default 0)"
-    echo "  TARGET_BRAVE_CHANNEL=none|release|origin-beta   Pre-install Brave build (both Brave APT repos always added)"
-    echo "  TARGET_BROWSER=release|origin-beta               Legacy alias for Brave channel if TARGET_BRAVE_CHANNEL unset"
+    echo "  TARGET_BRAVE_CHANNEL=none|release|origin   Pre-install Brave build (both Brave APT repos always added)"
+    echo "  TARGET_BROWSER=release|origin               Legacy alias for Brave channel if TARGET_BRAVE_CHANNEL unset"
     echo "  TARGET_LIBREWOLF=0|1                    Pre-install Librewolf (optional; default 0; repo always added)"
     echo "  TARGET_FIREFOX=0|1                       Pre-install Firefox from Mozilla APT (optional; default 0; repo always added)"
+    echo "  TARGET_FIREFOX_ESR=0|1                   Pre-install Firefox ESR from Mozilla PPA (optional; default 0; PPA always added)"
+    echo "  TARGET_THUNDERBIRD=0|1                   Pre-install Thunderbird from Mozilla PPA (optional; default 0; PPA always added)"
     echo "  TARGET_UBUNTU_STUDIO=0|1                 Ubuntu Studio metapackages (optional; default 0)"
     echo "  TARGET_GNOME_INSTALL_RECOMMENDS=0|1       GNOME install with recommends (optional; default 0)"
     echo "  --kernel=generic|lowlatency             Kernel type to install"
@@ -693,10 +718,12 @@ function host_help() {
     echo "  --kde=kde-full|kde-standard|kde-plasma-desktop  KDE package tier (used with --desktop=kde-plasma)"
     echo "  --mate=full|core|mate-desktop-environment|mate-desktop-environment-core  MATE tier (used with --desktop=mate; default full)"
     echo "  --mate-extras / --no-mate-extras        Pre-install mate-desktop-environment-extras (with --desktop=mate)"
-    echo "  --brave=none|release|origin-beta       Brave channel (default release; none skips Brave)"
-    echo "  --browser=release|origin-beta            Same as --brave for the two Brave archives (legacy)"
+    echo "  --brave=none|release|origin       Brave channel (default release; none skips Brave)"
+    echo "  --browser=release|origin            Same as --brave for the two Brave archives (legacy)"
     echo "  --librewolf / --no-librewolf             Pre-install Librewolf (APT repo always configured)"
     echo "  --firefox / --no-firefox               Pre-install Firefox (Mozilla APT always configured)"
+    echo "  --firefox-esr / --no-firefox-esr       Pre-install Firefox ESR (Mozilla PPA always configured)"
+    echo "  --thunderbird / --no-thunderbird       Pre-install Thunderbird (Mozilla PPA always configured)"
     echo "  --ubuntu-studio / --no-ubuntu-studio     Ubuntu Studio metapackage set (heavy)"
     echo
     echo "Syntax: $0 [options] [start_cmd] [-] [end_cmd]"
@@ -845,6 +872,8 @@ function run_chroot() {
         TARGET_BRAVE_CHANNEL="${TARGET_BRAVE_CHANNEL:-release}" \
         TARGET_LIBREWOLF="${TARGET_LIBREWOLF:-0}" \
         TARGET_FIREFOX="${TARGET_FIREFOX:-0}" \
+        TARGET_FIREFOX_ESR="${TARGET_FIREFOX_ESR:-0}" \
+        TARGET_THUNDERBIRD="${TARGET_THUNDERBIRD:-0}" \
         TARGET_UBUNTU_STUDIO="${TARGET_UBUNTU_STUDIO:-0}" \
         TARGET_GNOME_INSTALL_RECOMMENDS="${TARGET_GNOME_INSTALL_RECOMMENDS:-0}" \
         TARGET_NAME="${TARGET_NAME}" \
@@ -1250,25 +1279,40 @@ function resolve_gnome_recommends_choice() {
 
 function interactive_brave_channel_pick() {
     if [[ ! -t 0 ]]; then
-        ui_err "No terminal is available. Set TARGET_BRAVE_CHANNEL=none|release|origin-beta (or legacy TARGET_BROWSER=release|origin-beta)."
+        ui_err "No terminal is available. Set TARGET_BRAVE_CHANNEL=none|release|origin (or legacy TARGET_BROWSER=release|origin)."
         exit 1
     fi
 
     ui_heading "Brave Browser"
-    echo "    1) Stable (brave-browser) — release APT repository  [default]"
-    echo "    2) Origin beta (brave-origin-beta)"
+    echo "    1) Brave Stable"
+    echo "       Official release from Brave's repository (brave-browser package)"
+    echo "       This is the standard Brave browser with all features enabled by default"
+    echo "       Includes Leo AI, News, Playlist, Rewards, Wallet, VPN, and other integrated features"
+    echo "       Completely free to use on all platforms with regular security updates"
+    echo ""
+    echo "    2) Brave Origin [default]"
+    echo "       Origin build (brave-origin package) - a minimalist version of Brave"
+    echo "       Streamlined to the core of Brave's ad blocking and privacy protections"
+    echo "       Lets you manage or completely remove features you don't want"
+    echo "       Removes daily usage pings, crash logs, and product analytics"
+    echo "       FREE for Linux users (paid on other platforms)"
+    echo "       Ideal for users who want a clean, privacy-focused browser without extra features"
+    echo ""
     echo "    3) Skip Brave"
+    echo "       Do not install Brave browser"
+    echo "       Choose this if you prefer another browser or don't need Brave"
+    echo ""
 
     local choice
     while true; do
-        read -r -p "  Brave [1/2/3, Enter=1]: " choice
+        read -r -p "  Brave [1/2/3, Enter=2]: " choice
         case "${choice,,}" in
-            ""|1|r|release|stable)
+            1|r|release|stable)
                 export TARGET_BRAVE_CHANNEL="release"
                 break
                 ;;
-            2|o|origin|origin-beta|beta)
-                export TARGET_BRAVE_CHANNEL="origin-beta"
+            ""|2|o|origin)
+                export TARGET_BRAVE_CHANNEL="origin"
                 break
                 ;;
             3|n|none|skip)
@@ -1326,11 +1370,60 @@ function interactive_librewolf_pick() {
 }
 
 function interactive_firefox_pick() {
-    interactive_toggle_pick TARGET_FIREFOX \
-        "Firefox (Mozilla APT)" \
-        "Pre-install firefox (Mozilla repo + pin are configured either way)" \
-        "Skip Firefox" \
-        "Firefox"
+    if [[ ! -t 0 ]]; then
+        ui_err "No terminal is available. Set TARGET_FIREFOX_CHANNEL=none|release|esr."
+        exit 1
+    fi
+
+    ui_heading "Firefox Browser"
+    echo "    1) Firefox Release [default]"
+    echo "       Official release from Mozilla's repository (firefox package)"
+    echo "       This is the standard Firefox browser with the latest features"
+    echo "       Includes the newest web standards, performance improvements, and UI updates"
+    echo "       Rapid release cycle with major updates every 4 weeks"
+    echo "       Ideal for users who want cutting-edge features and the latest security patches"
+    echo ""
+    echo "    2) Firefox ESR"
+    echo "       Extended Support Release (firefox-esr package) from Mozilla PPA"
+    echo "       A slower-moving release designed for enterprise and institutional use"
+    echo "       Receives security updates but fewer feature changes over time"
+    echo "       Major updates only once per year, with maintenance updates for 54 weeks"
+    echo "       Ideal for users who prefer stability and consistency over new features"
+    echo "       Recommended for organizations that need standardized browser environments"
+    echo ""
+    echo "    3) Skip Firefox"
+    echo "       Do not install Firefox browser"
+    echo "       Choose this if you prefer another browser or don't need Firefox"
+    echo ""
+
+    local choice
+    while true; do
+        read -r -p "  Firefox [1/2/3, Enter=1]: " choice
+        case "${choice,,}" in
+            1|""|r|release)
+                export TARGET_FIREFOX_CHANNEL="release"
+                break
+                ;;
+            2|e|esr)
+                export TARGET_FIREFOX_CHANNEL="esr"
+                break
+                ;;
+            3|n|none|skip)
+                export TARGET_FIREFOX_CHANNEL="none"
+                break
+                ;;
+            *) ui_warn "Invalid selection: '$choice'." ;;
+        esac
+    done
+    ui_ok "TARGET_FIREFOX_CHANNEL=$TARGET_FIREFOX_CHANNEL"
+}
+
+function interactive_thunderbird_pick() {
+    interactive_toggle_pick TARGET_THUNDERBIRD \
+        "Thunderbird (Mozilla PPA)" \
+        "Pre-install thunderbird (Mozilla PPA + pin are configured either way)" \
+        "Skip Thunderbird" \
+        "Thunderbird"
 }
 
 function resolve_browser_selection() {
@@ -1362,8 +1455,26 @@ function resolve_browser_selection() {
         fi
     fi
 
+    if [[ -z "${TARGET_FIREFOX_ESR+x}" ]]; then
+        if [[ -t 0 ]]; then
+            interactive_firefox_esr_pick
+        else
+            export TARGET_FIREFOX_ESR="0"
+        fi
+    fi
+
+    if [[ -z "${TARGET_THUNDERBIRD+x}" ]]; then
+        if [[ -t 0 ]]; then
+            interactive_thunderbird_pick
+        else
+            export TARGET_THUNDERBIRD="0"
+        fi
+    fi
+
     export TARGET_LIBREWOLF="${TARGET_LIBREWOLF:-0}"
     export TARGET_FIREFOX="${TARGET_FIREFOX:-0}"
+    export TARGET_FIREFOX_ESR="${TARGET_FIREFOX_ESR:-0}"
+    export TARGET_THUNDERBIRD="${TARGET_THUNDERBIRD:-0}"
 }
 
 function resolve_ubuntu_studio_choice() {
@@ -1506,10 +1617,12 @@ function print_build_summary() {
     case "${TARGET_BRAVE_CHANNEL:-release}" in
         none)              _bs="Brave: none" ;;
         release)           _bs="Brave: stable" ;;
-        origin-beta)       _bs="Brave: origin-beta" ;;
+        origin)            _bs="Brave: origin" ;;
     esac
     [[ "${TARGET_LIBREWOLF:-0}" == "1" ]] && _bs="${_bs:+${_bs}; }Librewolf"
     [[ "${TARGET_FIREFOX:-0}" == "1" ]] && _bs="${_bs:+${_bs}; }Firefox"
+    [[ "${TARGET_FIREFOX_ESR:-0}" == "1" ]] && _bs="${_bs:+${_bs}; }Firefox ESR"
+    [[ "${TARGET_THUNDERBIRD:-0}" == "1" ]] && _bs="${_bs:+${_bs}; }Thunderbird"
     ui_kv "Browsers"       "${_bs}"
     ui_kv "Ubuntu Studio"  "${TARGET_UBUNTU_STUDIO:-0}"
     ui_kv "Target name"     "${TARGET_NAME:-?}"
@@ -1565,6 +1678,10 @@ function host_main() {
     local cli_librewolf=0
     local cli_firefox_set=0
     local cli_firefox=0
+    local cli_firefox_esr_set=0
+    local cli_firefox_esr=0
+    local cli_thunderbird_set=0
+    local cli_thunderbird=0
     local cli_ubuntustudio_set=0
     local cli_ubuntustudio=0
     local args=()
@@ -1639,7 +1756,7 @@ function host_main() {
                 cli_mate_extras=0
                 shift
                 ;;
-            --browser=release|--browser=origin-beta)
+            --browser=release|--browser=origin)
                 cli_browser="${1#--browser=}"
                 shift
                 ;;
@@ -1647,7 +1764,7 @@ function host_main() {
                 cli_browser="$2"
                 shift 2
                 ;;
-            --brave=none|--brave=release|--brave=origin-beta)
+            --brave=none|--brave=release|--brave=origin)
                 cli_brave="${1#--brave=}"
                 shift
                 ;;
@@ -1673,6 +1790,26 @@ function host_main() {
             --no-firefox)
                 cli_firefox_set=1
                 cli_firefox=0
+                shift
+                ;;
+            --firefox-esr)
+                cli_firefox_esr_set=1
+                cli_firefox_esr=1
+                shift
+                ;;
+            --no-firefox-esr)
+                cli_firefox_esr_set=1
+                cli_firefox_esr=0
+                shift
+                ;;
+            --thunderbird)
+                cli_thunderbird_set=1
+                cli_thunderbird=1
+                shift
+                ;;
+            --no-thunderbird)
+                cli_thunderbird_set=1
+                cli_thunderbird=0
                 shift
                 ;;
             --ubuntu-studio)
@@ -1745,6 +1882,12 @@ function host_main() {
     fi
     if [[ "$cli_firefox_set" -eq 1 ]]; then
         export TARGET_FIREFOX="$cli_firefox"
+    fi
+    if [[ "$cli_firefox_esr_set" -eq 1 ]]; then
+        export TARGET_FIREFOX_ESR="$cli_firefox_esr"
+    fi
+    if [[ "$cli_thunderbird_set" -eq 1 ]]; then
+        export TARGET_THUNDERBIRD="$cli_thunderbird"
     fi
     if [[ "$cli_ubuntustudio_set" -eq 1 ]]; then
         export TARGET_UBUNTU_STUDIO="$cli_ubuntustudio"
@@ -2141,6 +2284,8 @@ function chroot_main() {
     export TARGET_BRAVE_CHANNEL="${TARGET_BRAVE_CHANNEL:-release}"
     export TARGET_LIBREWOLF="${TARGET_LIBREWOLF:-0}"
     export TARGET_FIREFOX="${TARGET_FIREFOX:-0}"
+    export TARGET_FIREFOX_ESR="${TARGET_FIREFOX_ESR:-0}"
+    export TARGET_THUNDERBIRD="${TARGET_THUNDERBIRD:-0}"
     export TARGET_UBUNTU_STUDIO="${TARGET_UBUNTU_STUDIO:-0}"
     validate_ubiquity_jammy_only
     check_settings
