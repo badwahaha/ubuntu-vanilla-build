@@ -4,8 +4,20 @@ Create a bootable Ubuntu live ISO from a minimal base, with a strict no-Snap pol
 
 This project is designed for:
 
-- **Beginners** who want a working custom Ubuntu ISO with simple commands.
-- **Advanced users** who want deterministic output, chroot-level control, and tunable package profiles.
+- **Beginners** who want a working custom Ubuntu ISO with simple commands and interactive prompts.
+- **Advanced users** who want deterministic output, chroot-level control, tunable package profiles, and full customization capabilities.
+
+## What's New
+
+Recent improvements include:
+
+- **Security Hardening**: Enhanced build pipeline against supply-chain and network attacks with verified package installations
+- **Improved Error Handling**: Better error reporting and failure detection - no more silently swallowed failures
+- **Code Refactoring**: Extracted shared utilities to eliminate duplicated code patterns for better maintainability
+- **Full/Minimal Installation Options**: Calamares installer now offers both Full and Minimal installation types
+- **Enhanced Desktop Support**: Added support for KDE Plasma, Cinnamon, Budgie, and improved LXDE with automatic repair
+- **Browser Flexibility**: Multiple browser options (Brave, Librewolf, Firefox) with configurable pre-installation
+- **Ubuntu Studio Integration**: Optional Ubuntu Studio package set for creative workloads
 
 ## What This Build Produces
 
@@ -48,40 +60,90 @@ Use a host OS that is the same release as the target or newer.
 
 ## Build Concepts
 
-- **Host system**: where you run `scripts/build.sh`.
-- **Live system**: rootfs built inside chroot and packed into the ISO.
-- **Target system**: installed OS after running installer from live media.
+Understanding the build pipeline helps with troubleshooting and customization:
 
-Pipeline:
+- **Host system**: The machine where you run `scripts/build.sh` (your current Ubuntu/Debian system)
+- **Live system**: The rootfs built inside a chroot environment and packed into the ISO (what you boot from the USB)
+- **Target system**: The final installed OS after running the installer from the live media
 
-1. Host setup
-2. `debootstrap` base system
-3. Chroot configuration + package installation
-4. Live image assembly
-5. SquashFS + ISO creation (`xorriso`)
+### Build Pipeline
+
+The build process follows these stages:
+
+1. **Host Setup**: Install required tools (debootstrap, squashfs-tools, xorriso) and prepare workspace
+2. **Debootstrap**: Create a minimal Ubuntu base system using the chosen release and mirror
+3. **Chroot Configuration**: Enter the chroot environment to:
+   - Configure APT sources and pinning (including snapd blocking)
+   - Install desktop environment and selected packages
+   - Configure browser repositories (Brave, Librewolf, Firefox)
+   - Install Pacstall and optional extras (Ubuntu Studio, etc.)
+4. **Live Image Assembly**: Create the live filesystem structure with Casper integration
+5. **SquashFS + ISO Creation**: Compress the filesystem and generate the bootable ISO with GRUB
+
+### Security Features
+
+The build process includes several security hardening measures:
+
+- **Snapd Blocking**: APT pinning prevents snapd installation (Pin-Priority: -1)
+- **Verified Package Installation**: Packages are checked for installability and snapd dependencies before installation
+- **Supply Chain Protection**: Pacstall installer uses checksum verification (when enabled)
+- **Network Security**: All package downloads use HTTPS with verified repositories
 
 ## Requirements
 
-- Host distro: Ubuntu/Debian or derivative (validated by script).
-- Internet access to Ubuntu and third-party package sources.
-- Sufficient disk space/RAM for debootstrap + squashfs + ISO generation.
-- `sudo` access (script elevates only where needed).
+### System Requirements
+
+- **Host OS**: Ubuntu/Debian or derivative (automatically validated by the script)
+- **Internet Access**: Required for downloading packages from Ubuntu and third-party repositories
+- **Disk Space**: Minimum 15-20 GB free space for debootstrap, squashfs, and ISO generation
+- **RAM**: 4 GB minimum (8 GB recommended for smoother builds)
+- **Permissions**: `sudo` access (script only elevates privileges when necessary)
+
+### Host OS Compatibility
+
+The script supports building on:
+- Ubuntu 22.04+ (jammy, noble, resolute)
+- Debian 11+ (requires `ubuntu-archive-keyring` package)
+- Ubuntu/Debian derivatives (Mint, Pop!_OS, etc.)
+
+**Note**: Use a host OS that is the same release or newer than your target release.
 
 ## Quick Start (Beginner Friendly)
 
-1. Clone this repository.
-2. Open terminal and go to `scripts/`.
-3. Run build:
+### Getting Started in 3 Steps
 
-```bash
-./build.sh -
-```
+1. **Clone this repository**:
+   ```bash
+   git clone <repository-url>
+   cd ubuntu-vanilla-build
+   ```
 
-If you prefer fewer prompts, provide required non-interactive arguments:
+2. **Run the build script** (choose one method):
+   ```bash
+   # Method 1: Using the convenience script from repository root
+   ./start-here.sh -
+
+   # Method 2: Directly from scripts directory
+   cd scripts/
+   ./build.sh -
+   ```
+
+The script will interactively prompt you for:
+- **Ubuntu Release**: Choose `jammy` (22.04 LTS), `noble` (24.04 LTS), or `resolute` (26.04 LTS)
+- **Desktop Environment**: Select from GNOME, XFCE, LXDE, LXQt, MATE, Cinnamon, Budgie, or KDE Plasma
+- **Installer Type**: Calamares (recommended, all releases) or Ubiquity (jammy only)
+- **Kernel Type**: Generic (standard) or Lowlatency (audio/real-time workloads)
+- **Optional Features**: Browser pre-installation, Ubuntu Studio packages, etc.
+
+### Non-Interactive Build
+
+For automation or to skip prompts, provide all required options:
 
 ```bash
 ./build.sh --release=noble --kernel=generic -
 ```
+
+This builds a Noble (24.04) ISO with GNOME desktop using the default settings.
 
 ### Common Examples
 
@@ -190,108 +252,260 @@ Defaults when not explicitly set:
 
 ## Command-Line Options
 
-`scripts/build.sh` supports:
+### Basic Options
 
-- `--release=jammy|noble|resolute`
-- `--mirror=URL`
-- `--kernel=generic|lowlatency`
-- `--installer=calamares|ubiquity`
-- `--desktop=<desktop>` (currently implemented: `gnome`, `xfce`, `lxde`, `lxqt`, `mate`, `cinnamon`, `budgie`, `kde-plasma`)
-- `--kde=kde-full|kde-standard|kde-plasma-desktop` (used with `--desktop=kde-plasma`; default `kde-standard`)
-- `--mate=full|core|mate-desktop-environment|mate-desktop-environment-core` (used with `--desktop=mate`; default full metapackage)
-- `--mate-extras` / `--no-mate-extras` (optional `mate-desktop-environment-extras` with `--desktop=mate`)
-- `--brave=none|release|origin-beta`
-- `--browser=release|origin-beta` (legacy alias for Brave selection)
-- `--librewolf` / `--no-librewolf`
-- `--firefox` / `--no-firefox`
-- `--ubuntu-studio` / `--no-ubuntu-studio`
+`scripts/build.sh` supports the following command-line options:
 
-Advanced execution syntax:
+- `--release=jammy|noble|resolute` - Target Ubuntu release
+- `--mirror=URL` - Ubuntu package mirror (default: https://archive.ubuntu.com/ubuntu/)
+- `--kernel=generic|lowlatency` - Kernel flavor (generic for standard use, lowlatency for audio/real-time)
+- `--installer=calamares|ubiquity` - Installer type (Calamares recommended, Ubiquity only for jammy)
+- `--desktop=<desktop>` - Desktop environment (gnome, xfce, lxde, lxqt, mate, cinnamon, budgie, kde-plasma)
+
+### Desktop-Specific Options
+
+- `--kde=kde-full|kde-standard|kde-plasma-desktop` - KDE package tier (used with `--desktop=kde-plasma`)
+  - `kde-plasma-desktop`: Minimal Plasma desktop
+  - `kde-standard`: Standard Plasma with common applications (default)
+  - `kde-full`: Complete KDE suite with all applications
+- `--mate=full|core` - MATE metapackage choice (used with `--desktop=mate`)
+  - `full`: Complete MATE desktop (default)
+  - `core`: Lightweight MATE core
+- `--mate-extras` / `--no-mate-extras` - Add MATE extras package
+
+### Browser Options
+
+- `--brave=none|release|origin-beta` - Brave browser channel
+  - `release`: Stable Brave browser (default)
+  - `origin-beta`: Brave Origin beta channel
+  - `none`: Skip Brave pre-installation (repo still configured)
+- `--librewolf` / `--no-librewolf` - Pre-install Librewolf browser
+- `--firefox` / `--no-firefox` - Pre-install Firefox from Mozilla APT
+- `--firefox-esr` / `--no-firefox-esr` - Pre-install Firefox ESR from Mozilla PPA
+- `--thunderbird` / `--no-thunderbird` - Pre-install Thunderbird from Mozilla PPA
+
+**Note**: Browser repositories are always configured regardless of pre-installation choice. You can install browsers later with `apt install`.
+
+### Additional Options
+
+- `--ubuntu-studio` / `--no-ubuntu-studio` - Include Ubuntu Studio creative packages
+- `--browser=release|origin-beta` - Legacy alias for Brave selection (use `--brave` instead)
+
+### Advanced Execution Syntax
+
+For advanced users who want to control specific build stages:
 
 ```bash
 ./build.sh [options] [start_cmd] [-] [end_cmd]
 ```
 
-Host commands are:
+Host commands (run outside chroot):
+- `setup_host` - Install dependencies and prepare workspace
+- `debootstrap` - Create minimal Ubuntu base system
+- `run_chroot` - Execute chroot phase (package installation, configuration)
+- `build_iso` - Create SquashFS and generate ISO
 
-- `setup_host`
-- `debootstrap`
-- `run_chroot`
-- `build_iso`
-
-`-` means run the full host pipeline.
+Examples:
+- `./build.sh -` - Run full pipeline (default)
+- `./build.sh setup_host` - Only run host setup
+- `./build.sh setup_host - debootstrap` - Run from setup_host through debootstrap
+- `./build.sh debootstrap - build_iso` - Run from debootstrap through ISO creation
 
 ## Environment Variables
 
-Main variables:
+For advanced users who prefer environment variables over command-line options:
 
-- `TARGET_UBUNTU_VERSION`
-- `TARGET_UBUNTU_MIRROR`
-- `TARGET_KERNEL_FLAVOR`
-- `TARGET_KERNEL_PACKAGE` (advanced override)
-- `TARGET_INSTALLER`
-- `TARGET_DESKTOP`
-- `TARGET_KDE_PACKAGE` (`kde-full|kde-standard|kde-plasma-desktop`, for `TARGET_DESKTOP=kde-plasma`)
-- `TARGET_MATE_PACKAGE` (`mate-desktop-environment|mate-desktop-environment-core`, or aliases `full|core`, for `TARGET_DESKTOP=mate`)
-- `TARGET_MATE_EXTRAS` (`0|1`, also install `mate-desktop-environment-extras` when `TARGET_DESKTOP=mate`)
-- `TARGET_BRAVE_CHANNEL`
-- `TARGET_BROWSER` (legacy Brave alias if `TARGET_BRAVE_CHANNEL` unset)
-- `TARGET_LIBREWOLF=0|1`
-- `TARGET_FIREFOX=0|1`
-- `TARGET_UBUNTU_STUDIO=0|1`
-- `TARGET_GNOME_INSTALL_RECOMMENDS=0|1`
-- `TARGET_PACKAGE_REMOVE` (manifest trimming)
-- `TARGET_NAME` (output ISO base name override; default: `ubuntu-<yy>.04-<desktop>-amd64`)
-- `GRUB_LIVEBOOT_LABEL` (boot menu entry label)
-- `UBUNTU_VANILLA_WORKSPACE` (workspace parent directory)
+### Core Build Variables
+
+- `TARGET_UBUNTU_VERSION` - Ubuntu release codename (jammy, noble, resolute)
+- `TARGET_UBUNTU_MIRROR` - Package mirror URL (default: https://archive.ubuntu.com/ubuntu/)
+- `TARGET_KERNEL_FLAVOR` - Kernel type (generic, lowlatency)
+- `TARGET_KERNEL_PACKAGE` - Advanced: Override kernel metapackage name directly
+- `TARGET_INSTALLER` - Installer type (calamares, ubiquity)
+- `TARGET_DESKTOP` - Desktop environment slug
+
+### Desktop-Specific Variables
+
+- `TARGET_KDE_PACKAGE` - KDE metapackage when using kde-plasma (kde-full, kde-standard, kde-plasma-desktop)
+- `TARGET_MATE_PACKAGE` - MATE metapackage (mate-desktop-environment, mate-desktop-environment-core, or aliases full/core)
+- `TARGET_MATE_EXTRAS` - Set to 1 to install mate-desktop-environment-extras with MATE
+
+### Browser Variables
+
+- `TARGET_BRAVE_CHANNEL` - Brave channel (none, release, origin-beta)
+- `TARGET_BROWSER` - Legacy alias for Brave (use TARGET_BRAVE_CHANNEL instead)
+- `TARGET_LIBREWOLF` - Set to 1 to pre-install Librewolf
+- `TARGET_FIREFOX` - Set to 1 to pre-install Firefox
+- `TARGET_FIREFOX_ESR` - Set to 1 to pre-install Firefox ESR
+- `TARGET_THUNDERBIRD` - Set to 1 to pre-install Thunderbird
+
+### Feature Variables
+
+- `TARGET_UBUNTU_STUDIO` - Set to 1 to include Ubuntu Studio packages
+- `TARGET_GNOME_INSTALL_RECOMMENDS` - Set to 1 to install GNOME with recommends (lighter by default)
+
+### Advanced Customization Variables
+
+- `TARGET_PACKAGE_REMOVE` - Space-separated list of packages to remove from target system
+- `TARGET_NAME` - Custom output ISO base name (default: ubuntu-<yy>.04-<desktop>-amd64)
+- `GRUB_LIVEBOOT_LABEL` - Custom boot menu entry label (default: "Try Ubuntu without installing")
+- `UBUNTU_VANILLA_WORKSPACE` - Custom workspace parent directory (useful for WSL)
+
+### Example Usage
+
+```bash
+# Using environment variables
+TARGET_UBUNTU_VERSION=noble TARGET_DESKTOP=xfce ./build.sh -
+
+# Combining with command-line options
+TARGET_DESKTOP=mate TARGET_MATE_EXTRAS=1 ./build.sh --release=noble --kernel=generic -
+```
 
 ## Workspace and Output Behavior
 
-- Default workspace: `<repo>/workspace` (contains `chroot/` and `image/` while building).
-- On WSL DrvFs paths (`/mnt/...`), workspace is auto-moved to a Linux-native cache path to avoid debootstrap unpack issues.
-- If `UBUNTU_VANILLA_WORKSPACE=/some/path`, actual workspace becomes `/some/path/workspace`.
-- On success, workspace is cleaned automatically.
-- Final ISO + checksum files remain in `scripts/`.
+### Workspace Directory
+
+The build process uses a workspace directory to store temporary files:
+
+- **Default location**: `<repo>/workspace/` (contains `chroot/` and `image/` subdirectories during build)
+- **WSL auto-detection**: On WSL DrvFs paths (`/mnt/...`), the workspace is automatically moved to a Linux-native cache path to avoid debootstrap unpack issues
+- **Custom location**: Set `UBUNTU_VANILLA_WORKSPACE=/some/path` to use a custom parent directory (actual workspace becomes `/some/path/workspace`)
+- **Automatic cleanup**: On successful build, the workspace is automatically removed to save disk space
+- **Manual cleanup**: If a build fails, you may need to manually remove the workspace directory
+
+### Output Files
+
+After a successful build, the following files are created in the `scripts/` directory:
+
+- `${TARGET_NAME:-ubuntu-<yy>.04-<desktop>-amd64}.iso` - The bootable ISO image
+- `${TARGET_NAME:-ubuntu-<yy>.04-<desktop>-amd64}.iso.sha1` - SHA-1 checksum for verification
+- `${TARGET_NAME:-ubuntu-<yy>.04-<desktop>-amd64}.iso.sha256` - SHA-256 checksum for verification
+
+The default naming format is `ubuntu-<version>-<desktop>-amd64.iso` (e.g., `ubuntu-24.04-gnome-amd64.iso`).
 
 ## Package and Policy Details
 
-- **No Snap**: `snapd` blocked via APT pinning (`Pin-Priority: -1`).
-- **Calamares**: project config from `scripts/calamares` is used.
-- **Calamares install type**: installer now includes an **Installation Type** step:
-  - `Full installation` keeps the live-image desktop profile.
-  - `Minimal installation` applies target-side package operations inside the installed root (post-`unpackfs`) to keep a core system + networking tools (`netplan.io`, `network-manager`, `network-manager-gnome`, `wpasupplicant`, `wireless-regdb`) and remove full desktop environment stacks.
-  - This behavior is installer-driven and separate from the manual debootstrap workflow documented in `install-arch-way/README.md`.
-- **LXDE + Calamares repair**: for the **LXDE** desktop variant, Calamares runs an extra step (`shellprocess@lxde-repair`) when the live image looks like an Openbox-based LXDE build but the **LXDE** session is missing on the target (for example you only see **Openbox** at the login session menu after install). That step runs `apt-get update` and then `apt-get install --no-install-recommends lxde` inside the target root. **It only applies `lxde` when the machine has working network during install** (offline installs skip the repair and the installer still completes). If you installed offline, see **LXDE ISO bug (Openbox-only until you’re online)** below.
-- **Kernel**: HWE metapackage resolved by release + selected flavor (unless `TARGET_KERNEL_PACKAGE` is explicitly provided).
-- **XFCE profile**: installs functional XFCE stack and utilities while excluding `xubuntu-*` branding packages; includes `labwc` for optional Wayland sessions.
-- **LXDE profile**: installs the `lxde` metapackage with `xorg`, `lightdm`, and `slick-greeter`.
-- **LXDE + Calamares**: the repair step above is the supported workaround when the unpacked system does not get a full **LXDE** session; it requires **Internet during Calamares** to run `apt` successfully.
-- **LXQt profile**: installs `lxqt`, `sddm`, and `xorg` (upstream-style stack without `lubuntu-desktop` / Lubuntu branding metapackages).
-- **MATE profile**: installs `mate-desktop-environment` or `mate-desktop-environment-core` (your choice), with `xorg`, `lightdm`, and `slick-greeter`. Optionally adds `mate-desktop-environment-extras` when enabled (`TARGET_MATE_EXTRAS=1`, `--mate-extras`, or the interactive prompt).
-- **Cinnamon profile**: installs `cinnamon-desktop-environment` with `xorg`, `lightdm`, and `slick-greeter`.
-- **Budgie profile**: installs `budgie-desktop-environment` with `xorg`, `lightdm`, and `slick-greeter`.
-- **KDE profile**: installs one selected KDE metapackage (`kde-full`, `kde-standard`, or `kde-plasma-desktop`).
-- **Browsers**: repositories are always configured; flags only control pre-install into live filesystem.
-- **Pacstall**: installed unconditionally via official script.
-- **Ubuntu Studio**: optional heavy package set; unavailable/snap-pulling dependencies are skipped with logs.
+### Core Policies
+
+- **No Snap Policy**: `snapd` is blocked via APT pinning (`Pin-Priority: -1`) to ensure a snap-free Ubuntu experience
+- **Package Verification**: All packages are checked for installability and snapd dependencies before installation
+- **Browser Repositories**: Brave, Librewolf, and Firefox repositories are always configured (even if browsers aren't pre-installed)
+
+### Calamares Installer Configuration
+
+The build uses Calamares configuration from `scripts/calamares/`. Edit YAML files in this directory to modify installer flow, partitioning defaults, welcome screen, locale behavior, and post-install package removals.
+
+### Desktop Environment Profiles
+
+Each desktop environment has a carefully curated package set:
+
+- **GNOME**: Uses `vanilla-gnome-desktop` with optional recommends (lighter by default)
+- **XFCE**: Xubuntu-equivalent stack without `xubuntu-*` branding packages; includes `labwc` for Wayland sessions
+- **LXDE**: Lightweight stack with `lxde`, `xorg`, `lightdm`, and `slick-greeter` for low-spec systems
+- **LXQt**: Upstream-style stack with `lxqt`, `sddm`, and `xorg` (no Lubuntu branding)
+- **MATE**: Full or core MATE desktop with `xorg`, `lightdm`, and `slick-greeter`; optional extras available
+- **Cinnamon**: Full Cinnamon desktop with `xorg`, `lightdm`, and `slick-greeter`
+- **Budgie**: Full Budgie desktop with `xorg`, `lightdm`, and `slick-greeter`
+- **KDE Plasma**: Selectable tier (`kde-plasma-desktop`, `kde-standard`, or `kde-full`)
+
+### Special Features
+
+- **Pacstall**: Always installed via official script from [pacstall.dev/q/install](https://pacstall.dev/q/install)
+- **Flatpak**: Pre-configured with Flathub repository; GNOME Software plugin included for GNOME desktop
+- **Ubuntu Studio**: Optional creative package set (audio, graphics, photography, publishing, video); unavailable dependencies are automatically skipped with logging
+- **Kernel Management**: HWE metapackages automatically selected based on release and kernel flavor (unless overridden with `TARGET_KERNEL_PACKAGE`)
+
+### LXDE Repair Mechanism
+
+For LXDE builds, Calamares includes an automatic repair step:
+- Triggers when the installed system shows only Openbox instead of LXDE session
+- Runs `apt-get update && apt-get install --no-install-recommends lxde` in the target root
+- **Requires internet connection during installation** to access package mirrors
+- Offline installs skip this step (see troubleshooting section for manual fix)
 
 ## Verifying Build Artifacts
 
-From `scripts/`:
+After building, verify the integrity of your ISO using the provided checksum files:
 
 ```bash
-sha256sum -c "${TARGET_NAME:-ubuntu-<yy>.04-<desktop>-amd64}.iso.sha256"
-sha1sum -c "${TARGET_NAME:-ubuntu-<yy>.04-<desktop>-amd64}.iso.sha1"
+cd scripts/
+sha256sum -c ubuntu-24.04-gnome-amd64.iso.sha256
+sha1sum -c ubuntu-24.04-gnome-amd64.iso.sha1
 ```
+
+Replace the filename with your actual ISO name if you used a custom `TARGET_NAME`.
+
+### Testing the ISO
+
+Before deploying, test your ISO in a virtual machine:
+- **VirtualBox**: Create a new VM, attach the ISO as optical drive, boot and test live session and installation
+- **QEMU/KVM**: Use `qemu-system-x86_64 -cdrom ubuntu-24.04-gnome-amd64.iso -m 4096 -enable-kvm`
+- **VMware**: Create a new VM, attach ISO, and test the installation process
+
+### Creating Bootable USB
+
+Use a tool like `dd`, `balenaEtcher`, or `Rufus` (Windows) to create a bootable USB:
+
+```bash
+# Using dd (Linux/macOS)
+sudo dd if=ubuntu-24.04-gnome-amd64.iso of=/dev/sdX bs=4M status=progress sync
+```
+
+**Warning**: Replace `/dev/sdX` with your actual USB device (use `lsblk` to identify).
 
 ## Troubleshooting
 
-- **No prompt in CI/non-TTY**: provide required options explicitly (`--release`, `--kernel`, and any toggles).
-- **Ubiquity rejected**: use `--installer=ubiquity` only with `--release=jammy`.
-- **Debian host keyring error**: install `ubuntu-archive-keyring`.
-- **Build on WSL Windows mount fails/unreliable**: keep repo on Linux filesystem or rely on workspace auto-relocation.
-- **Missing package in chosen release**: script logs and skips unavailable/uninstallable packages where applicable.
-- **LXDE installed system shows only Openbox**: connect during Calamares so the LXDE repair step can reach the mirrors, or after boot run `sudo apt update && sudo apt install lxde` (see **Package and Policy Details** → Calamares).
+### Common Issues
+
+- **No interactive prompts in CI/non-TTY environments**: Provide all required options explicitly (`--release`, `--kernel`, and any toggles)
+- **Ubiquity installer rejected**: Use `--installer=ubiquity` only with `--release=jammy` (22.04 LTS)
+- **Debian host keyring error**: Install `ubuntu-archive-keyring` package: `sudo apt install ubuntu-archive-keyring`
+- **Build fails on WSL Windows mount**: Keep repository on Linux filesystem or rely on automatic workspace relocation
+- **Missing package in chosen release**: Script logs and skips unavailable/uninstallable packages with warnings
+- **LXDE installed system shows only Openbox**: Connect to internet during Calamares installation so the LXDE repair step can reach mirrors, or manually fix after boot (see below)
+
+### Build Failures
+
+If the build fails:
+1. Check the error message for specific package or configuration issues
+2. Ensure you have sufficient disk space (15-20 GB minimum)
+3. Verify internet connectivity and mirror accessibility
+4. Try cleaning the workspace manually: `rm -rf scripts/workspace/`
+5. Check that your host OS is compatible with the target release
+
+### LXDE Openbox-Only Issue
+
+If you install an LXDE ISO while offline and the system boots to Openbox only:
+
+**After you get internet:**
+1. Boot into the installed system and select the Openbox session
+2. Open a terminal and run:
+   ```bash
+   sudo apt update
+   sudo apt install --no-install-recommends lxde
+   ```
+3. Log out or reboot
+4. At the login screen, select **LXDE Session**, then log in
+
+**Panel configuration fix:**
+If the taskbar/panel looks wrong or missing:
+- Right-click the LXDE panel → Edit Panel → Panel Preferences
+- Remove the **Desktop Pager** and **Desktop Spacer** applets
+
+### Advanced Debugging
+
+For detailed debugging, you can run individual build stages:
+
+```bash
+# Run only host setup to check dependencies
+./build.sh setup_host
+
+# Run debootstrap stage to check base system creation
+./build.sh debootstrap
+
+# Run chroot stage to check package installation
+./build.sh run_chroot
+```
 
 ## LXDE ISO bug (Openbox-only until you’re online)
 If you install an **LXDE** ISO while the installer machine is **offline**, the system may end up booting to **Openbox only** (instead of an LXDE session).
@@ -306,6 +520,36 @@ Fix after you get internet:
 
 If the taskbar/right-side panel looks wrong or missing:
 - In the LXDE panel, remove the applets **Desktop Pager** and **Desktop Spacer** (right-click the panel -> Edit Panel/Panel Preferences -> delete those applets).
+
+## Advanced Customization
+
+### Modifying Calamares Configuration
+
+For deep customization of the installer experience, edit the YAML files in `scripts/calamares/`:
+
+- `settings.conf` - Main Calamares configuration and module sequence
+- `modules/` - Individual module configurations (partitioning, users, packages, etc.)
+- `branding/` - Visual branding and slideshow content
+- `i18n/SUPPORTED` - Supported locales
+
+### Adding Custom Packages
+
+To add custom packages to your build, modify the `customize_image()` function in `scripts/build.sh`. Look for the desktop-specific sections and add your packages to the appropriate `apt-get install` commands.
+
+### Creating Custom Desktop Profiles
+
+To add a new desktop environment variant:
+1. Add the desktop name to the validation in `normalize_desktop_variant()`
+2. Add installation logic in the `customize_image()` function under a new case statement
+3. Update the help text in `host_help()` to document the new option
+
+## Contributing
+
+Contributions are welcome! Areas for contribution:
+- Additional desktop environment profiles
+- Package selection optimizations
+- Documentation improvements
+- Bug fixes and error handling enhancements
 
 ## License
 
