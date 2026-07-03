@@ -54,8 +54,37 @@ if [[ "$IS_DEBIAN_OR_UBUNTU" -eq 1 ]] && command -v dpkg &>/dev/null; then
     fi
 fi
 
+# ── Sudo keep-alive ──────────────────────────────────────────────────
+# Long builds (especially on WSL2) can outlast the default sudo timeout.
+# We validate credentials once up front, then refresh them in the
+# background so privileged steps never stall waiting for a password.
+SUDO_KEEPALIVE_PID=""
+
+cleanup_sudo_keepalive() {
+    if [[ -n "$SUDO_KEEPALIVE_PID" ]] && kill -0 "$SUDO_KEEPALIVE_PID" 2>/dev/null; then
+        kill "$SUDO_KEEPALIVE_PID" 2>/dev/null
+        wait "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
+    fi
+}
+
+if [[ "$(id -u)" -ne 0 ]]; then
+    echo "=====> Requesting sudo credentials (will be kept alive for the entire build) ..."
+    if ! sudo -v 2>/dev/null; then
+        echo "=====> ERROR: Failed to obtain sudo credentials. The build requires sudo access." >&2
+        exit 1
+    fi
+
+    # Background loop: refresh sudo timestamp every 60 seconds
+    (while sudo -v -n 2>/dev/null; do sleep 60; done) &
+    SUDO_KEEPALIVE_PID=$!
+
+    trap cleanup_sudo_keepalive EXIT
+fi
+
 # Set the toggle indicating launched from start-here.sh
 export LAUNCHED_FROM_START_HERE=1
 
-# Call the main build script with all arguments passed through
-exec "$(dirname "$0")/scripts/build.sh" "$@"
+# Call the main build script with all arguments passed through.
+# Use a regular invocation (not exec) so the EXIT trap can clean up the
+# sudo keep-alive background process when the build finishes.
+"$(dirname "$0")/scripts/build.sh" "$@"
