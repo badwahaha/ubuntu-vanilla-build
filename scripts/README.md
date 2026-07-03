@@ -1,30 +1,56 @@
-# Build Scripts
+# Build Scripts Reference
 
-## build.sh
+This directory contains the core compilation and configuration scripts used to assemble the custom bootable Ubuntu live ISO.
 
-The same `build.sh` runs on the **host** (debootstrap, chroot, ISO) and **inside the chroot** when invoked with `--chroot-internal` (do not run that mode yourself; `run_chroot` does it).
+---
 
-Supported releases: **jammy**, **noble**, **resolute** only (HWE suffix **22.04**, **24.04**, or **26.04**). Kernel metapackages are always HWE: `linux-generic-hwe-XX.04` or `linux-lowlatency-hwe-XX.04`, and are installed **with** apt **Recommends** (firmware, microcode, etc.). On a TTY, the script can prompt for the release, then the installer (**Calamares** or **Ubiquity** — Ubiquity only on **jammy**), then the kernel type; or pass `./build.sh --release=… --installer=calamares|ubiquity --kernel=…` for a non-interactive build. Advanced: set `TARGET_KERNEL_PACKAGE` in the environment to pin a metapackage name.
+## The build.sh Script
 
-```console
-This script builds a bootable Ubuntu ISO image.
+The primary script `build.sh` orchestrates the entire image generation process. It is designed to run in two distinct environments:
+1. **On the Host System**: Prepares directories, downloads the base files via `debootstrap`, enters the chroot environment to trigger customization, compresses the system using SquashFS, and packages the result into a bootable ISO.
+2. **Inside the Chroot Environment**: Configures packages, blocks Snap packages via APT pinning, sets up browser repositories, and installs desktop environments. This mode is invoked internally with the `--chroot-internal` flag. Do not invoke this flag manually; the `run_chroot` host function handles this automatically.
 
-Supported commands: setup_host debootstrap run_chroot build_iso
+### Supported Target Releases
+Only the following targets are supported:
+- **jammy** (Ubuntu 22.04 LTS) — supports the `calamares` and `ubiquity` installers.
+- **noble** (Ubuntu 24.04 LTS) — supports the `calamares` installer.
+- **resolute** (Ubuntu 26.04 LTS) — supports the `calamares` installer.
 
-Syntax: ./build.sh [options] [start_cmd] [-] [end_cmd]
-  Run from start_cmd to end_cmd
-  If start_cmd is omitted, start from the first command
-  If end_cmd is omitted, stop after the selected command
-  Use a single command to run only that command
-  Use '-' by itself to run all commands
+By default, the script installs Hardware Enablement (HWE) kernels (`linux-generic-hwe-XX.04` or `linux-lowlatency-hwe-XX.04`) along with their recommended dependencies (firmware, microcode, etc.) to ensure broad compatibility with modern hardware. You can pin a custom metapackage by setting `TARGET_KERNEL_PACKAGE` in the environment.
+
+### Syntax and Modular Execution
+Advanced users can execute individual segments of the build pipeline instead of building the entire ISO in one run:
+
+```bash
+./build.sh [options] [start_cmd] [-] [end_cmd]
 ```
 
-## How to Customize
+- **Run all stages (default)**: `./build.sh -`
+- **Single stage**: Run from `start_cmd` to the end of that command. For example, `./build.sh debootstrap` builds only the base system.
+- **Stage range**: Run from `start_cmd` through `end_cmd`. For example, `./build.sh setup_host - run_chroot` runs host preparation, debootstrap, and chroot customization, but stops before compressing the final ISO.
 
-Run `./build.sh -` and answer the prompts for release, installer, and kernel, or pass `--release`, `--installer`, and `--kernel` for a scripted run.
+Supported commands:
+- `setup_host`: Installs required host build tools (`debootstrap`, `squashfs-tools`, `xorriso`, `grub-pc-bin`, `grub-efi-amd64-bin`, etc.) and sets up workspace permissions.
+- `debootstrap`: Pulls the minimal Ubuntu base structure from the mirror into the chroot directory.
+- `run_chroot`: Enters the rootfs to disable snapd, set up security policies, and install the chosen desktop profile, browsers, and packages.
+- `build_iso`: Compresses the chroot workspace using SquashFS, copies the Casper kernel/initrd boot files, and builds the final hybrid UEFI/BIOS bootable ISO image with GRUB.
 
-**Calamares:** The build installs **only** `calamares` (`--no-install-recommends`). All YAML under **`scripts/calamares/`** is copied into `/etc/calamares/` (`settings.conf`, `modules/`, and optional `i18n/SUPPORTED`). Edit those files to change the installer flow, partitioning defaults, welcome screen, locale behavior, and post-install package removals.
+---
 
-## How to Update
+## Customizing the Live Installer
 
-Temporary build files are created under `scripts/workspace/{chroot,image}` during the build. After the ISO plus its SHA-1 and SHA-256 files are created, `scripts/workspace` is deleted automatically to save disk space.
+The Calamares installer configuration files are stored inside the `calamares/` subdirectory. During the `run_chroot` stage, the builder copies all files under `scripts/calamares/` to `/etc/calamares/` inside the target system:
+
+- **settings.conf**: Defines the order of Calamares modules (welcome, partition, users, summary, install, finished) and controls branding properties.
+- **modules/**: Contains configuration YAML files for individual installer steps (such as `partition.conf`, `packages.conf`, `locale.conf`, etc.). Modify these files to change installer workflows or pre-configure default options.
+- **branding/**: Holds installer assets, stylesheets, welcome slides, and titles.
+
+---
+
+## Workspace Lifecycle and Cleanups
+
+During execution, the builder creates a `workspace/` directory inside the `scripts/` directory to store temporary assets:
+- **scripts/workspace/chroot/**: Contains the live system rootfs during build.
+- **scripts/workspace/image/**: Stores bootloader files, kernels, and metadata files destined for the ISO filesystem.
+
+On successful compilation, the script automatically deletes the `workspace/` directory to reclaim disk space. If a build fails, you should inspect the chroot directories for logs and then clean up the directory manually using `rm -rf workspace/` or by running `./build.sh -` again (which resets workspace states).

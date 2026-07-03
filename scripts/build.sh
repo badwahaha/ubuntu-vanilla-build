@@ -835,8 +835,35 @@ function host_build_signal_trap() {
 
 function setup_host() {
     echo "=====> running setup_host ..."
-    host_priv apt update
-    host_priv apt install -y debootstrap squashfs-tools xorriso
+
+    local skip_install=0
+    if [[ "${LAUNCHED_FROM_START_HERE:-0}" -eq 1 ]]; then
+        if command -v dpkg &>/dev/null && [[ -r /etc/os-release ]]; then
+            local ID ID_LIKE
+            # shellcheck source=/dev/null
+            . /etc/os-release
+            if [[ "${ID:-}" == "ubuntu" ]] || [[ "${ID_LIKE:-}" == *ubuntu* ]] || \
+               [[ "${ID:-}" == "debian" ]] || [[ "${ID_LIKE:-}" == *debian* ]]; then
+                if dpkg -s debootstrap squashfs-tools xorriso &>/dev/null; then
+                    skip_install=1
+                    if { [[ "${ID:-}" == "debian" ]] || [[ "${ID_LIKE:-}" == *debian* ]]; } && \
+                       { [[ "${ID:-}" != "ubuntu" ]] && [[ "${ID_LIKE:-}" != *ubuntu* ]]; }; then
+                        if ! dpkg -s ubuntu-archive-keyring &>/dev/null; then
+                            skip_install=0
+                        fi
+                    fi
+                fi
+            fi
+        fi
+    fi
+
+    if [[ "$skip_install" -eq 1 ]]; then
+        echo "=====> Host dependencies already installed. Skipping APT update and installation."
+    else
+        host_priv apt update
+        host_priv apt install -y debootstrap squashfs-tools xorriso
+    fi
+
     clean_workspace
     ensure_workspace_root
     host_priv mkdir -p "$WORKSPACE_CHROOT"
