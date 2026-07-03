@@ -14,6 +14,11 @@ CHROOT_MOUNTS_ACTIVE=0
 # Prevents duplicate teardown when both a signal handler and EXIT run.
 HOST_ABORT_CLEANUP_DONE=0
 DATE="$(TZ="UTC" date +"%y%m%d-%H%M%S")"
+# Default hooks directory; overridden by --hooks-dir=PATH.
+HOOKS_DIR=""
+# Advanced mode: set to 1 via --advanced to preserve workspace on failure/interrupt
+# and enable package caching.
+ADVANCED_MODE="${ADVANCED_MODE:-0}"
 
 # ---------------------------------------------------------------------------
 # UI helpers: consistent colored output, headings, step counters, prompts.
@@ -168,6 +173,82 @@ function host_priv() {
     fi
 }
 
+# ---------------------------------------------------------------------------
+# Hook loader: discover and execute *.sh scripts from a hooks subdirectory,
+# sorted by filename (like a game modloader's load order). Non-executable
+# files and files not ending in .sh are skipped.
+# Usage: run_hooks <hooks_subdir>   e.g. run_hooks pre-chroot
+# ---------------------------------------------------------------------------
+function run_hooks() {
+    local subdir="$1"
+    local hooks_base="${HOOKS_DIR:-$SCRIPT_DIR/hooks}"
+    local hooks_path="$hooks_base/$subdir"
+
+    if [[ ! -d "$hooks_path" ]]; then
+        return 0
+    fi
+
+    local hook_files=()
+    local f
+    while IFS= read -r -d '' f; do
+        hook_files+=("$f")
+    done < <(find "$hooks_path" -maxdepth 1 -name '*.sh' -print0 2>/dev/null | sort -z)
+
+    if [[ ${#hook_files[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    ui_heading "Loading hooks: $subdir (${#hook_files[@]} mod(s) found)"
+    local i=0
+    for f in "${hook_files[@]}"; do
+        i=$((i + 1))
+        local name
+        name="$(basename "$f")"
+        if [[ ! -x "$f" ]]; then
+            ui_warn "[hook $i/${#hook_files[@]}] $name — skipped (not executable)"
+            continue
+        fi
+        ui_info "[hook $i/${#hook_files[@]}] Loading: $name"
+        bash -e "$f"
+        ui_ok "[hook $i/${#hook_files[@]}] $name"
+    done
+}
+
+# run_chroot_hooks — execute chroot hooks from /root/hooks/chroot/ inside the chroot.
+# Called from the chroot phase (install_pkg) after customize_image.
+function run_chroot_hooks() {
+    local hooks_path="/root/hooks/chroot"
+
+    if [[ ! -d "$hooks_path" ]]; then
+        return 0
+    fi
+
+    local hook_files=()
+    local f
+    while IFS= read -r -d '' f; do
+        hook_files+=("$f")
+    done < <(find "$hooks_path" -maxdepth 1 -name '*.sh' -print0 2>/dev/null | sort -z)
+
+    if [[ ${#hook_files[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    echo "=====> Loading chroot hooks (${#hook_files[@]} mod(s) found)"
+    local i=0
+    for f in "${hook_files[@]}"; do
+        i=$((i + 1))
+        local name
+        name="$(basename "$f")"
+        if [[ ! -x "$f" ]]; then
+            echo "  WARN  [hook $i/${#hook_files[@]}] $name — skipped (not executable)"
+            continue
+        fi
+        echo "  info  [hook $i/${#hook_files[@]}] Loading: $name"
+        bash -e "$f"
+        echo "  OK    [hook $i/${#hook_files[@]}] $name"
+    done
+}
+
 function default_target_package_remove() {
     case "${TARGET_INSTALLER:-calamares}" in
         calamares)
@@ -193,10 +274,11 @@ function set_defaults() {
     export TARGET_MATE_PACKAGE="${TARGET_MATE_PACKAGE:-}"
     export TARGET_BROWSER="${TARGET_BROWSER:-}"
     export TARGET_BRAVE_CHANNEL="${TARGET_BRAVE_CHANNEL:-}"
-    # TARGET_LIBREWOLF, TARGET_FIREFOX, TARGET_FIREFOX_ESR, TARGET_THUNDERBIRD, TARGET_UBUNTU_STUDIO: intentionally left
-    # unset here so that resolve_browser_selection() and resolve_ubuntu_studio_choice()
-    # can distinguish "user never specified" (unset) from "user explicitly set to 0/1"
-    # via ${VAR+x}. Only env/CLI paths should set these.
+    # TARGET_LIBREWOLF, TARGET_FIREFOX, TARGET_FIREFOX_ESR, TARGET_THUNDERBIRD, TARGET_UBUNTU_STUDIO,
+    # TARGET_PACSTALL: intentionally left unset here so that resolve_browser_selection(),
+    # resolve_ubuntu_studio_choice(), and resolve_pacstall_choice() can distinguish
+    # "user never specified" (unset) from "user explicitly set to 0/1" via ${VAR+x}.
+    # Only env/CLI paths should set these.
     export TARGET_NAME="${TARGET_NAME:-}"
     export GRUB_LIVEBOOT_LABEL="${GRUB_LIVEBOOT_LABEL:-Try Ubuntu without installing}"
 }
@@ -229,7 +311,7 @@ function default_target_name() {
     local version desktop
     version="$(release_version "${TARGET_UBUNTU_VERSION:-}")"
     desktop="${TARGET_DESKTOP:-gnome}"
-    echo "ubuntu-${version}-${desktop}-amd64"
+    echo "ubuntu-${version}-${desktop}-amd64-${DATE}"
 }
 
 function normalize_desktop_variant() {
@@ -550,25 +632,29 @@ EOF
         echo "=====> Thunderbird: not pre-installed (Mozilla PPA + pin above remain; apt install thunderbird when ready)"
     fi
 
-    echo "=====> Pacstall (official installer from https://pacstall.dev/q/install — not Chaotic PPR / apt package)"
-    # Subshell: restore DEBIAN_FRONTEND after upstream script. Pipe declines optional axel; GITHUB_ACTIONS quiets apt.
-    # The installer script is fetched over HTTPS and verified with a SHA-256 checksum
-    # pinned to the audited version below. Update the hash when upgrading Pacstall.
-    local _pacstall_installer="/tmp/pacstall-install.sh"
-    local _pacstall_sha256="SKIP"
-    curl -fsSL https://pacstall.dev/q/install -o "$_pacstall_installer"
-    if [[ "$_pacstall_sha256" != "SKIP" ]]; then
-        echo "${_pacstall_sha256}  ${_pacstall_installer}" | sha256sum -c - || {
-            >&2 echo "ERROR: Pacstall installer checksum mismatch — aborting."
-            rm -f "$_pacstall_installer"
-            exit 1
-        }
+    if [[ "${TARGET_PACSTALL:-1}" == "1" ]]; then
+        echo "=====> Pacstall (official installer from https://pacstall.dev/q/install — not Chaotic PPR / apt package)"
+        # Subshell: restore DEBIAN_FRONTEND after upstream script. Pipe declines optional axel; GITHUB_ACTIONS quiets apt.
+        # The installer script is fetched over HTTPS and verified with a SHA-256 checksum
+        # pinned to the audited version below. Update the hash when upgrading Pacstall.
+        local _pacstall_installer="/tmp/pacstall-install.sh"
+        local _pacstall_sha256="SKIP"
+        curl -fsSL https://pacstall.dev/q/install -o "$_pacstall_installer"
+        if [[ "$_pacstall_sha256" != "SKIP" ]]; then
+            echo "${_pacstall_sha256}  ${_pacstall_installer}" | sha256sum -c - || {
+                >&2 echo "ERROR: Pacstall installer checksum mismatch — aborting."
+                rm -f "$_pacstall_installer"
+                exit 1
+            }
+        fi
+        (
+            export DEBIAN_FRONTEND=noninteractive
+            printf 'n\n' | env GITHUB_ACTIONS=true bash -e "$_pacstall_installer"
+        )
+        rm -f "$_pacstall_installer"
+    else
+        echo "=====> Pacstall: skipped (TARGET_PACSTALL=0)"
     fi
-    (
-        export DEBIAN_FRONTEND=noninteractive
-        printf 'n\n' | env GITHUB_ACTIONS=true bash -e "$_pacstall_installer"
-    )
-    rm -f "$_pacstall_installer"
 
     if [[ "${TARGET_UBUNTU_STUDIO:-0}" == "1" ]]; then
         apt_install_available "Ubuntu Studio metapackages" \
@@ -663,6 +749,7 @@ function check_settings() {
     assert_bool_var TARGET_FIREFOX_ESR
     assert_bool_var TARGET_THUNDERBIRD
     assert_bool_var TARGET_UBUNTU_STUDIO
+    assert_bool_var TARGET_PACSTALL 1
     if [[ "${TARGET_DESKTOP:-}" == "mate" ]]; then
         case "${TARGET_MATE_PACKAGE:-mate-desktop-environment}" in
             full)
@@ -725,6 +812,18 @@ function host_help() {
     echo "  --firefox-esr / --no-firefox-esr       Pre-install Firefox ESR (Mozilla PPA always configured)"
     echo "  --thunderbird / --no-thunderbird       Pre-install Thunderbird (Mozilla PPA always configured)"
     echo "  --ubuntu-studio / --no-ubuntu-studio     Ubuntu Studio metapackage set (heavy)"
+    echo "  --pacstall / --no-pacstall               Install Pacstall package manager (default: yes)"
+    echo "  --locale=LOCALE                          System locale (e.g. en_US.UTF-8) for unattended builds"
+    echo "  --keyboard-layout=LAYOUT                 Keyboard layout code (e.g. us, de, fr) for unattended builds"
+    echo "  --keyboard-variant=VARIANT               Keyboard variant (e.g. intl, nodeadkeys; optional)"
+    echo "  --interactive                            Force interactive prompts (even if stdin is not a TTY)"
+    echo "  --no-interactive                         Disable all interactive prompts (use defaults or fail)"
+    echo
+    echo "Advanced mode (--advanced):"
+    echo "  --advanced                               Enable advanced mode (config file, workspace preservation, package cache)"
+    echo "  --config=FILE                            Load build options from a .cfg file (KEY=VALUE format; advanced mode only)"
+    echo "  --generate-config                        Launch config wizard to generate a build.cfg file"
+    echo "  --hooks-dir=PATH                         Custom hooks directory (default: scripts/hooks/)"
     echo
     echo "Syntax: $0 [options] [start_cmd] [-] [end_cmd]"
     echo "  Run from start_cmd to end_cmd"
@@ -765,6 +864,48 @@ function check_host_user() {
     exit 1
 }
 
+# Package cache: persistent directory bind-mounted into the chroot's APT cache.
+# Only used in advanced mode. Survives across builds to save bandwidth.
+PKG_CACHE_MOUNTED=0
+
+function resolve_package_cache_dir() {
+    local _cache="${XDG_CACHE_HOME:-${HOME:-/root}/.cache}"
+    echo "$_cache/ubuntu-vanilla-build/apt-cache"
+}
+
+function mount_package_cache() {
+    if [[ "${ADVANCED_MODE:-0}" != "1" ]]; then
+        return 0
+    fi
+    local cache_dir
+    cache_dir="$(resolve_package_cache_dir)"
+    local chroot_apt_cache="$WORKSPACE_CHROOT/var/cache/apt/archives"
+
+    host_priv mkdir -p "$cache_dir"
+    host_priv mkdir -p "$chroot_apt_cache"
+
+    if mountpoint -q "$chroot_apt_cache" 2>/dev/null; then
+        PKG_CACHE_MOUNTED=1
+        return 0
+    fi
+
+    echo "=====> [advanced] Mounting package cache: $cache_dir"
+    host_priv mount --bind "$cache_dir" "$chroot_apt_cache"
+    PKG_CACHE_MOUNTED=1
+}
+
+function unmount_package_cache() {
+    if [[ "$PKG_CACHE_MOUNTED" -eq 0 ]]; then
+        return 0
+    fi
+    local chroot_apt_cache="$WORKSPACE_CHROOT/var/cache/apt/archives"
+    if mountpoint -q "$chroot_apt_cache" 2>/dev/null; then
+        echo "=====> [advanced] Unmounting package cache"
+        host_priv umount -l "$chroot_apt_cache" 2>/dev/null || true
+    fi
+    PKG_CACHE_MOUNTED=0
+}
+
 function ensure_workspace_root() {
     host_priv mkdir -p "$WORKSPACE_DIR"
 }
@@ -801,17 +942,24 @@ function chroot_exit_teardown() {
     done
 }
 
-# On failed or interrupted host build: drop chroot mounts (if any) and remove the workspace tree so leftover
-# mounts do not require a reboot to clear.
+# On failed or interrupted host build: drop chroot mounts (if any).
+# In default mode: also remove the workspace tree so leftover mounts do not require a reboot to clear.
+# In advanced mode: only unmount, preserve workspace for faster re-runs.
 function host_abort_cleanup() {
     if [[ "${HOST_ABORT_CLEANUP_DONE:-0}" -eq 1 ]]; then
         return 0
     fi
     HOST_ABORT_CLEANUP_DONE=1
-    echo "=====> unmounting chroot bind mounts and removing workspace ..." >&2
     chroot_exit_teardown || true
-    if [[ -n "${WORKSPACE_DIR:-}" ]]; then
-        clean_workspace || true
+    unmount_package_cache || true
+    if [[ "${ADVANCED_MODE:-0}" == "1" ]]; then
+        echo "=====> [advanced] Workspace preserved at: ${WORKSPACE_DIR:-unknown}" >&2
+        echo "=====> [advanced] Re-run individual stages (e.g. run_chroot) to continue." >&2
+    else
+        echo "=====> unmounting chroot bind mounts and removing workspace ..." >&2
+        if [[ -n "${WORKSPACE_DIR:-}" ]]; then
+            clean_workspace || true
+        fi
     fi
 }
 
@@ -864,9 +1012,13 @@ function setup_host() {
         host_priv apt install -y debootstrap squashfs-tools xorriso
     fi
 
-    clean_workspace
-    ensure_workspace_root
-    host_priv mkdir -p "$WORKSPACE_CHROOT"
+    if [[ "${ADVANCED_MODE:-0}" == "1" ]] && [[ -d "$WORKSPACE_CHROOT" ]]; then
+        echo "=====> [advanced] Reusing existing workspace: $WORKSPACE_DIR"
+    else
+        clean_workspace
+        ensure_workspace_root
+        host_priv mkdir -p "$WORKSPACE_CHROOT"
+    fi
 }
 
 function debootstrap() {
@@ -877,12 +1029,24 @@ function debootstrap() {
 function run_chroot() {
     echo "=====> running run_chroot ..."
 
+    # Run pre-chroot hooks on the host (modloader: pre-chroot stage).
+    WORKSPACE_CHROOT="$WORKSPACE_CHROOT" run_hooks pre-chroot
+
     chroot_enter_setup
+    mount_package_cache
 
     host_priv cp "$SCRIPT_DIR/build.sh" "$WORKSPACE_CHROOT/root/build.sh"
     host_priv rm -rf "$WORKSPACE_CHROOT/root/calamares-config"
     if [[ -d "$SCRIPT_DIR/calamares" ]]; then
         host_priv cp -a "$SCRIPT_DIR/calamares" "$WORKSPACE_CHROOT/root/calamares-config"
+    fi
+
+    # Copy hooks into chroot so chroot-phase hooks can run inside.
+    host_priv rm -rf "$WORKSPACE_CHROOT/root/hooks"
+    local _hooks_base="${HOOKS_DIR:-$SCRIPT_DIR/hooks}"
+    if [[ -d "$_hooks_base/chroot" ]]; then
+        host_priv mkdir -p "$WORKSPACE_CHROOT/root/hooks"
+        host_priv cp -a "$_hooks_base/chroot" "$WORKSPACE_CHROOT/root/hooks/chroot"
     fi
 
     host_priv chroot "$WORKSPACE_CHROOT" /usr/bin/env \
@@ -902,6 +1066,10 @@ function run_chroot() {
         TARGET_FIREFOX_ESR="${TARGET_FIREFOX_ESR:-0}" \
         TARGET_THUNDERBIRD="${TARGET_THUNDERBIRD:-0}" \
         TARGET_UBUNTU_STUDIO="${TARGET_UBUNTU_STUDIO:-0}" \
+        TARGET_PACSTALL="${TARGET_PACSTALL:-1}" \
+        TARGET_LOCALE="${TARGET_LOCALE:-}" \
+        TARGET_KEYBOARD_LAYOUT="${TARGET_KEYBOARD_LAYOUT:-}" \
+        TARGET_KEYBOARD_VARIANT="${TARGET_KEYBOARD_VARIANT:-}" \
         TARGET_GNOME_INSTALL_RECOMMENDS="${TARGET_GNOME_INSTALL_RECOMMENDS:-0}" \
         TARGET_NAME="${TARGET_NAME}" \
         GRUB_LIVEBOOT_LABEL="${GRUB_LIVEBOOT_LABEL}" \
@@ -911,7 +1079,9 @@ function run_chroot() {
 
     host_priv rm -f "$WORKSPACE_CHROOT/root/build.sh"
     host_priv rm -rf "$WORKSPACE_CHROOT/root/calamares-config"
+    host_priv rm -rf "$WORKSPACE_CHROOT/root/hooks"
 
+    unmount_package_cache
     chroot_exit_teardown
 }
 
@@ -1535,6 +1705,40 @@ function resolve_ubuntu_studio_choice() {
     fi
 }
 
+function resolve_pacstall_choice() {
+    if [[ -n "${TARGET_PACSTALL+x}" ]]; then
+        export TARGET_PACSTALL="${TARGET_PACSTALL:-1}"
+        return 0
+    fi
+
+    if [[ -t 0 ]]; then
+        ui_heading "Pacstall"
+        echo "    AUR-like package manager for Ubuntu (installed from https://pacstall.dev)."
+        local yn
+        while true; do
+            read -r -p "  Install Pacstall? (Y/n) " yn
+            yn="${yn,,}"
+            [[ -z "$yn" ]] && yn="y"
+            case "$yn" in
+                y|yes)
+                    export TARGET_PACSTALL="1"
+                    break
+                    ;;
+                n|no)
+                    export TARGET_PACSTALL="0"
+                    break
+                    ;;
+                *)
+                    echo "  Please answer y or n."
+                    ;;
+            esac
+        done
+        ui_ok "TARGET_PACSTALL=$TARGET_PACSTALL"
+    else
+        export TARGET_PACSTALL=1
+    fi
+}
+
 function interactive_installer_pick() {
     if [[ ! -t 0 ]]; then
         ui_err "No terminal is available. Use --installer=calamares|ubiquity."
@@ -1648,6 +1852,10 @@ function print_build_summary() {
     [[ "${TARGET_THUNDERBIRD:-0}" == "1" ]] && _bs="${_bs:+${_bs}; }Thunderbird"
     ui_kv "Browsers"       "${_bs}"
     ui_kv "Ubuntu Studio"  "${TARGET_UBUNTU_STUDIO:-0}"
+    ui_kv "Pacstall"        "${TARGET_PACSTALL:-1}"
+    if [[ "${ADVANCED_MODE:-0}" == "1" ]]; then
+        ui_kv "Advanced mode"   "enabled (workspace preserved, package cache active)"
+    fi
     ui_kv "Target name"     "${TARGET_NAME:-?}"
     ui_kv "Mirror"          "${TARGET_UBUNTU_MIRROR:-?}"
     ui_kv "Workspace"       "${WORKSPACE_DIR:-?}"
@@ -1685,6 +1893,204 @@ function print_build_result() {
     echo
 }
 
+# generate_config_wizard — interactive wizard that generates a build.cfg file.
+# Walks the user through each setting and writes the result.
+function generate_config_wizard() {
+    if [[ ! -t 0 ]]; then
+        ui_err "Config wizard requires an interactive terminal."
+        exit 1
+    fi
+
+    local out_path="$SCRIPT_DIR/build.cfg"
+
+    ui_banner "Build Configuration Wizard"
+    echo "  This wizard will generate a build.cfg file with your settings."
+    echo "  Press Enter to accept the [default] value shown in brackets."
+    echo
+
+    if [[ -f "$out_path" ]]; then
+        if ! ui_confirm "  $out_path already exists. Overwrite?" n; then
+            ui_info "Wizard cancelled."
+            exit 0
+        fi
+    fi
+
+    local _release _kernel _desktop _installer _mirror
+    local _brave _librewolf _firefox _firefox_esr _thunderbird
+    local _pacstall _ubuntu_studio _locale _keyboard_layout _keyboard_variant
+    local _advanced _name
+
+    # Release
+    echo "  Supported releases: jammy (22.04), noble (24.04), resolute (26.04)"
+    read -r -p "  Release [noble]: " _release
+    _release="${_release:-noble}"
+
+    # Kernel
+    read -r -p "  Kernel flavor (generic / lowlatency) [generic]: " _kernel
+    _kernel="${_kernel:-generic}"
+
+    # Desktop
+    echo "  Desktops: gnome, xfce, lxde, lxqt, mate, cinnamon, budgie, kde-plasma"
+    read -r -p "  Desktop [gnome]: " _desktop
+    _desktop="${_desktop:-gnome}"
+
+    # Installer
+    read -r -p "  Installer (calamares / ubiquity) [calamares]: " _installer
+    _installer="${_installer:-calamares}"
+
+    # Mirror
+    read -r -p "  Mirror [https://archive.ubuntu.com/ubuntu/]: " _mirror
+    _mirror="${_mirror:-https://archive.ubuntu.com/ubuntu/}"
+
+    # Brave
+    echo "  Brave browser channel: none, release, origin"
+    read -r -p "  Brave channel [release]: " _brave
+    _brave="${_brave:-release}"
+
+    # LibreWolf
+    read -r -p "  Pre-install LibreWolf? (0/1) [0]: " _librewolf
+    _librewolf="${_librewolf:-0}"
+
+    # Firefox
+    read -r -p "  Pre-install Firefox? (0/1) [0]: " _firefox
+    _firefox="${_firefox:-0}"
+
+    # Firefox ESR
+    read -r -p "  Pre-install Firefox ESR? (0/1) [0]: " _firefox_esr
+    _firefox_esr="${_firefox_esr:-0}"
+
+    # Thunderbird
+    read -r -p "  Pre-install Thunderbird? (0/1) [0]: " _thunderbird
+    _thunderbird="${_thunderbird:-0}"
+
+    # Pacstall
+    read -r -p "  Install Pacstall? (0/1) [1]: " _pacstall
+    _pacstall="${_pacstall:-1}"
+
+    # Ubuntu Studio
+    read -r -p "  Install Ubuntu Studio packages? (0/1) [0]: " _ubuntu_studio
+    _ubuntu_studio="${_ubuntu_studio:-0}"
+
+    # Locale
+    read -r -p "  System locale (blank to skip, e.g. en_US.UTF-8): " _locale
+
+    # Keyboard layout
+    read -r -p "  Keyboard layout (blank to skip, e.g. us): " _keyboard_layout
+
+    # Keyboard variant
+    if [[ -n "$_keyboard_layout" ]]; then
+        read -r -p "  Keyboard variant (blank for default, e.g. intl): " _keyboard_variant
+    else
+        _keyboard_variant=""
+    fi
+
+    # Advanced mode
+    read -r -p "  Enable advanced mode? (0/1) [0]: " _advanced
+    _advanced="${_advanced:-0}"
+
+    # Custom name
+    read -r -p "  Custom ISO name (blank for auto): " _name
+
+    # Write the config file
+    cat > "$out_path" <<WIZARD_EOF
+# Ubuntu Vanilla ISO Builder — generated by config wizard
+# $(date '+%Y-%m-%d %H:%M:%S %Z')
+
+# --- Core ---
+TARGET_UBUNTU_VERSION=${_release}
+TARGET_KERNEL_FLAVOR=${_kernel}
+TARGET_DESKTOP=${_desktop}
+TARGET_INSTALLER=${_installer}
+TARGET_UBUNTU_MIRROR=${_mirror}
+
+# --- Browsers ---
+TARGET_BRAVE_CHANNEL=${_brave}
+TARGET_LIBREWOLF=${_librewolf}
+TARGET_FIREFOX=${_firefox}
+TARGET_FIREFOX_ESR=${_firefox_esr}
+TARGET_THUNDERBIRD=${_thunderbird}
+
+# --- Package Managers ---
+TARGET_PACSTALL=${_pacstall}
+
+# --- Extras ---
+TARGET_UBUNTU_STUDIO=${_ubuntu_studio}
+WIZARD_EOF
+
+    if [[ -n "$_locale" ]]; then
+        echo "" >> "$out_path"
+        echo "# --- Locale & Keyboard ---" >> "$out_path"
+        echo "TARGET_LOCALE=${_locale}" >> "$out_path"
+    fi
+    if [[ -n "$_keyboard_layout" ]]; then
+        [[ -z "$_locale" ]] && { echo "" >> "$out_path"; echo "# --- Locale & Keyboard ---" >> "$out_path"; }
+        echo "TARGET_KEYBOARD_LAYOUT=${_keyboard_layout}" >> "$out_path"
+        [[ -n "$_keyboard_variant" ]] && echo "TARGET_KEYBOARD_VARIANT=${_keyboard_variant}" >> "$out_path"
+    fi
+
+    if [[ "$_advanced" == "1" ]]; then
+        echo "" >> "$out_path"
+        echo "# --- Advanced ---" >> "$out_path"
+        echo "ADVANCED_MODE=1" >> "$out_path"
+    fi
+
+    if [[ -n "$_name" ]]; then
+        echo "" >> "$out_path"
+        echo "# --- Output ---" >> "$out_path"
+        echo "TARGET_NAME=${_name}" >> "$out_path"
+    fi
+
+    echo
+    ui_ok "Config written to: $out_path"
+    ui_info "Run './build.sh -' to start a build with these settings."
+    exit 0
+}
+
+# load_config_file FILE — source a config file (key=value lines, # comments, blank lines).
+# Only recognized TARGET_* and GRUB_LIVEBOOT_LABEL variables are exported.
+# Unknown keys are ignored; the config cannot run arbitrary commands.
+function load_config_file() {
+    local config_path="$1"
+    if [[ ! -f "$config_path" ]]; then
+        ui_err "Config file not found: $config_path"
+        exit 1
+    fi
+    ui_info "Loading config from: $config_path"
+    local line key val
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # Skip blank lines and comments.
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+        # Strip inline comments.
+        line="${line%%#*}"
+        # Match KEY=VALUE (with optional quotes).
+        if [[ "$line" =~ ^[[:space:]]*([A-Z_][A-Z0-9_]*)=(.*)$ ]]; then
+            key="${BASH_REMATCH[1]}"
+            val="${BASH_REMATCH[2]}"
+            # Strip surrounding quotes.
+            val="${val#\"}" ; val="${val%\"}"
+            val="${val#\'}" ; val="${val%\'}"
+            val="${val## }" ; val="${val%% }"
+            case "$key" in
+                TARGET_UBUNTU_VERSION|TARGET_UBUNTU_MIRROR|TARGET_KERNEL_FLAVOR|\
+                TARGET_KERNEL_PACKAGE|TARGET_DESKTOP|TARGET_KDE_PACKAGE|\
+                TARGET_MATE_PACKAGE|TARGET_MATE_EXTRAS|TARGET_BROWSER|\
+                TARGET_BRAVE_CHANNEL|TARGET_LIBREWOLF|TARGET_FIREFOX|\
+                TARGET_FIREFOX_ESR|TARGET_THUNDERBIRD|TARGET_UBUNTU_STUDIO|\
+                TARGET_PACSTALL|TARGET_GNOME_INSTALL_RECOMMENDS|TARGET_NAME|\
+                TARGET_LOCALE|TARGET_KEYBOARD_LAYOUT|TARGET_KEYBOARD_VARIANT|\
+                TARGET_INSTALLER|TARGET_PACKAGE_REMOVE|\
+                GRUB_LIVEBOOT_LABEL|UBUNTU_VANILLA_WORKSPACE|NO_CONFIRM|\
+                INTERACTIVE|ADVANCED_MODE|HOOKS_DIR)
+                    export "$key=$val"
+                    ;;
+                *)
+                    ui_warn "Config: ignoring unknown key '$key'"
+                    ;;
+            esac
+        fi
+    done < "$config_path"
+}
+
 function host_main() {
     local cli_kernel=""
     local cli_release=""
@@ -1707,6 +2113,13 @@ function host_main() {
     local cli_thunderbird=0
     local cli_ubuntustudio_set=0
     local cli_ubuntustudio=0
+    local cli_pacstall_set=0
+    local cli_pacstall=0
+    local cli_locale=""
+    local cli_keyboard_layout=""
+    local cli_keyboard_variant=""
+    local cli_config=""
+    local cli_interactive=""
     local args=()
 
     set_defaults
@@ -1845,6 +2258,72 @@ function host_main() {
                 cli_ubuntustudio=0
                 shift
                 ;;
+            --pacstall)
+                cli_pacstall_set=1
+                cli_pacstall=1
+                shift
+                ;;
+            --no-pacstall)
+                cli_pacstall_set=1
+                cli_pacstall=0
+                shift
+                ;;
+            --locale=*)
+                cli_locale="${1#--locale=}"
+                shift
+                ;;
+            --locale)
+                cli_locale="$2"
+                shift 2
+                ;;
+            --keyboard-layout=*)
+                cli_keyboard_layout="${1#--keyboard-layout=}"
+                shift
+                ;;
+            --keyboard-layout)
+                cli_keyboard_layout="$2"
+                shift 2
+                ;;
+            --keyboard-variant=*)
+                cli_keyboard_variant="${1#--keyboard-variant=}"
+                shift
+                ;;
+            --keyboard-variant)
+                cli_keyboard_variant="$2"
+                shift 2
+                ;;
+            --config=*)
+                cli_config="${1#--config=}"
+                shift
+                ;;
+            --config)
+                cli_config="$2"
+                shift 2
+                ;;
+            --interactive)
+                cli_interactive="1"
+                shift
+                ;;
+            --no-interactive)
+                cli_interactive="0"
+                shift
+                ;;
+            --hooks-dir=*)
+                HOOKS_DIR="${1#--hooks-dir=}"
+                shift
+                ;;
+            --hooks-dir)
+                HOOKS_DIR="$2"
+                shift 2
+                ;;
+            --advanced)
+                export ADVANCED_MODE=1
+                shift
+                ;;
+            --generate-config)
+                export ADVANCED_MODE=1
+                generate_config_wizard
+                ;;
             -h|--help)
                 host_help
                 ;;
@@ -1855,6 +2334,26 @@ function host_main() {
         esac
     done
     set -- "${args[@]}"
+
+    # Load config file (advanced mode only). Config values act as defaults; CLI flags override them below.
+    if [[ "${ADVANCED_MODE:-0}" == "1" ]]; then
+        if [[ -n "$cli_config" ]]; then
+            load_config_file "$cli_config"
+        elif [[ -f "$SCRIPT_DIR/build.cfg" ]]; then
+            load_config_file "$SCRIPT_DIR/build.cfg"
+        fi
+    elif [[ -n "$cli_config" ]]; then
+        ui_warn "--config requires --advanced mode. Ignoring config file."
+    fi
+
+    # Handle --interactive / --no-interactive. The INTERACTIVE variable can also come from the config file.
+    # --no-interactive: redirect stdin from /dev/null so that all [[ -t 0 ]] checks return false,
+    # making the build fully non-interactive (all missing values use defaults or fail with an error).
+    # --interactive: force interactive mode even when stdin is not a TTY (e.g. piped).
+    if [[ "$cli_interactive" == "0" ]] || [[ "${INTERACTIVE:-}" == "0" && -z "$cli_interactive" ]]; then
+        exec 0</dev/null
+        export NO_CONFIRM=1
+    fi
 
     cd "$SCRIPT_DIR"
     resolve_workspace_paths
@@ -1915,6 +2414,18 @@ function host_main() {
     if [[ "$cli_ubuntustudio_set" -eq 1 ]]; then
         export TARGET_UBUNTU_STUDIO="$cli_ubuntustudio"
     fi
+    if [[ "$cli_pacstall_set" -eq 1 ]]; then
+        export TARGET_PACSTALL="$cli_pacstall"
+    fi
+    if [[ -n "$cli_locale" ]]; then
+        export TARGET_LOCALE="$cli_locale"
+    fi
+    if [[ -n "$cli_keyboard_layout" ]]; then
+        export TARGET_KEYBOARD_LAYOUT="$cli_keyboard_layout"
+    fi
+    if [[ -n "$cli_keyboard_variant" ]]; then
+        export TARGET_KEYBOARD_VARIANT="$cli_keyboard_variant"
+    fi
 
     if [[ -z "${TARGET_UBUNTU_VERSION:-}" ]]; then
         resolve_release_choice
@@ -1945,6 +2456,7 @@ function host_main() {
     resolve_mate_choice
     resolve_browser_selection
     resolve_ubuntu_studio_choice
+    resolve_pacstall_choice
 
     check_settings
     set_target_kernel_package_from_flavor
@@ -2129,9 +2641,36 @@ function install_pkg() {
 
     customize_image
 
+    # Run chroot hooks (modloader: chroot stage).
+    run_chroot_hooks
+
     apt-get autoremove -y
 
-    dpkg-reconfigure locales
+    # Locale configuration: if TARGET_LOCALE is set, pre-seed debconf for unattended operation.
+    if [[ -n "${TARGET_LOCALE:-}" ]]; then
+        echo "=====> Configuring locale: ${TARGET_LOCALE}"
+        sed -i "s/^# *${TARGET_LOCALE}/${TARGET_LOCALE}/" /etc/locale.gen 2>/dev/null || true
+        echo "${TARGET_LOCALE}" >> /etc/locale.gen
+        sort -u -o /etc/locale.gen /etc/locale.gen
+        echo "locales locales/default_environment_locale select ${TARGET_LOCALE}" | debconf-set-selections
+        echo "locales locales/locales_to_be_generated multiselect ${TARGET_LOCALE}" | debconf-set-selections
+        dpkg-reconfigure --frontend=noninteractive locales
+    else
+        dpkg-reconfigure locales
+    fi
+
+    # Keyboard configuration: if TARGET_KEYBOARD_LAYOUT is set, pre-seed for unattended operation.
+    if [[ -n "${TARGET_KEYBOARD_LAYOUT:-}" ]]; then
+        local _kb_variant="${TARGET_KEYBOARD_VARIANT:-}"
+        echo "=====> Configuring keyboard: layout=${TARGET_KEYBOARD_LAYOUT}${_kb_variant:+, variant=${_kb_variant}}"
+        apt-get install -y keyboard-configuration console-setup 2>/dev/null || true
+        echo "keyboard-configuration keyboard-configuration/layoutcode select ${TARGET_KEYBOARD_LAYOUT}" | debconf-set-selections
+        echo "keyboard-configuration keyboard-configuration/variant select ${_kb_variant}" | debconf-set-selections
+        echo "keyboard-configuration keyboard-configuration/model select pc105" | debconf-set-selections
+        echo "console-setup console-setup/charmap47 select UTF-8" | debconf-set-selections
+        dpkg-reconfigure --frontend=noninteractive keyboard-configuration
+        dpkg-reconfigure --frontend=noninteractive console-setup
+    fi
 
     cat <<EOF > /etc/NetworkManager/NetworkManager.conf
 [main]

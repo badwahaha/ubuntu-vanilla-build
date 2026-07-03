@@ -11,6 +11,12 @@ This project is designed for:
 ## What's New
 
 Recent improvements include:
+- **Build Hooks (Modloader)**: Drop `.sh` scripts into `scripts/hooks/pre-chroot/` and `scripts/hooks/chroot/` to customize the build — scripts run in sorted filename order, like a game modloader.
+- **Advanced Mode**: `--advanced` flag preserves workspace on failure/Ctrl+C for faster re-runs and enables a persistent APT package cache to save bandwidth.
+- **Config File Support** *(advanced mode)*: Load build options from a `build.cfg` file for repeatable builds (`--advanced --config=FILE`), or generate one with `--generate-config`. Beginner mode uses interactive prompts.
+- **Non-Interactive / Unattended Mode**: `--no-interactive` flag disables all prompts; combined with `--locale` and `--keyboard-layout` for fully unattended builds.
+- **Date+Time in ISO Name**: Generated ISOs now include a UTC timestamp (e.g. `ubuntu-24.04-gnome-amd64-260703-041500.iso`) so old builds aren't overwritten.
+- **Optional Pacstall**: Pacstall installation is now configurable (`--pacstall` / `--no-pacstall`).
 - **Security Hardening**: Enhanced build pipeline against supply-chain and network attacks with verified package installations.
 - **Improved Error Handling**: Better error reporting and failure detection—no more silently swallowed failures.
 - **Code Refactoring**: Extracted shared utilities to eliminate duplicated code patterns for better maintainability.
@@ -42,7 +48,7 @@ Recent improvements include:
   - Mozilla Firefox (`packages.mozilla.org` with pinning)
 - **Optional pre-installs**: Brave channel, LibreWolf, Firefox, Firefox ESR, Thunderbird, and Ubuntu Studio package set.
 - **Package Management Utilities**:
-  - Always installs Pacstall through the official installer: [pacstall.dev](https://pacstall.dev).
+  - Pacstall installed by default through the official installer: [pacstall.dev](https://pacstall.dev) (disable with `--no-pacstall`).
   - Pre-configured Flatpak support with the Flathub repository (including the GNOME Software Flatpak plugin on GNOME desktop).
 - **Outputs**:
   - `${TARGET_NAME:-ubuntu-<yy>.04-<desktop>-amd64}.iso`
@@ -205,7 +211,56 @@ If values are not explicitly set and interactive prompts are skipped, the defaul
 
 ### Additional Options
 - `--ubuntu-studio` / `--no-ubuntu-studio` - Include Ubuntu Studio creative packages.
+- `--pacstall` / `--no-pacstall` - Install Pacstall package manager (default: yes).
 - `--browser=release|origin` - Legacy alias for Brave selection (use `--brave` instead).
+
+### Locale & Keyboard (Unattended Builds)
+- `--locale=LOCALE` - System locale (e.g. `en_US.UTF-8`) to pre-seed for non-interactive locale configuration.
+- `--keyboard-layout=LAYOUT` - Keyboard layout code (e.g. `us`, `de`, `fr`).
+- `--keyboard-variant=VARIANT` - Keyboard variant (e.g. `intl`, `nodeadkeys`; optional).
+
+### Config File & Interactive Mode
+- `--config=FILE` - Load build options from a config file (KEY=VALUE format; **requires `--advanced`**). If not specified, `scripts/build.cfg` is loaded automatically when present in advanced mode.
+- `--generate-config` - Launch an interactive wizard to generate a `build.cfg` file (advanced mode).
+- `--interactive` - Force interactive prompts even when stdin is not a TTY.
+- `--no-interactive` - Disable all interactive prompts; missing required values use defaults or cause an error.
+
+> **Note:** In beginner mode (default), the build uses interactive prompts and sensible defaults. Config files are an advanced-mode feature for power users and CI pipelines.
+
+### Build Hooks (Modloader)
+
+Drop executable `.sh` scripts into the hooks directories to customize the build pipeline — like a game modloader:
+
+```
+scripts/hooks/
+  pre-chroot/    # Runs on host after debootstrap, before entering chroot
+  chroot/        # Runs inside chroot after packages are installed
+```
+
+Scripts are discovered and executed in **sorted filename order**. Use numeric prefixes to control load order:
+
+```bash
+hooks/pre-chroot/00-copy-skel-files.sh
+hooks/pre-chroot/10-add-custom-repo.sh
+hooks/chroot/00-install-extra-packages.sh
+hooks/chroot/50-configure-services.sh
+```
+
+- Each hook receives all `TARGET_*` environment variables.
+- Pre-chroot hooks also get `WORKSPACE_CHROOT` (path to the chroot root on the host).
+- A failing hook aborts the build; use `|| true` for optional operations.
+- `--hooks-dir=PATH` overrides the default `scripts/hooks/` directory.
+
+See `scripts/hooks/README.md` for detailed documentation and examples.
+
+### Advanced Mode
+
+`--advanced` (or `ADVANCED_MODE=1` as an environment variable) unlocks features for power users:
+
+1. **Config file support**: Auto-loads `scripts/build.cfg` if present, or use `--config=FILE` for a custom path. Generate one interactively with `--generate-config`. In beginner mode (default), the build relies on interactive prompts instead.
+2. **Workspace preservation**: On Ctrl+C or build failure, only bind mounts are unmounted — the workspace tree is kept intact. This lets you inspect or resume from a specific build stage (e.g. `./build.sh --advanced run_chroot`) without re-running debootstrap.
+3. **Package cache**: A persistent APT cache directory (`~/.cache/ubuntu-vanilla-build/apt-cache/`) is bind-mounted into the chroot. Downloaded `.deb` files survive across builds, saving bandwidth on repeated builds.
+4. **Workspace reuse**: `setup_host` reuses an existing workspace directory instead of cleaning it, allowing faster iteration.
 
 ---
 
@@ -258,10 +313,24 @@ For advanced configurations, environment variables can be used instead of CLI fl
 ### Feature & Customization Variables
 - `TARGET_UBUNTU_STUDIO` - Set to `1` to include Ubuntu Studio packages.
 - `TARGET_GNOME_INSTALL_RECOMMENDS` - Set to `1` to install GNOME with recommends.
+- `TARGET_PACSTALL` - Set to `0` to skip Pacstall installation (default: `1`).
 - `TARGET_PACKAGE_REMOVE` - Space-separated list of packages to remove from target system.
-- `TARGET_NAME` - Custom output ISO base name.
+- `TARGET_NAME` - Custom output ISO base name (includes UTC timestamp by default).
 - `GRUB_LIVEBOOT_LABEL` - Custom boot menu entry label.
 - `UBUNTU_VANILLA_WORKSPACE` - Custom workspace parent directory.
+
+### Locale & Keyboard Variables
+- `TARGET_LOCALE` - System locale for unattended builds (e.g. `en_US.UTF-8`).
+- `TARGET_KEYBOARD_LAYOUT` - Keyboard layout code (e.g. `us`, `de`).
+- `TARGET_KEYBOARD_VARIANT` - Keyboard variant (optional, e.g. `intl`).
+
+### Config & Interactive Variables
+- `INTERACTIVE` - Set to `0` to disable interactive prompts (equivalent to `--no-interactive`).
+- `NO_CONFIRM` - Set to `1` to skip the pre-build confirmation prompt.
+
+### Advanced Mode Variables
+- `ADVANCED_MODE` - Set to `1` to preserve workspace on failure/interrupt and enable package cache.
+- `HOOKS_DIR` - Custom path to the hooks directory (default: `scripts/hooks/`).
 
 ---
 
@@ -339,6 +408,15 @@ TARGET_GNOME_INSTALL_RECOMMENDS=1 ./build.sh --release=noble --kernel=generic --
 
 # Resolute + GNOME with recommends enabled
 TARGET_GNOME_INSTALL_RECOMMENDS=1 ./build.sh --release=resolute --kernel=generic --desktop=gnome -
+
+# Advanced mode: generate a config file with the wizard
+./build.sh --generate-config
+
+# Advanced mode: build using a config file
+./build.sh --advanced --config=build.cfg -
+
+# Advanced mode: preserve workspace for faster re-runs
+./build.sh --advanced --release=noble --kernel=generic -
 ```
 
 ---
@@ -352,6 +430,7 @@ The build process uses a workspace directory to store temporary files:
 - **Custom location**: Set `UBUNTU_VANILLA_WORKSPACE=/some/path` to use a custom parent directory (actual workspace becomes `/some/path/workspace`).
 - **Automatic cleanup**: On successful build, the workspace is automatically removed to save disk space.
 - **Manual cleanup**: If a build fails, you may need to manually remove the workspace directory.
+- **Advanced mode preservation**: With `--advanced`, the workspace is preserved on failure or Ctrl+C (only bind mounts are unmounted). This enables faster re-runs since you can skip debootstrap and jump straight to the failed stage.
 
 ### Output Files
 After a successful build, the following files are created in the `scripts/` directory:
@@ -476,7 +555,9 @@ For deep customization of the installer experience, edit the YAML files in `scri
 - `i18n/SUPPORTED` - Supported locales.
 
 ### Adding Custom Packages
-To add custom packages to your build, modify the `customize_image()` function in `scripts/build.sh`. Look for the desktop-specific sections and add your packages to the appropriate `apt-get install` commands.
+The recommended way to add custom packages is with **build hooks** (see [Build Hooks](#build-hooks-modloader)). Drop a script into `scripts/hooks/chroot/` that runs `apt-get install -y <your-packages>` — no need to modify `build.sh` at all.
+
+Alternatively, for permanent changes to the build pipeline itself, modify the `customize_image()` function in `scripts/build.sh`. Look for the desktop-specific sections and add your packages to the appropriate `apt-get install` commands.
 
 ### Creating Custom Desktop Profiles
 To add a new desktop environment variant:
