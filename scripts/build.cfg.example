@@ -1,18 +1,18 @@
 # Ubuntu Vanilla ISO Builder - Example Configuration File
 # ========================================================
 #
-# Copy this file to "build.conf" (in the scripts/ directory) for automatic loading,
-# or use --config=/path/to/your-config.conf to load from a custom location.
+# Copy this file to "build.cfg" (in the scripts/ directory) for automatic loading,
+# or use --config=/path/to/your-config.cfg to load from a custom location.
 #
 # CLI arguments always override values from this file.
 # Lines starting with # are comments. Inline comments (after values) are also supported.
 #
 # Usage:
-#   cp build.conf.example build.conf
+#   cp build.cfg.example build.cfg
 #   # Edit values below, then:
 #   ./build.sh -
 #   # Or explicitly:
-#   ./build.sh --config=build.conf -
+#   ./build.sh --config=build.cfg -
 
 # --- Core Build Settings ---
 # TARGET_UBUNTU_VERSION=noble          # jammy | noble | resolute
@@ -49,6 +49,12 @@
 # TARGET_NAME=                         # Custom ISO base name (auto-generated if empty)
 # GRUB_LIVEBOOT_LABEL=Try Ubuntu without installing
 # UBUNTU_VANILLA_WORKSPACE=            # Custom workspace parent directory
+
+# --- Advanced Mode ---
+# ADVANCED_MODE=0                      # Set to 1 to preserve workspace on failure/interrupt and enable package cache
+
+# --- Hooks ---
+# HOOKS_DIR=                           # Custom hooks directory (default: scripts/hooks/)
 
 # --- Interactive Mode ---
 # INTERACTIVE=0                        # Set to 0 to disable all interactive prompts

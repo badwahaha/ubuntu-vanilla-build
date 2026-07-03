@@ -11,7 +11,9 @@ This project is designed for:
 ## What's New
 
 Recent improvements include:
-- **Config File Support**: Load build options from a `build.conf` file for repeatable builds (`--config=FILE`).
+- **Build Hooks (Modloader)**: Drop `.sh` scripts into `scripts/hooks/pre-chroot/` and `scripts/hooks/chroot/` to customize the build — scripts run in sorted filename order, like a game modloader.
+- **Advanced Mode**: `--advanced` flag preserves workspace on failure/Ctrl+C for faster re-runs and enables a persistent APT package cache to save bandwidth.
+- **Config File Support**: Load build options from a `build.cfg` file for repeatable builds (`--config=FILE`), or generate one interactively with `--generate-config`.
 - **Non-Interactive / Unattended Mode**: `--no-interactive` flag disables all prompts; combined with `--locale` and `--keyboard-layout` for fully unattended builds.
 - **Date+Time in ISO Name**: Generated ISOs now include a UTC timestamp (e.g. `ubuntu-24.04-gnome-amd64-260703-041500.iso`) so old builds aren't overwritten.
 - **Optional Pacstall**: Pacstall installation is now configurable (`--pacstall` / `--no-pacstall`).
@@ -218,9 +220,43 @@ If values are not explicitly set and interactive prompts are skipped, the defaul
 - `--keyboard-variant=VARIANT` - Keyboard variant (e.g. `intl`, `nodeadkeys`; optional).
 
 ### Config File & Interactive Mode
-- `--config=FILE` - Load build options from a config file (KEY=VALUE format). If not specified, `scripts/build.conf` is loaded automatically when present.
+- `--config=FILE` - Load build options from a config file (KEY=VALUE format). If not specified, `scripts/build.cfg` is loaded automatically when present.
+- `--generate-config` - Launch an interactive wizard to generate a `build.cfg` file.
 - `--interactive` - Force interactive prompts even when stdin is not a TTY.
 - `--no-interactive` - Disable all interactive prompts; missing required values use defaults or cause an error.
+
+### Build Hooks (Modloader)
+
+Drop executable `.sh` scripts into the hooks directories to customize the build pipeline — like a game modloader:
+
+```
+scripts/hooks/
+  pre-chroot/    # Runs on host after debootstrap, before entering chroot
+  chroot/        # Runs inside chroot after packages are installed
+```
+
+Scripts are discovered and executed in **sorted filename order**. Use numeric prefixes to control load order:
+
+```bash
+hooks/pre-chroot/00-copy-skel-files.sh
+hooks/pre-chroot/10-add-custom-repo.sh
+hooks/chroot/00-install-extra-packages.sh
+hooks/chroot/50-configure-services.sh
+```
+
+- Each hook receives all `TARGET_*` environment variables.
+- Pre-chroot hooks also get `WORKSPACE_CHROOT` (path to the chroot root on the host).
+- A failing hook aborts the build; use `|| true` for optional operations.
+- `--hooks-dir=PATH` overrides the default `scripts/hooks/` directory.
+
+See `scripts/hooks/README.md` for detailed documentation and examples.
+
+### Advanced Mode
+
+`--advanced` (or `ADVANCED_MODE=1` in config) enables two features for power users:
+
+1. **Workspace preservation**: On Ctrl+C or build failure, only bind mounts are unmounted — the workspace tree is kept intact. This lets you inspect or resume from a specific build stage without re-running debootstrap.
+2. **Package cache**: A persistent APT cache directory (`~/.cache/ubuntu-vanilla-build/apt-cache/`) is bind-mounted into the chroot. Downloaded `.deb` files survive across builds, saving bandwidth on repeated builds.
 
 ---
 
@@ -287,6 +323,10 @@ For advanced configurations, environment variables can be used instead of CLI fl
 ### Config & Interactive Variables
 - `INTERACTIVE` - Set to `0` to disable interactive prompts (equivalent to `--no-interactive`).
 - `NO_CONFIRM` - Set to `1` to skip the pre-build confirmation prompt.
+
+### Advanced Mode Variables
+- `ADVANCED_MODE` - Set to `1` to preserve workspace on failure/interrupt and enable package cache.
+- `HOOKS_DIR` - Custom path to the hooks directory (default: `scripts/hooks/`).
 
 ---
 
