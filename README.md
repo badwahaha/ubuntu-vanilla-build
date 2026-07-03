@@ -255,10 +255,12 @@ See `scripts/hooks/README.md` for detailed documentation and examples.
 
 ### Advanced Mode
 
-`--advanced` (or `ADVANCED_MODE=1` in config) enables two features for power users:
+`--advanced` (or `ADVANCED_MODE=1` as an environment variable) unlocks features for power users:
 
-1. **Workspace preservation**: On Ctrl+C or build failure, only bind mounts are unmounted — the workspace tree is kept intact. This lets you inspect or resume from a specific build stage without re-running debootstrap.
-2. **Package cache**: A persistent APT cache directory (`~/.cache/ubuntu-vanilla-build/apt-cache/`) is bind-mounted into the chroot. Downloaded `.deb` files survive across builds, saving bandwidth on repeated builds.
+1. **Config file support**: Auto-loads `scripts/build.cfg` if present, or use `--config=FILE` for a custom path. Generate one interactively with `--generate-config`. In beginner mode (default), the build relies on interactive prompts instead.
+2. **Workspace preservation**: On Ctrl+C or build failure, only bind mounts are unmounted — the workspace tree is kept intact. This lets you inspect or resume from a specific build stage (e.g. `./build.sh --advanced run_chroot`) without re-running debootstrap.
+3. **Package cache**: A persistent APT cache directory (`~/.cache/ubuntu-vanilla-build/apt-cache/`) is bind-mounted into the chroot. Downloaded `.deb` files survive across builds, saving bandwidth on repeated builds.
+4. **Workspace reuse**: `setup_host` reuses an existing workspace directory instead of cleaning it, allowing faster iteration.
 
 ---
 
@@ -406,6 +408,15 @@ TARGET_GNOME_INSTALL_RECOMMENDS=1 ./build.sh --release=noble --kernel=generic --
 
 # Resolute + GNOME with recommends enabled
 TARGET_GNOME_INSTALL_RECOMMENDS=1 ./build.sh --release=resolute --kernel=generic --desktop=gnome -
+
+# Advanced mode: generate a config file with the wizard
+./build.sh --generate-config
+
+# Advanced mode: build using a config file
+./build.sh --advanced --config=build.cfg -
+
+# Advanced mode: preserve workspace for faster re-runs
+./build.sh --advanced --release=noble --kernel=generic -
 ```
 
 ---
@@ -419,6 +430,7 @@ The build process uses a workspace directory to store temporary files:
 - **Custom location**: Set `UBUNTU_VANILLA_WORKSPACE=/some/path` to use a custom parent directory (actual workspace becomes `/some/path/workspace`).
 - **Automatic cleanup**: On successful build, the workspace is automatically removed to save disk space.
 - **Manual cleanup**: If a build fails, you may need to manually remove the workspace directory.
+- **Advanced mode preservation**: With `--advanced`, the workspace is preserved on failure or Ctrl+C (only bind mounts are unmounted). This enables faster re-runs since you can skip debootstrap and jump straight to the failed stage.
 
 ### Output Files
 After a successful build, the following files are created in the `scripts/` directory:
@@ -543,7 +555,9 @@ For deep customization of the installer experience, edit the YAML files in `scri
 - `i18n/SUPPORTED` - Supported locales.
 
 ### Adding Custom Packages
-To add custom packages to your build, modify the `customize_image()` function in `scripts/build.sh`. Look for the desktop-specific sections and add your packages to the appropriate `apt-get install` commands.
+The recommended way to add custom packages is with **build hooks** (see [Build Hooks](#build-hooks-modloader)). Drop a script into `scripts/hooks/chroot/` that runs `apt-get install -y <your-packages>` — no need to modify `build.sh` at all.
+
+Alternatively, for permanent changes to the build pipeline itself, modify the `customize_image()` function in `scripts/build.sh`. Look for the desktop-specific sections and add your packages to the appropriate `apt-get install` commands.
 
 ### Creating Custom Desktop Profiles
 To add a new desktop environment variant:

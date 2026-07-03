@@ -1,8 +1,15 @@
 # Ubuntu Vanilla ISO Builder - Example Configuration File
 # ========================================================
 #
-# Copy this file to "build.cfg" (in the scripts/ directory) for automatic loading,
-# or use --config=/path/to/your-config.cfg to load from a custom location.
+# NOTE: Config files are an ADVANCED MODE feature. You must use --advanced
+# for config files to be loaded. In beginner mode (default), the build uses
+# interactive prompts and sensible defaults instead.
+#
+# Copy this file to "build.cfg" (in the scripts/ directory) for automatic loading
+# in advanced mode, or use --advanced --config=/path/to/your-config.cfg.
+#
+# You can also generate this file interactively with:
+#   ./build.sh --generate-config
 #
 # CLI arguments always override values from this file.
 # Lines starting with # are comments. Inline comments (after values) are also supported.
@@ -10,9 +17,9 @@
 # Usage:
 #   cp build.cfg.example build.cfg
 #   # Edit values below, then:
-#   ./build.sh -
+#   ./build.sh --advanced -
 #   # Or explicitly:
-#   ./build.sh --config=build.cfg -
+#   ./build.sh --advanced --config=build.cfg -
 
 # --- Core Build Settings ---
 # TARGET_UBUNTU_VERSION=noble          # jammy | noble | resolute
