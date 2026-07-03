@@ -1398,7 +1398,7 @@ function interactive_librewolf_pick() {
 
 function interactive_firefox_pick() {
     if [[ ! -t 0 ]]; then
-        ui_err "No terminal is available. Set TARGET_FIREFOX_CHANNEL=none|release|esr."
+        ui_err "No terminal is available. Set TARGET_FIREFOX=0|1 and TARGET_FIREFOX_ESR=0|1."
         exit 1
     fi
 
@@ -1428,21 +1428,24 @@ function interactive_firefox_pick() {
         read -r -p "  Firefox [1/2/3, Enter=1]: " choice
         case "${choice,,}" in
             1|""|r|release)
-                export TARGET_FIREFOX_CHANNEL="release"
+                export TARGET_FIREFOX="1"
+                export TARGET_FIREFOX_ESR="0"
                 break
                 ;;
             2|e|esr)
-                export TARGET_FIREFOX_CHANNEL="esr"
+                export TARGET_FIREFOX="0"
+                export TARGET_FIREFOX_ESR="1"
                 break
                 ;;
             3|n|none|skip)
-                export TARGET_FIREFOX_CHANNEL="none"
+                export TARGET_FIREFOX="0"
+                export TARGET_FIREFOX_ESR="0"
                 break
                 ;;
             *) ui_warn "Invalid selection: '$choice'." ;;
         esac
     done
-    ui_ok "TARGET_FIREFOX_CHANNEL=$TARGET_FIREFOX_CHANNEL"
+    ui_ok "TARGET_FIREFOX=$TARGET_FIREFOX  TARGET_FIREFOX_ESR=$TARGET_FIREFOX_ESR"
 }
 
 function interactive_thunderbird_pick() {
@@ -1474,19 +1477,12 @@ function resolve_browser_selection() {
         fi
     fi
 
-    if [[ -z "${TARGET_FIREFOX+x}" ]]; then
+    if [[ -z "${TARGET_FIREFOX+x}" || -z "${TARGET_FIREFOX_ESR+x}" ]]; then
         if [[ -t 0 ]]; then
             interactive_firefox_pick
         else
-            export TARGET_FIREFOX="0"
-        fi
-    fi
-
-    if [[ -z "${TARGET_FIREFOX_ESR+x}" ]]; then
-        if [[ -t 0 ]]; then
-            interactive_firefox_esr_pick
-        else
-            export TARGET_FIREFOX_ESR="0"
+            export TARGET_FIREFOX="${TARGET_FIREFOX:-0}"
+            export TARGET_FIREFOX_ESR="${TARGET_FIREFOX_ESR:-0}"
         fi
     fi
 
