@@ -193,10 +193,11 @@ function set_defaults() {
     export TARGET_MATE_PACKAGE="${TARGET_MATE_PACKAGE:-}"
     export TARGET_BROWSER="${TARGET_BROWSER:-}"
     export TARGET_BRAVE_CHANNEL="${TARGET_BRAVE_CHANNEL:-}"
-    # TARGET_LIBREWOLF, TARGET_FIREFOX, TARGET_FIREFOX_ESR, TARGET_THUNDERBIRD, TARGET_UBUNTU_STUDIO: intentionally left
-    # unset here so that resolve_browser_selection() and resolve_ubuntu_studio_choice()
-    # can distinguish "user never specified" (unset) from "user explicitly set to 0/1"
-    # via ${VAR+x}. Only env/CLI paths should set these.
+    # TARGET_LIBREWOLF, TARGET_FIREFOX, TARGET_FIREFOX_ESR, TARGET_THUNDERBIRD, TARGET_UBUNTU_STUDIO,
+    # TARGET_PACSTALL: intentionally left unset here so that resolve_browser_selection(),
+    # resolve_ubuntu_studio_choice(), and resolve_pacstall_choice() can distinguish
+    # "user never specified" (unset) from "user explicitly set to 0/1" via ${VAR+x}.
+    # Only env/CLI paths should set these.
     export TARGET_NAME="${TARGET_NAME:-}"
     export GRUB_LIVEBOOT_LABEL="${GRUB_LIVEBOOT_LABEL:-Try Ubuntu without installing}"
 }
@@ -229,7 +230,7 @@ function default_target_name() {
     local version desktop
     version="$(release_version "${TARGET_UBUNTU_VERSION:-}")"
     desktop="${TARGET_DESKTOP:-gnome}"
-    echo "ubuntu-${version}-${desktop}-amd64"
+    echo "ubuntu-${version}-${desktop}-amd64-${DATE}"
 }
 
 function normalize_desktop_variant() {
@@ -550,25 +551,29 @@ EOF
         echo "=====> Thunderbird: not pre-installed (Mozilla PPA + pin above remain; apt install thunderbird when ready)"
     fi
 
-    echo "=====> Pacstall (official installer from https://pacstall.dev/q/install — not Chaotic PPR / apt package)"
-    # Subshell: restore DEBIAN_FRONTEND after upstream script. Pipe declines optional axel; GITHUB_ACTIONS quiets apt.
-    # The installer script is fetched over HTTPS and verified with a SHA-256 checksum
-    # pinned to the audited version below. Update the hash when upgrading Pacstall.
-    local _pacstall_installer="/tmp/pacstall-install.sh"
-    local _pacstall_sha256="SKIP"
-    curl -fsSL https://pacstall.dev/q/install -o "$_pacstall_installer"
-    if [[ "$_pacstall_sha256" != "SKIP" ]]; then
-        echo "${_pacstall_sha256}  ${_pacstall_installer}" | sha256sum -c - || {
-            >&2 echo "ERROR: Pacstall installer checksum mismatch — aborting."
-            rm -f "$_pacstall_installer"
-            exit 1
-        }
+    if [[ "${TARGET_PACSTALL:-1}" == "1" ]]; then
+        echo "=====> Pacstall (official installer from https://pacstall.dev/q/install — not Chaotic PPR / apt package)"
+        # Subshell: restore DEBIAN_FRONTEND after upstream script. Pipe declines optional axel; GITHUB_ACTIONS quiets apt.
+        # The installer script is fetched over HTTPS and verified with a SHA-256 checksum
+        # pinned to the audited version below. Update the hash when upgrading Pacstall.
+        local _pacstall_installer="/tmp/pacstall-install.sh"
+        local _pacstall_sha256="SKIP"
+        curl -fsSL https://pacstall.dev/q/install -o "$_pacstall_installer"
+        if [[ "$_pacstall_sha256" != "SKIP" ]]; then
+            echo "${_pacstall_sha256}  ${_pacstall_installer}" | sha256sum -c - || {
+                >&2 echo "ERROR: Pacstall installer checksum mismatch — aborting."
+                rm -f "$_pacstall_installer"
+                exit 1
+            }
+        fi
+        (
+            export DEBIAN_FRONTEND=noninteractive
+            printf 'n\n' | env GITHUB_ACTIONS=true bash -e "$_pacstall_installer"
+        )
+        rm -f "$_pacstall_installer"
+    else
+        echo "=====> Pacstall: skipped (TARGET_PACSTALL=0)"
     fi
-    (
-        export DEBIAN_FRONTEND=noninteractive
-        printf 'n\n' | env GITHUB_ACTIONS=true bash -e "$_pacstall_installer"
-    )
-    rm -f "$_pacstall_installer"
 
     if [[ "${TARGET_UBUNTU_STUDIO:-0}" == "1" ]]; then
         apt_install_available "Ubuntu Studio metapackages" \
@@ -663,6 +668,7 @@ function check_settings() {
     assert_bool_var TARGET_FIREFOX_ESR
     assert_bool_var TARGET_THUNDERBIRD
     assert_bool_var TARGET_UBUNTU_STUDIO
+    assert_bool_var TARGET_PACSTALL 1
     if [[ "${TARGET_DESKTOP:-}" == "mate" ]]; then
         case "${TARGET_MATE_PACKAGE:-mate-desktop-environment}" in
             full)
@@ -725,6 +731,13 @@ function host_help() {
     echo "  --firefox-esr / --no-firefox-esr       Pre-install Firefox ESR (Mozilla PPA always configured)"
     echo "  --thunderbird / --no-thunderbird       Pre-install Thunderbird (Mozilla PPA always configured)"
     echo "  --ubuntu-studio / --no-ubuntu-studio     Ubuntu Studio metapackage set (heavy)"
+    echo "  --pacstall / --no-pacstall               Install Pacstall package manager (default: yes)"
+    echo "  --locale=LOCALE                          System locale (e.g. en_US.UTF-8) for unattended builds"
+    echo "  --keyboard-layout=LAYOUT                 Keyboard layout code (e.g. us, de, fr) for unattended builds"
+    echo "  --keyboard-variant=VARIANT               Keyboard variant (e.g. intl, nodeadkeys; optional)"
+    echo "  --config=FILE                            Load build options from a config file (KEY=VALUE format)"
+    echo "  --interactive                            Force interactive prompts (even if stdin is not a TTY)"
+    echo "  --no-interactive                         Disable all interactive prompts (use defaults or fail)"
     echo
     echo "Syntax: $0 [options] [start_cmd] [-] [end_cmd]"
     echo "  Run from start_cmd to end_cmd"
@@ -902,6 +915,10 @@ function run_chroot() {
         TARGET_FIREFOX_ESR="${TARGET_FIREFOX_ESR:-0}" \
         TARGET_THUNDERBIRD="${TARGET_THUNDERBIRD:-0}" \
         TARGET_UBUNTU_STUDIO="${TARGET_UBUNTU_STUDIO:-0}" \
+        TARGET_PACSTALL="${TARGET_PACSTALL:-1}" \
+        TARGET_LOCALE="${TARGET_LOCALE:-}" \
+        TARGET_KEYBOARD_LAYOUT="${TARGET_KEYBOARD_LAYOUT:-}" \
+        TARGET_KEYBOARD_VARIANT="${TARGET_KEYBOARD_VARIANT:-}" \
         TARGET_GNOME_INSTALL_RECOMMENDS="${TARGET_GNOME_INSTALL_RECOMMENDS:-0}" \
         TARGET_NAME="${TARGET_NAME}" \
         GRUB_LIVEBOOT_LABEL="${GRUB_LIVEBOOT_LABEL}" \
@@ -1535,6 +1552,40 @@ function resolve_ubuntu_studio_choice() {
     fi
 }
 
+function resolve_pacstall_choice() {
+    if [[ -n "${TARGET_PACSTALL+x}" ]]; then
+        export TARGET_PACSTALL="${TARGET_PACSTALL:-1}"
+        return 0
+    fi
+
+    if [[ -t 0 ]]; then
+        ui_heading "Pacstall"
+        echo "    AUR-like package manager for Ubuntu (installed from https://pacstall.dev)."
+        local yn
+        while true; do
+            read -r -p "  Install Pacstall? (Y/n) " yn
+            yn="${yn,,}"
+            [[ -z "$yn" ]] && yn="y"
+            case "$yn" in
+                y|yes)
+                    export TARGET_PACSTALL="1"
+                    break
+                    ;;
+                n|no)
+                    export TARGET_PACSTALL="0"
+                    break
+                    ;;
+                *)
+                    echo "  Please answer y or n."
+                    ;;
+            esac
+        done
+        ui_ok "TARGET_PACSTALL=$TARGET_PACSTALL"
+    else
+        export TARGET_PACSTALL=1
+    fi
+}
+
 function interactive_installer_pick() {
     if [[ ! -t 0 ]]; then
         ui_err "No terminal is available. Use --installer=calamares|ubiquity."
@@ -1648,6 +1699,7 @@ function print_build_summary() {
     [[ "${TARGET_THUNDERBIRD:-0}" == "1" ]] && _bs="${_bs:+${_bs}; }Thunderbird"
     ui_kv "Browsers"       "${_bs}"
     ui_kv "Ubuntu Studio"  "${TARGET_UBUNTU_STUDIO:-0}"
+    ui_kv "Pacstall"        "${TARGET_PACSTALL:-1}"
     ui_kv "Target name"     "${TARGET_NAME:-?}"
     ui_kv "Mirror"          "${TARGET_UBUNTU_MIRROR:-?}"
     ui_kv "Workspace"       "${WORKSPACE_DIR:-?}"
@@ -1685,6 +1737,51 @@ function print_build_result() {
     echo
 }
 
+# load_config_file FILE — source a config file (key=value lines, # comments, blank lines).
+# Only recognized TARGET_* and GRUB_LIVEBOOT_LABEL variables are exported.
+# Unknown keys are ignored; the config cannot run arbitrary commands.
+function load_config_file() {
+    local config_path="$1"
+    if [[ ! -f "$config_path" ]]; then
+        ui_err "Config file not found: $config_path"
+        exit 1
+    fi
+    ui_info "Loading config from: $config_path"
+    local line key val
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # Skip blank lines and comments.
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+        # Strip inline comments.
+        line="${line%%#*}"
+        # Match KEY=VALUE (with optional quotes).
+        if [[ "$line" =~ ^[[:space:]]*([A-Z_][A-Z0-9_]*)=(.*)$ ]]; then
+            key="${BASH_REMATCH[1]}"
+            val="${BASH_REMATCH[2]}"
+            # Strip surrounding quotes.
+            val="${val#\"}" ; val="${val%\"}"
+            val="${val#\'}" ; val="${val%\'}"
+            val="${val## }" ; val="${val%% }"
+            case "$key" in
+                TARGET_UBUNTU_VERSION|TARGET_UBUNTU_MIRROR|TARGET_KERNEL_FLAVOR|\
+                TARGET_KERNEL_PACKAGE|TARGET_DESKTOP|TARGET_KDE_PACKAGE|\
+                TARGET_MATE_PACKAGE|TARGET_MATE_EXTRAS|TARGET_BROWSER|\
+                TARGET_BRAVE_CHANNEL|TARGET_LIBREWOLF|TARGET_FIREFOX|\
+                TARGET_FIREFOX_ESR|TARGET_THUNDERBIRD|TARGET_UBUNTU_STUDIO|\
+                TARGET_PACSTALL|TARGET_GNOME_INSTALL_RECOMMENDS|TARGET_NAME|\
+                TARGET_LOCALE|TARGET_KEYBOARD_LAYOUT|TARGET_KEYBOARD_VARIANT|\
+                TARGET_INSTALLER|TARGET_PACKAGE_REMOVE|\
+                GRUB_LIVEBOOT_LABEL|UBUNTU_VANILLA_WORKSPACE|NO_CONFIRM|\
+                INTERACTIVE)
+                    export "$key=$val"
+                    ;;
+                *)
+                    ui_warn "Config: ignoring unknown key '$key'"
+                    ;;
+            esac
+        fi
+    done < "$config_path"
+}
+
 function host_main() {
     local cli_kernel=""
     local cli_release=""
@@ -1707,6 +1804,13 @@ function host_main() {
     local cli_thunderbird=0
     local cli_ubuntustudio_set=0
     local cli_ubuntustudio=0
+    local cli_pacstall_set=0
+    local cli_pacstall=0
+    local cli_locale=""
+    local cli_keyboard_layout=""
+    local cli_keyboard_variant=""
+    local cli_config=""
+    local cli_interactive=""
     local args=()
 
     set_defaults
@@ -1845,6 +1949,56 @@ function host_main() {
                 cli_ubuntustudio=0
                 shift
                 ;;
+            --pacstall)
+                cli_pacstall_set=1
+                cli_pacstall=1
+                shift
+                ;;
+            --no-pacstall)
+                cli_pacstall_set=1
+                cli_pacstall=0
+                shift
+                ;;
+            --locale=*)
+                cli_locale="${1#--locale=}"
+                shift
+                ;;
+            --locale)
+                cli_locale="$2"
+                shift 2
+                ;;
+            --keyboard-layout=*)
+                cli_keyboard_layout="${1#--keyboard-layout=}"
+                shift
+                ;;
+            --keyboard-layout)
+                cli_keyboard_layout="$2"
+                shift 2
+                ;;
+            --keyboard-variant=*)
+                cli_keyboard_variant="${1#--keyboard-variant=}"
+                shift
+                ;;
+            --keyboard-variant)
+                cli_keyboard_variant="$2"
+                shift 2
+                ;;
+            --config=*)
+                cli_config="${1#--config=}"
+                shift
+                ;;
+            --config)
+                cli_config="$2"
+                shift 2
+                ;;
+            --interactive)
+                cli_interactive="1"
+                shift
+                ;;
+            --no-interactive)
+                cli_interactive="0"
+                shift
+                ;;
             -h|--help)
                 host_help
                 ;;
@@ -1855,6 +2009,23 @@ function host_main() {
         esac
     done
     set -- "${args[@]}"
+
+    # Load config file (if specified). Config values act as defaults; CLI flags override them below.
+    if [[ -n "$cli_config" ]]; then
+        load_config_file "$cli_config"
+    elif [[ -f "$SCRIPT_DIR/build.conf" ]]; then
+        # Auto-detect config file in the scripts directory.
+        load_config_file "$SCRIPT_DIR/build.conf"
+    fi
+
+    # Handle --interactive / --no-interactive. The INTERACTIVE variable can also come from the config file.
+    # --no-interactive: redirect stdin from /dev/null so that all [[ -t 0 ]] checks return false,
+    # making the build fully non-interactive (all missing values use defaults or fail with an error).
+    # --interactive: force interactive mode even when stdin is not a TTY (e.g. piped).
+    if [[ "$cli_interactive" == "0" ]] || [[ "${INTERACTIVE:-}" == "0" && -z "$cli_interactive" ]]; then
+        exec 0</dev/null
+        export NO_CONFIRM=1
+    fi
 
     cd "$SCRIPT_DIR"
     resolve_workspace_paths
@@ -1915,6 +2086,18 @@ function host_main() {
     if [[ "$cli_ubuntustudio_set" -eq 1 ]]; then
         export TARGET_UBUNTU_STUDIO="$cli_ubuntustudio"
     fi
+    if [[ "$cli_pacstall_set" -eq 1 ]]; then
+        export TARGET_PACSTALL="$cli_pacstall"
+    fi
+    if [[ -n "$cli_locale" ]]; then
+        export TARGET_LOCALE="$cli_locale"
+    fi
+    if [[ -n "$cli_keyboard_layout" ]]; then
+        export TARGET_KEYBOARD_LAYOUT="$cli_keyboard_layout"
+    fi
+    if [[ -n "$cli_keyboard_variant" ]]; then
+        export TARGET_KEYBOARD_VARIANT="$cli_keyboard_variant"
+    fi
 
     if [[ -z "${TARGET_UBUNTU_VERSION:-}" ]]; then
         resolve_release_choice
@@ -1945,6 +2128,7 @@ function host_main() {
     resolve_mate_choice
     resolve_browser_selection
     resolve_ubuntu_studio_choice
+    resolve_pacstall_choice
 
     check_settings
     set_target_kernel_package_from_flavor
@@ -2131,7 +2315,31 @@ function install_pkg() {
 
     apt-get autoremove -y
 
-    dpkg-reconfigure locales
+    # Locale configuration: if TARGET_LOCALE is set, pre-seed debconf for unattended operation.
+    if [[ -n "${TARGET_LOCALE:-}" ]]; then
+        echo "=====> Configuring locale: ${TARGET_LOCALE}"
+        sed -i "s/^# *${TARGET_LOCALE}/${TARGET_LOCALE}/" /etc/locale.gen 2>/dev/null || true
+        echo "${TARGET_LOCALE}" >> /etc/locale.gen
+        sort -u -o /etc/locale.gen /etc/locale.gen
+        echo "locales locales/default_environment_locale select ${TARGET_LOCALE}" | debconf-set-selections
+        echo "locales locales/locales_to_be_generated multiselect ${TARGET_LOCALE}" | debconf-set-selections
+        dpkg-reconfigure --frontend=noninteractive locales
+    else
+        dpkg-reconfigure locales
+    fi
+
+    # Keyboard configuration: if TARGET_KEYBOARD_LAYOUT is set, pre-seed for unattended operation.
+    if [[ -n "${TARGET_KEYBOARD_LAYOUT:-}" ]]; then
+        local _kb_variant="${TARGET_KEYBOARD_VARIANT:-}"
+        echo "=====> Configuring keyboard: layout=${TARGET_KEYBOARD_LAYOUT}${_kb_variant:+, variant=${_kb_variant}}"
+        apt-get install -y keyboard-configuration console-setup 2>/dev/null || true
+        echo "keyboard-configuration keyboard-configuration/layoutcode select ${TARGET_KEYBOARD_LAYOUT}" | debconf-set-selections
+        echo "keyboard-configuration keyboard-configuration/variant select ${_kb_variant}" | debconf-set-selections
+        echo "keyboard-configuration keyboard-configuration/model select pc105" | debconf-set-selections
+        echo "console-setup console-setup/charmap47 select UTF-8" | debconf-set-selections
+        dpkg-reconfigure --frontend=noninteractive keyboard-configuration
+        dpkg-reconfigure --frontend=noninteractive console-setup
+    fi
 
     cat <<EOF > /etc/NetworkManager/NetworkManager.conf
 [main]

@@ -11,6 +11,10 @@ This project is designed for:
 ## What's New
 
 Recent improvements include:
+- **Config File Support**: Load build options from a `build.conf` file for repeatable builds (`--config=FILE`).
+- **Non-Interactive / Unattended Mode**: `--no-interactive` flag disables all prompts; combined with `--locale` and `--keyboard-layout` for fully unattended builds.
+- **Date+Time in ISO Name**: Generated ISOs now include a UTC timestamp (e.g. `ubuntu-24.04-gnome-amd64-260703-041500.iso`) so old builds aren't overwritten.
+- **Optional Pacstall**: Pacstall installation is now configurable (`--pacstall` / `--no-pacstall`).
 - **Security Hardening**: Enhanced build pipeline against supply-chain and network attacks with verified package installations.
 - **Improved Error Handling**: Better error reporting and failure detection—no more silently swallowed failures.
 - **Code Refactoring**: Extracted shared utilities to eliminate duplicated code patterns for better maintainability.
@@ -42,7 +46,7 @@ Recent improvements include:
   - Mozilla Firefox (`packages.mozilla.org` with pinning)
 - **Optional pre-installs**: Brave channel, LibreWolf, Firefox, Firefox ESR, Thunderbird, and Ubuntu Studio package set.
 - **Package Management Utilities**:
-  - Always installs Pacstall through the official installer: [pacstall.dev](https://pacstall.dev).
+  - Pacstall installed by default through the official installer: [pacstall.dev](https://pacstall.dev) (disable with `--no-pacstall`).
   - Pre-configured Flatpak support with the Flathub repository (including the GNOME Software Flatpak plugin on GNOME desktop).
 - **Outputs**:
   - `${TARGET_NAME:-ubuntu-<yy>.04-<desktop>-amd64}.iso`
@@ -205,7 +209,18 @@ If values are not explicitly set and interactive prompts are skipped, the defaul
 
 ### Additional Options
 - `--ubuntu-studio` / `--no-ubuntu-studio` - Include Ubuntu Studio creative packages.
+- `--pacstall` / `--no-pacstall` - Install Pacstall package manager (default: yes).
 - `--browser=release|origin` - Legacy alias for Brave selection (use `--brave` instead).
+
+### Locale & Keyboard (Unattended Builds)
+- `--locale=LOCALE` - System locale (e.g. `en_US.UTF-8`) to pre-seed for non-interactive locale configuration.
+- `--keyboard-layout=LAYOUT` - Keyboard layout code (e.g. `us`, `de`, `fr`).
+- `--keyboard-variant=VARIANT` - Keyboard variant (e.g. `intl`, `nodeadkeys`; optional).
+
+### Config File & Interactive Mode
+- `--config=FILE` - Load build options from a config file (KEY=VALUE format). If not specified, `scripts/build.conf` is loaded automatically when present.
+- `--interactive` - Force interactive prompts even when stdin is not a TTY.
+- `--no-interactive` - Disable all interactive prompts; missing required values use defaults or cause an error.
 
 ---
 
@@ -258,10 +273,20 @@ For advanced configurations, environment variables can be used instead of CLI fl
 ### Feature & Customization Variables
 - `TARGET_UBUNTU_STUDIO` - Set to `1` to include Ubuntu Studio packages.
 - `TARGET_GNOME_INSTALL_RECOMMENDS` - Set to `1` to install GNOME with recommends.
+- `TARGET_PACSTALL` - Set to `0` to skip Pacstall installation (default: `1`).
 - `TARGET_PACKAGE_REMOVE` - Space-separated list of packages to remove from target system.
-- `TARGET_NAME` - Custom output ISO base name.
+- `TARGET_NAME` - Custom output ISO base name (includes UTC timestamp by default).
 - `GRUB_LIVEBOOT_LABEL` - Custom boot menu entry label.
 - `UBUNTU_VANILLA_WORKSPACE` - Custom workspace parent directory.
+
+### Locale & Keyboard Variables
+- `TARGET_LOCALE` - System locale for unattended builds (e.g. `en_US.UTF-8`).
+- `TARGET_KEYBOARD_LAYOUT` - Keyboard layout code (e.g. `us`, `de`).
+- `TARGET_KEYBOARD_VARIANT` - Keyboard variant (optional, e.g. `intl`).
+
+### Config & Interactive Variables
+- `INTERACTIVE` - Set to `0` to disable interactive prompts (equivalent to `--no-interactive`).
+- `NO_CONFIRM` - Set to `1` to skip the pre-build confirmation prompt.
 
 ---
 
