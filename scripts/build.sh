@@ -816,12 +816,14 @@ function host_help() {
     echo "  --locale=LOCALE                          System locale (e.g. en_US.UTF-8) for unattended builds"
     echo "  --keyboard-layout=LAYOUT                 Keyboard layout code (e.g. us, de, fr) for unattended builds"
     echo "  --keyboard-variant=VARIANT               Keyboard variant (e.g. intl, nodeadkeys; optional)"
-    echo "  --config=FILE                            Load build options from a .cfg file (KEY=VALUE format)"
     echo "  --interactive                            Force interactive prompts (even if stdin is not a TTY)"
     echo "  --no-interactive                         Disable all interactive prompts (use defaults or fail)"
-    echo "  --hooks-dir=PATH                         Custom hooks directory (default: scripts/hooks/)"
-    echo "  --advanced                               Advanced mode: preserve workspace on failure + package cache"
+    echo
+    echo "Advanced mode (--advanced):"
+    echo "  --advanced                               Enable advanced mode (config file, workspace preservation, package cache)"
+    echo "  --config=FILE                            Load build options from a .cfg file (KEY=VALUE format; advanced mode only)"
     echo "  --generate-config                        Launch config wizard to generate a build.cfg file"
+    echo "  --hooks-dir=PATH                         Custom hooks directory (default: scripts/hooks/)"
     echo
     echo "Syntax: $0 [options] [start_cmd] [-] [end_cmd]"
     echo "  Run from start_cmd to end_cmd"
@@ -2319,6 +2321,7 @@ function host_main() {
                 shift
                 ;;
             --generate-config)
+                export ADVANCED_MODE=1
                 generate_config_wizard
                 ;;
             -h|--help)
@@ -2332,12 +2335,15 @@ function host_main() {
     done
     set -- "${args[@]}"
 
-    # Load config file (if specified). Config values act as defaults; CLI flags override them below.
-    if [[ -n "$cli_config" ]]; then
-        load_config_file "$cli_config"
-    elif [[ -f "$SCRIPT_DIR/build.cfg" ]]; then
-        # Auto-detect config file in the scripts directory.
-        load_config_file "$SCRIPT_DIR/build.cfg"
+    # Load config file (advanced mode only). Config values act as defaults; CLI flags override them below.
+    if [[ "${ADVANCED_MODE:-0}" == "1" ]]; then
+        if [[ -n "$cli_config" ]]; then
+            load_config_file "$cli_config"
+        elif [[ -f "$SCRIPT_DIR/build.cfg" ]]; then
+            load_config_file "$SCRIPT_DIR/build.cfg"
+        fi
+    elif [[ -n "$cli_config" ]]; then
+        ui_warn "--config requires --advanced mode. Ignoring config file."
     fi
 
     # Handle --interactive / --no-interactive. The INTERACTIVE variable can also come from the config file.
