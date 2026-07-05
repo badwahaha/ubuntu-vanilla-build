@@ -14,8 +14,16 @@ HOST_ABORT_CLEANUP_DONE=0
 DATE="$(TZ="UTC" date +"%y%m%d-%H%M%S")"
 # Default hooks directory; overridden by --hooks-dir=PATH.
 HOOKS_DIR=""
-# Advanced mode: set to 1 via --advanced to preserve workspace on failure/interrupt
-# and enable package caching.
+# Advanced mode: set to 1 via --advanced (or the startup mode prompt) to enable
+# config file loading, workspace preservation on failure/interrupt, package
+# caching, and the --interactive/--no-interactive overrides.
+# ADVANCED_MODE_EXPLICIT tracks whether the user chose a mode (env or CLI);
+# when 0, host_main asks interactively on a TTY and defaults to basic otherwise.
+if [[ -n "${ADVANCED_MODE+x}" ]]; then
+    ADVANCED_MODE_EXPLICIT=1
+else
+    ADVANCED_MODE_EXPLICIT=0
+fi
 ADVANCED_MODE="${ADVANCED_MODE:-0}"
 
 # ---------------------------------------------------------------------------
@@ -819,11 +827,11 @@ function host_help() {
     echo "  --locale=LOCALE                          System locale (e.g. en_US.UTF-8) for unattended builds"
     echo "  --keyboard-layout=LAYOUT                 Keyboard layout code (e.g. us, de, fr) for unattended builds"
     echo "  --keyboard-variant=VARIANT               Keyboard variant (e.g. intl, nodeadkeys; optional)"
-    echo "  --interactive                            Force interactive prompts (even if stdin is not a TTY)"
-    echo "  --no-interactive                         Disable all interactive prompts (use defaults or fail)"
     echo
-    echo "Advanced mode (--advanced):"
+    echo "Advanced mode (--advanced; also offered by the startup mode prompt):"
     echo "  --advanced                               Enable advanced mode (config file, workspace preservation, package cache)"
+    echo "  --interactive                            Force interactive prompts even if stdin is not a TTY (advanced only)"
+    echo "  --no-interactive                         Disable all interactive prompts, use defaults or fail (advanced only)"
     echo "  --config=FILE                            Load build options from a .cfg file (KEY=VALUE format; advanced mode only)"
     echo "  --generate-config                        Launch config wizard to generate a build.cfg file"
     echo "  --hooks-dir=PATH                         Custom hooks directory (default: scripts/hooks/)"
@@ -1209,6 +1217,34 @@ function build_iso() {
 
     write_iso_hashes
     clean_workspace
+}
+
+# Startup mode selection: alternative to passing --advanced. Only asked when
+# the user did not choose a mode via --advanced or the ADVANCED_MODE env var.
+# Uses a plain TTY check (not prompts_enabled): the --interactive override is
+# itself advanced-only, so it cannot apply before the mode is known.
+function interactive_mode_pick() {
+    if [[ ! -t 0 ]]; then
+        # Non-interactive invocation without an explicit mode: default to basic.
+        return 0
+    fi
+
+    ui_heading "Build mode"
+    echo "    1) Basic     Guided build with sensible defaults  [default]"
+    echo "    2) Advanced  Adds config file loading (build.cfg / --config),"
+    echo "                 workspace preservation on failure, package caching,"
+    echo "                 and the --interactive / --no-interactive overrides"
+
+    local choice
+    while true; do
+        read -r -p "  Mode [1/2, Enter=1]: " choice
+        case "${choice,,}" in
+            ""|1|b|basic)    export ADVANCED_MODE=0; break ;;
+            2|a|adv|advanced) export ADVANCED_MODE=1; break ;;
+            *) ui_warn "Invalid selection: '$choice'." ;;
+        esac
+    done
+    ui_ok "ADVANCED_MODE=$ADVANCED_MODE"
 }
 
 function interactive_release_pick() {
@@ -2332,6 +2368,7 @@ function host_main() {
                 ;;
             --advanced)
                 export ADVANCED_MODE=1
+                ADVANCED_MODE_EXPLICIT=1
                 shift
                 ;;
             --generate-config)
@@ -2352,6 +2389,12 @@ function host_main() {
     done
     set -- "${args[@]}"
 
+    # Resolve build mode first: everything below (config loading, interactive
+    # overrides) is gated on it. Asked only when no explicit mode was given.
+    if [[ "$ADVANCED_MODE_EXPLICIT" -eq 0 ]]; then
+        interactive_mode_pick
+    fi
+
     # Load config file (advanced mode only). Config values act as defaults; CLI flags override them below.
     if [[ "${ADVANCED_MODE:-0}" == "1" ]]; then
         if [[ -n "$cli_config" ]]; then
@@ -2363,11 +2406,17 @@ function host_main() {
         ui_warn "--config requires --advanced mode. Ignoring config file."
     fi
 
-    # Handle --interactive / --no-interactive. The INTERACTIVE variable can also come from the config file.
+    # Handle --interactive / --no-interactive (advanced mode only, like --config).
+    # The INTERACTIVE variable can also come from the config file.
     # --no-interactive: redirect stdin from /dev/null so prompts_enabled() returns false,
     # making the build fully non-interactive (all missing values use defaults or fail with an error).
     # --interactive: force prompts_enabled() true even when stdin is not a TTY (e.g. piped).
-    if [[ "$cli_interactive" == "0" ]] || [[ "${INTERACTIVE:-}" == "0" && -z "$cli_interactive" ]]; then
+    # Basic mode keeps the default behavior: prompts whenever stdin is a TTY.
+    if [[ "${ADVANCED_MODE:-0}" != "1" ]]; then
+        if [[ -n "$cli_interactive" ]] || [[ -n "${INTERACTIVE:-}" ]]; then
+            ui_warn "--interactive / --no-interactive / INTERACTIVE require --advanced mode. Ignoring."
+        fi
+    elif [[ "$cli_interactive" == "0" ]] || [[ "${INTERACTIVE:-}" == "0" && -z "$cli_interactive" ]]; then
         exec 0</dev/null
         export NO_CONFIRM=1
     elif [[ "$cli_interactive" == "1" ]] || [[ "${INTERACTIVE:-}" == "1" ]]; then

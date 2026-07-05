@@ -14,7 +14,7 @@ Recent improvements include:
 - **Build Hooks (Modloader)**: Drop `.sh` scripts into `scripts/hooks/pre-chroot/` and `scripts/hooks/chroot/` to customize the build — scripts run in sorted filename order, like a game modloader.
 - **Advanced Mode**: `--advanced` flag preserves workspace on failure/Ctrl+C for faster re-runs and enables a persistent APT package cache to save bandwidth.
 - **Config File Support** *(advanced mode)*: Load build options from a `build.cfg` file for repeatable builds (`--advanced --config=FILE`), or generate one with `--generate-config`. Beginner mode uses interactive prompts.
-- **Non-Interactive / Unattended Mode**: `--no-interactive` flag disables all prompts; combined with `--locale` and `--keyboard-layout` for fully unattended builds.
+- **Non-Interactive / Unattended Mode** *(advanced mode)*: `--advanced --no-interactive` disables all prompts; combined with `--locale` and `--keyboard-layout` for fully unattended builds.
 - **Date+Time in ISO Name**: Generated ISOs now include a UTC timestamp (e.g. `ubuntu-24.04-gnome-amd64-260703-041500.iso`) so old builds aren't overwritten.
 - **Optional Pacstall**: Pacstall installation is now configurable (`--pacstall` / `--no-pacstall`).
 - **Security Hardening**: Enhanced build pipeline against supply-chain and network attacks with verified package installations.
@@ -222,10 +222,10 @@ If values are not explicitly set and interactive prompts are skipped, the defaul
 ### Config File & Interactive Mode
 - `--config=FILE` - Load build options from a config file (KEY=VALUE format; **requires `--advanced`**). If not specified, `scripts/build.cfg` is loaded automatically when present in advanced mode.
 - `--generate-config` - Launch an interactive wizard to generate a `build.cfg` file (advanced mode).
-- `--interactive` - Force interactive prompts even when stdin is not a TTY.
-- `--no-interactive` - Disable all interactive prompts; missing required values use defaults or cause an error.
+- `--interactive` - Force interactive prompts even when stdin is not a TTY (**requires `--advanced`**).
+- `--no-interactive` - Disable all interactive prompts; missing required values use defaults or cause an error (**requires `--advanced`**).
 
-> **Note:** In beginner mode (default), the build uses interactive prompts and sensible defaults. Config files are an advanced-mode feature for power users and CI pipelines.
+> **Note:** In basic mode (default), the build uses interactive prompts and sensible defaults — prompts appear whenever a terminal is attached, no flags needed. Config files and the `--interactive`/`--no-interactive` overrides are advanced-mode features for power users and CI pipelines. When you run `build.sh` on a terminal without choosing a mode, it first asks whether to run in Basic or Advanced mode (an alternative to passing `--advanced`).
 
 ### Build Hooks (Modloader)
 
@@ -325,7 +325,7 @@ For advanced configurations, environment variables can be used instead of CLI fl
 - `TARGET_KEYBOARD_VARIANT` - Keyboard variant (optional, e.g. `intl`).
 
 ### Config & Interactive Variables
-- `INTERACTIVE` - Set to `0` to disable interactive prompts (equivalent to `--no-interactive`).
+- `INTERACTIVE` - Set to `0` to disable interactive prompts (equivalent to `--no-interactive`; advanced mode only).
 - `NO_CONFIRM` - Set to `1` to skip the pre-build confirmation prompt.
 
 ### Advanced Mode Variables
