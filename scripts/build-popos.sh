@@ -2,9 +2,9 @@
 
 # build-popos.sh — Pop!_OS variant of build.sh.
 #
-# Repositories: the Ubuntu mirror plus the release and proprietary suites on
-# https://apt.pop-os.org/ and the release-ubuntu suite on
-# https://apt-origin.pop-os.org/ (staging suites are intentionally excluded).
+# Repositories: everything comes from https://apt-origin.pop-os.org/ — the
+# ubuntu mirror plus the release, proprietary, and release-ubuntu suites
+# (staging suites are intentionally excluded).
 # Calamares configuration comes from scripts/calamares-popos.
 # Supported releases: jammy (22.04), noble (24.04), resolute (26.04) — LTS only.
 #
@@ -25,11 +25,10 @@ set -o pipefail
 set -u
 
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
-# Pop!_OS APT archives. Suites used: ubuntu (mirror, via TARGET_UBUNTU_MIRROR),
-# release and proprietary on apt.pop-os.org, and release-ubuntu on
-# apt-origin.pop-os.org. Staging suites are excluded.
-POP_APT_URL="https://apt.pop-os.org"
-POP_ORIGIN_APT_URL="https://apt-origin.pop-os.org"
+# Pop!_OS APT archive (apt-origin.pop-os.org, used for all suites). Suites:
+# ubuntu (mirror, via TARGET_UBUNTU_MIRROR), release, proprietary, and
+# release-ubuntu. Staging suites are excluded.
+POP_APT_URL="https://apt-origin.pop-os.org"
 # Pop!_OS archive signing key (pop-keyring).
 POP_KEY_FINGERPRINT="63C46DF0140D738961429F4E204DD8AEC33A7AFF"
 # Set in resolve_workspace_paths() during host_main (WSL: avoid /mnt/c for debootstrap).
@@ -344,7 +343,7 @@ function default_target_package_remove() {
 
 function set_defaults() {
     export TARGET_UBUNTU_VERSION="${TARGET_UBUNTU_VERSION:-}"
-    export TARGET_UBUNTU_MIRROR="${TARGET_UBUNTU_MIRROR:-https://apt.pop-os.org/ubuntu}"
+    export TARGET_UBUNTU_MIRROR="${TARGET_UBUNTU_MIRROR:-https://apt-origin.pop-os.org/ubuntu}"
     export TARGET_KERNEL_FLAVOR="${TARGET_KERNEL_FLAVOR:-}"
     export TARGET_KERNEL_PACKAGE="${TARGET_KERNEL_PACKAGE:-}"
     export TARGET_DESKTOP="${TARGET_DESKTOP:-}"
@@ -357,6 +356,8 @@ function set_defaults() {
     # resolve_ubuntu_studio_choice(), and resolve_pacstall_choice() can distinguish
     # "user never specified" (unset) from "user explicitly set to 0/1" via ${VAR+x}.
     # Only env/CLI paths should set these.
+    # TARGET_SYSTEM76_DRIVER: left unset here so resolve_system76_driver_choice()
+    # can distinguish "user never specified" (unset) from an explicit 0/1.
     export TARGET_NAME="${TARGET_NAME:-}"
     export GRUB_LIVEBOOT_LABEL="${GRUB_LIVEBOOT_LABEL:-Try Pop!_OS without installing}"
 }
@@ -743,6 +744,13 @@ EOF
             ubuntu-edu-music
     fi
 
+    if [[ "${TARGET_SYSTEM76_DRIVER:-0}" == "1" ]]; then
+        echo "=====> System76 hardware driver: system76-driver (from the Pop!_OS repos)"
+        apt-get install -y system76-driver
+    else
+        echo "=====> System76 driver: skipped (repos remain configured; apt install system76-driver on System76 hardware)"
+    fi
+
     apt-get install -y \
         git \
         vim \
@@ -825,6 +833,7 @@ function check_settings() {
     assert_bool_var TARGET_THUNDERBIRD
     assert_bool_var TARGET_UBUNTU_STUDIO
     assert_bool_var TARGET_PACSTALL 1
+    assert_bool_var TARGET_SYSTEM76_DRIVER
     if [[ "${TARGET_DESKTOP:-}" == "mate" ]]; then
         case "${TARGET_MATE_PACKAGE:-mate-desktop-environment}" in
             full)
@@ -849,7 +858,7 @@ function check_settings() {
 # shellcheck disable=SC2120  # called indirectly with an error message via parse_cmd_range/cmd_find_index
 function host_help() {
     if [ -z "${1+x}" ]; then
-        echo "This script builds a bootable Pop!_OS ISO image (repos from https://apt.pop-os.org/, staging excluded)."
+        echo "This script builds a bootable Pop!_OS ISO image (repos from https://apt-origin.pop-os.org/, staging excluded)."
         echo
     else
         echo "$1"
@@ -874,6 +883,7 @@ function host_help() {
     echo "  TARGET_FIREFOX_ESR=0|1                   Pre-install Firefox ESR from Mozilla PPA (optional; default 0; PPA always added)"
     echo "  TARGET_THUNDERBIRD=0|1                   Pre-install Thunderbird from Mozilla PPA (optional; default 0; PPA always added)"
     echo "  TARGET_UBUNTU_STUDIO=0|1                 Ubuntu Studio metapackages (optional; default 0)"
+    echo "  TARGET_SYSTEM76_DRIVER=0|1               Pre-install system76-driver for System76 hardware (optional; default 0)"
     echo "  TARGET_GNOME_INSTALL_RECOMMENDS=0|1       GNOME install with recommends (optional; default 0)"
     echo "  --kernel=system76|generic|lowlatency    Kernel: System76 (stable branch, Pop!_OS repos) or Ubuntu HWE"
     echo "  --installer=calamares|ubiquity           Calamares (default), or Ubiquity (jammy/22.04 only)"
@@ -889,6 +899,7 @@ function host_help() {
     echo "  --thunderbird / --no-thunderbird       Pre-install Thunderbird (Mozilla PPA always configured)"
     echo "  --ubuntu-studio / --no-ubuntu-studio     Ubuntu Studio metapackage set (heavy)"
     echo "  --pacstall / --no-pacstall               Install Pacstall package manager (default: yes)"
+    echo "  --system76-driver / --no-system76-driver  Pre-install system76-driver for System76 hardware (default: no)"
     echo "  --locale=LOCALE                          System locale (e.g. en_US.UTF-8) for unattended builds"
     echo "  --keyboard-layout=LAYOUT                 Keyboard layout code (e.g. us, de, fr) for unattended builds"
     echo "  --keyboard-variant=VARIANT               Keyboard variant (e.g. intl, nodeadkeys; optional)"
@@ -1149,6 +1160,7 @@ function run_chroot() {
         TARGET_THUNDERBIRD="${TARGET_THUNDERBIRD:-0}" \
         TARGET_UBUNTU_STUDIO="${TARGET_UBUNTU_STUDIO:-0}" \
         TARGET_PACSTALL="${TARGET_PACSTALL:-1}" \
+        TARGET_SYSTEM76_DRIVER="${TARGET_SYSTEM76_DRIVER:-0}" \
         TARGET_LOCALE="${TARGET_LOCALE:-}" \
         TARGET_KEYBOARD_LAYOUT="${TARGET_KEYBOARD_LAYOUT:-}" \
         TARGET_KEYBOARD_VARIANT="${TARGET_KEYBOARD_VARIANT:-}" \
@@ -1856,6 +1868,26 @@ function resolve_pacstall_choice() {
     fi
 }
 
+# System76 hardware driver (system76-driver from the Pop!_OS repos): fan/
+# keyboard/suspend support and system76-power. Only useful on System76
+# machines; default is to skip.
+function resolve_system76_driver_choice() {
+    if [[ -n "${TARGET_SYSTEM76_DRIVER+x}" ]]; then
+        export TARGET_SYSTEM76_DRIVER="${TARGET_SYSTEM76_DRIVER:-0}"
+        return 0
+    fi
+
+    if prompts_enabled; then
+        interactive_toggle_pick TARGET_SYSTEM76_DRIVER \
+            "System76 hardware driver" \
+            "Pre-install system76-driver (recommended only for System76 hardware)" \
+            "Skip the System76 driver" \
+            "System76 driver"
+    else
+        export TARGET_SYSTEM76_DRIVER=0
+    fi
+}
+
 function interactive_installer_pick() {
     if ! prompts_enabled; then
         ui_err "No terminal is available. Use --installer=calamares|ubiquity."
@@ -1970,6 +2002,7 @@ function print_build_summary() {
     ui_kv "Browsers"       "${_bs}"
     ui_kv "Ubuntu Studio"  "${TARGET_UBUNTU_STUDIO:-0}"
     ui_kv "Pacstall"        "${TARGET_PACSTALL:-1}"
+    ui_kv "System76 driver" "${TARGET_SYSTEM76_DRIVER:-0}"
     if [[ "${ADVANCED_MODE:-0}" == "1" ]]; then
         ui_kv "Advanced mode"   "enabled (workspace preserved, package cache active)"
     fi
@@ -2049,7 +2082,7 @@ function generate_config_wizard() {
 
     local _release _kernel _desktop _installer _mirror
     local _brave _librewolf _firefox _firefox_esr _thunderbird
-    local _pacstall _ubuntu_studio _locale _keyboard_layout _keyboard_variant
+    local _pacstall _ubuntu_studio _system76_driver _locale _keyboard_layout _keyboard_variant
     local _advanced _name
 
     # Release
@@ -2071,8 +2104,8 @@ function generate_config_wizard() {
     _installer="${_installer:-calamares}"
 
     # Mirror
-    read -r -p "  Mirror [https://apt.pop-os.org/ubuntu]: " _mirror
-    _mirror="${_mirror:-https://apt.pop-os.org/ubuntu}"
+    read -r -p "  Mirror [https://apt-origin.pop-os.org/ubuntu]: " _mirror
+    _mirror="${_mirror:-https://apt-origin.pop-os.org/ubuntu}"
 
     # Brave
     echo "  Brave browser channel: none, release, origin"
@@ -2102,6 +2135,10 @@ function generate_config_wizard() {
     # Ubuntu Studio
     read -r -p "  Install Ubuntu Studio packages? (0/1) [0]: " _ubuntu_studio
     _ubuntu_studio="${_ubuntu_studio:-0}"
+
+    # System76 driver
+    read -r -p "  Pre-install system76-driver (System76 hardware)? (0/1) [0]: " _system76_driver
+    _system76_driver="${_system76_driver:-0}"
 
     # Locale
     read -r -p "  System locale (blank to skip, e.g. en_US.UTF-8): " _locale
@@ -2147,6 +2184,7 @@ TARGET_PACSTALL=${_pacstall}
 
 # --- Extras ---
 TARGET_UBUNTU_STUDIO=${_ubuntu_studio}
+TARGET_SYSTEM76_DRIVER=${_system76_driver}
 WIZARD_EOF
 
     {
@@ -2210,7 +2248,7 @@ function load_config_file() {
                 TARGET_MATE_PACKAGE|TARGET_MATE_EXTRAS|TARGET_BROWSER|\
                 TARGET_BRAVE_CHANNEL|TARGET_LIBREWOLF|TARGET_FIREFOX|\
                 TARGET_FIREFOX_ESR|TARGET_THUNDERBIRD|TARGET_UBUNTU_STUDIO|\
-                TARGET_PACSTALL|TARGET_GNOME_INSTALL_RECOMMENDS|TARGET_NAME|\
+                TARGET_PACSTALL|TARGET_SYSTEM76_DRIVER|TARGET_GNOME_INSTALL_RECOMMENDS|TARGET_NAME|\
                 TARGET_LOCALE|TARGET_KEYBOARD_LAYOUT|TARGET_KEYBOARD_VARIANT|\
                 TARGET_INSTALLER|TARGET_PACKAGE_REMOVE|\
                 GRUB_LIVEBOOT_LABEL|UBUNTU_VANILLA_WORKSPACE|NO_CONFIRM|\
@@ -2249,6 +2287,8 @@ function host_main() {
     local cli_ubuntustudio=0
     local cli_pacstall_set=0
     local cli_pacstall=0
+    local cli_system76_driver_set=0
+    local cli_system76_driver=0
     local cli_locale=""
     local cli_keyboard_layout=""
     local cli_keyboard_variant=""
@@ -2390,6 +2430,16 @@ function host_main() {
             --no-ubuntu-studio)
                 cli_ubuntustudio_set=1
                 cli_ubuntustudio=0
+                shift
+                ;;
+            --system76-driver)
+                cli_system76_driver_set=1
+                cli_system76_driver=1
+                shift
+                ;;
+            --no-system76-driver)
+                cli_system76_driver_set=1
+                cli_system76_driver=0
                 shift
                 ;;
             --pacstall)
@@ -2570,6 +2620,9 @@ function host_main() {
     if [[ "$cli_pacstall_set" -eq 1 ]]; then
         export TARGET_PACSTALL="$cli_pacstall"
     fi
+    if [[ "$cli_system76_driver_set" -eq 1 ]]; then
+        export TARGET_SYSTEM76_DRIVER="$cli_system76_driver"
+    fi
     if [[ -n "$cli_locale" ]]; then
         export TARGET_LOCALE="$cli_locale"
     fi
@@ -2610,6 +2663,7 @@ function host_main() {
     resolve_browser_selection
     resolve_ubuntu_studio_choice
     resolve_pacstall_choice
+    resolve_system76_driver_choice
 
     check_settings
     set_target_kernel_package_from_flavor
@@ -2664,8 +2718,8 @@ function check_chroot_root() {
     export LC_ALL=C
 }
 
-# Configure the Pop!_OS repositories inside the chroot: release and
-# proprietary on apt.pop-os.org plus release-ubuntu on apt-origin.pop-os.org
+# Configure the Pop!_OS repositories inside the chroot: the release,
+# proprietary, and release-ubuntu suites, all from apt-origin.pop-os.org
 # (staging suites are intentionally excluded). The archive signing key is
 # fetched from the Ubuntu keyserver; once the repos are reachable, the
 # pop-keyring package takes over key maintenance. All three LTS targets are
@@ -2692,7 +2746,7 @@ function setup_pop_apt_repos() {
     for entry in \
         "release|${POP_APT_URL}/release" \
         "proprietary|${POP_APT_URL}/proprietary" \
-        "release-ubuntu|${POP_ORIGIN_APT_URL}/release-ubuntu"; do
+        "release-ubuntu|${POP_APT_URL}/release-ubuntu"; do
         name="${entry%%|*}"
         url="${entry#*|}"
         if curl -fsIL "${url}/dists/${TARGET_UBUNTU_VERSION}/Release" >/dev/null 2>&1; then
@@ -3073,6 +3127,7 @@ function chroot_main() {
     export TARGET_FIREFOX_ESR="${TARGET_FIREFOX_ESR:-0}"
     export TARGET_THUNDERBIRD="${TARGET_THUNDERBIRD:-0}"
     export TARGET_UBUNTU_STUDIO="${TARGET_UBUNTU_STUDIO:-0}"
+    export TARGET_SYSTEM76_DRIVER="${TARGET_SYSTEM76_DRIVER:-0}"
     validate_ubiquity_jammy_only
     check_settings
     set_target_kernel_package_from_flavor

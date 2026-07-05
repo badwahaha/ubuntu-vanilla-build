@@ -77,10 +77,11 @@ Only these target releases are supported:
 
 ### How it differs from the Ubuntu builder
 
-- **Repositories**: debootstrap and the base system use the Pop!_OS Ubuntu mirror (`https://apt.pop-os.org/ubuntu`), and the chroot additionally configures `release` and `proprietary` from `apt.pop-os.org` plus `release-ubuntu` from `apt-origin.pop-os.org` — all signed with the Pop!_OS archive keyring and pinned (`o=pop-os-release`, priority 1001) so Pop!_OS packages win over the Ubuntu archive. **Staging repositories are deliberately excluded.**
+- **Repositories**: everything comes from `apt-origin.pop-os.org` — debootstrap and the base system use the Ubuntu mirror (`https://apt-origin.pop-os.org/ubuntu`), and the chroot additionally configures the `release`, `proprietary`, and `release-ubuntu` suites — all signed with the Pop!_OS archive keyring and pinned (`o=pop-os-release`, priority 1001) so Pop!_OS packages win over the Ubuntu archive. **Staging repositories are deliberately excluded.**
 - **Releases**: same three LTS targets — `jammy` (22.04), `noble` (24.04), and `resolute` (26.04, released early July 2026).
 - **Kernel choice**: `--kernel=system76|generic|lowlatency`. The default `system76` installs `linux-system76` from the Pop!_OS repos (tracks the stable Linux branch); `generic`/`lowlatency` keep the stock Ubuntu HWE kernels.
 - **Bootloader**: official Pop!_OS media use systemd-boot, which expects a large (>= 1 GiB) EFI System Partition. This builder keeps **GRUB** (hybrid BIOS + UEFI), so no oversized ESP is required.
+- **System76 hardware driver (optional)**: `--system76-driver` (or `TARGET_SYSTEM76_DRIVER=1`) pre-installs `system76-driver` from the Pop!_OS repos for System76 machines (fan/keyboard/suspend support). Default is off — the repos stay configured, so it can always be installed later with `sudo apt install system76-driver`.
 - **Calamares config**: comes from `scripts/calamares-popos/` (Pop!_OS branding); the module set matches `scripts/calamares/`.
 - **Separate workspace/cache/config**: uses `workspace-popos/`, its own APT cache, and `scripts/build-popos.cfg`, so Ubuntu and Pop!_OS builds never collide.
 
