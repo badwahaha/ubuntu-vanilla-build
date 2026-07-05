@@ -57,7 +57,8 @@
 # --- Output & Workspace ---
 # TARGET_NAME=                         # Custom ISO base name (auto-generated if empty)
 # GRUB_LIVEBOOT_LABEL=Try Ubuntu without installing
-# UBUNTU_VANILLA_WORKSPACE=            # Custom workspace parent directory
+# UBUNTU_VANILLA_WORKSPACE=            # Custom workspace parent directory (default: /var/cache/ubuntu-vanilla-build in basic mode, ~/uvb-workspace in advanced mode)
+# UVB_OUTPUT_DIR=                      # Directory for the finished ISO + checksums (default: your home directory)
 
 # --- Advanced Mode ---
 # ADVANCED_MODE=0                      # Set to 1 to preserve workspace on failure/interrupt and enable package cache
