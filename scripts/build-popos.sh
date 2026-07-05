@@ -2777,6 +2777,21 @@ EOF
     # Hand key maintenance to the packaged keyring when available.
     apt-get install -y pop-keyring || \
         echo "  WARN  pop-keyring not installable; keeping the keyserver-fetched key." >&2
+
+    # /etc/os-release comes from base-files. Debootstrap installs Ubuntu's
+    # base-files (ID=ubuntu); explicitly switch to Pop!_OS's base-files (the
+    # o=pop-os-release pin at 1001 selects it even as a version downgrade) so
+    # the identity is NAME="Pop!_OS" / ID=pop deterministically, instead of
+    # relying on the later apt-get upgrade to swap it.
+    echo "=====> switching to Pop!_OS base-files (/etc/os-release identity) ..."
+    apt-get install -y --allow-downgrades base-files
+    if grep -qs '^ID=pop$' /etc/os-release; then
+        # shellcheck source=/dev/null
+        echo "=====> /etc/os-release: $(. /etc/os-release && echo "${PRETTY_NAME:-${NAME:-unknown}}")"
+    else
+        echo "  WARN  /etc/os-release still does not identify as Pop!_OS (ID=pop)." >&2
+        echo "  WARN  Pop!_OS base-files may not be published for '${TARGET_UBUNTU_VERSION}' yet." >&2
+    fi
 }
 
 function chroot_prepare() {
