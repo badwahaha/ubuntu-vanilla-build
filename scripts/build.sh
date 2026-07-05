@@ -9,8 +9,6 @@ SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 WORKSPACE_DIR=""
 WORKSPACE_CHROOT=""
 WORKSPACE_IMAGE=""
-# Set to 1 while chroot bind mounts (dev, run, proc, sys, dev/pts) are active (host phase).
-CHROOT_MOUNTS_ACTIVE=0
 # Prevents duplicate teardown when both a signal handler and EXIT run.
 HOST_ABORT_CLEANUP_DONE=0
 DATE="$(TZ="UTC" date +"%y%m%d-%H%M%S")"
@@ -96,6 +94,15 @@ function ui_confirm() {
     done
 }
 
+# Prompting policy: interactive prompts run when stdin is a TTY, or when forced
+# via --interactive / INTERACTIVE=1 (config file). --no-interactive redirects
+# stdin from /dev/null, which makes both conditions false.
+FORCE_INTERACTIVE=0
+
+function prompts_enabled() {
+    [[ "$FORCE_INTERACTIVE" == "1" ]] || [[ -t 0 ]]
+}
+
 # assert_bool_var VAR_NAME [DEFAULT]  — validate that $VAR_NAME is 0 or 1.
 function assert_bool_var() {
     local name="$1" default="${2:-0}"
@@ -157,6 +164,9 @@ function parse_cmd_range() {
     done
     if [[ $dash_flag == false ]]; then
         end_index=$((start_index + 1))
+    fi
+    if [[ $end_index -le $start_index ]]; then
+        "$help_fn" "Invalid range: end command '${_arr[end_index-1]}' comes before start command '${_arr[start_index]}'."
     fi
 }
 
@@ -637,22 +647,8 @@ EOF
     if [[ "${TARGET_PACSTALL:-1}" == "1" ]]; then
         echo "=====> Pacstall (official installer from https://pacstall.dev/q/install — not Chaotic PPR / apt package)"
         # Subshell: restore DEBIAN_FRONTEND after upstream script. Pipe declines optional axel; GITHUB_ACTIONS quiets apt.
-        # The installer script is fetched over HTTPS. Set _pacstall_sha256 to the
-        # SHA-256 of an audited installer version to enforce verification; "SKIP"
-        # disables it (the script then runs UNVERIFIED as root inside the chroot).
         local _pacstall_installer="/tmp/pacstall-install.sh"
-        local _pacstall_sha256="SKIP"
         curl -fsSL https://pacstall.dev/q/install -o "$_pacstall_installer"
-        if [[ "$_pacstall_sha256" != "SKIP" ]]; then
-            echo "${_pacstall_sha256}  ${_pacstall_installer}" | sha256sum -c - || {
-                >&2 echo "ERROR: Pacstall installer checksum mismatch — aborting."
-                rm -f "$_pacstall_installer"
-                exit 1
-            }
-        else
-            echo "  WARN  Pacstall installer checksum verification is DISABLED (_pacstall_sha256=SKIP)." >&2
-            echo "  WARN  The downloaded script will run unverified as root. Pin its SHA-256 to enforce verification." >&2
-        fi
         (
             export DEBIAN_FRONTEND=noninteractive
             printf 'n\n' | env GITHUB_ACTIONS=true bash -e "$_pacstall_installer"
@@ -777,6 +773,7 @@ function check_settings() {
     fi
 }
 
+# shellcheck disable=SC2120  # called indirectly with an error message via parse_cmd_range/cmd_find_index
 function host_help() {
     if [ -z "${1+x}" ]; then
         echo "This script builds a bootable Ubuntu ISO image."
@@ -929,11 +926,9 @@ function chroot_enter_setup() {
     host_priv chroot "$WORKSPACE_CHROOT" mount none -t proc /proc
     host_priv chroot "$WORKSPACE_CHROOT" mount none -t sysfs /sys
     host_priv chroot "$WORKSPACE_CHROOT" mount none -t devpts /dev/pts
-    CHROOT_MOUNTS_ACTIVE=1
 }
 
 function chroot_exit_teardown() {
-    CHROOT_MOUNTS_ACTIVE=0
     [[ -z "${WORKSPACE_CHROOT:-}" ]] && return 0
     # Unmount from the host so we still unwind if chroot is unusable; order: inner mounts, then bind mounts.
     local _mp _rc
@@ -1130,7 +1125,15 @@ function build_iso() {
         -e "swapfile" \
         -e "image"
 
-    printf "%s" "$(host_priv du -sx --block-size=1 "$WORKSPACE_CHROOT" | cut -f1)" | host_priv tee "$WORKSPACE_IMAGE/casper/filesystem.size" >/dev/null
+    # Mirror the mksquashfs excludes above so the size casper reports matches
+    # what actually ships in the squashfs (instead of overcounting /root, /tmp,
+    # and the APT package cache).
+    printf "%s" "$(host_priv du -sx --block-size=1 \
+        --exclude="$WORKSPACE_CHROOT/root" \
+        --exclude="$WORKSPACE_CHROOT/tmp" \
+        --exclude="$WORKSPACE_CHROOT/var/cache/apt/archives" \
+        --exclude="$WORKSPACE_CHROOT/swapfile" \
+        "$WORKSPACE_CHROOT" | cut -f1)" | host_priv tee "$WORKSPACE_IMAGE/casper/filesystem.size" >/dev/null
 
     local boot_hybrid_img="$WORKSPACE_CHROOT/usr/lib/grub/i386-pc/boot_hybrid.img"
     if [[ ! -f "$boot_hybrid_img" ]]; then
@@ -1209,7 +1212,7 @@ function build_iso() {
 }
 
 function interactive_release_pick() {
-    if [[ ! -t 0 ]]; then
+    if ! prompts_enabled; then
         ui_err "No terminal is available. Use --release=jammy|noble|resolute."
         exit 1
     fi
@@ -1240,7 +1243,7 @@ function resolve_release_choice() {
         return 0
     fi
 
-    if [[ -t 0 ]]; then
+    if prompts_enabled; then
         interactive_release_pick
         return 0
     fi
@@ -1250,7 +1253,7 @@ function resolve_release_choice() {
 }
 
 function interactive_kernel_pick() {
-    if [[ ! -t 0 ]]; then
+    if ! prompts_enabled; then
         ui_err "No terminal is available. Use --kernel=generic|lowlatency."
         exit 1
     fi
@@ -1282,7 +1285,7 @@ function resolve_kernel_choice() {
         return 0
     fi
 
-    if [[ -t 0 ]]; then
+    if prompts_enabled; then
         interactive_kernel_pick
         return 0
     fi
@@ -1292,7 +1295,7 @@ function resolve_kernel_choice() {
 }
 
 function interactive_desktop_pick() {
-    if [[ ! -t 0 ]]; then
+    if ! prompts_enabled; then
         ui_err "No terminal is available. Use --desktop=<desktop> (e.g. gnome, xfce, lxde, lxqt, mate, cinnamon, budgie, or kde-plasma)."
         exit 1
     fi
@@ -1331,7 +1334,7 @@ function resolve_desktop_choice() {
         return 0
     fi
 
-    if [[ -t 0 ]]; then
+    if prompts_enabled; then
         interactive_desktop_pick
         return 0
     fi
@@ -1340,7 +1343,7 @@ function resolve_desktop_choice() {
 }
 
 function interactive_kde_package_pick() {
-    if [[ ! -t 0 ]]; then
+    if ! prompts_enabled; then
         ui_err "No terminal is available. Use --kde=kde-full|kde-standard|kde-plasma-desktop."
         exit 1
     fi
@@ -1373,7 +1376,7 @@ function resolve_kde_package_choice() {
         return 0
     fi
 
-    if [[ -t 0 ]]; then
+    if prompts_enabled; then
         interactive_kde_package_pick
         return 0
     fi
@@ -1401,7 +1404,7 @@ function resolve_mate_choice() {
         return 0
     fi
 
-    if [[ -t 0 ]]; then
+    if prompts_enabled; then
         interactive_mate_options_pick
         return 0
     fi
@@ -1411,7 +1414,7 @@ function resolve_mate_choice() {
 }
 
 function interactive_mate_options_pick() {
-    if [[ ! -t 0 ]]; then
+    if ! prompts_enabled; then
         ui_err "No terminal is available. Use --mate=full|core, --mate-extras / --no-mate-extras, or set TARGET_MATE_PACKAGE and TARGET_MATE_EXTRAS=0|1."
         exit 1
     fi
@@ -1453,7 +1456,7 @@ function interactive_mate_options_pick() {
 }
 
 function interactive_gnome_recommends_pick() {
-    if [[ ! -t 0 ]]; then
+    if ! prompts_enabled; then
         ui_err "No terminal is available. Use TARGET_GNOME_INSTALL_RECOMMENDS=0|1."
         exit 1
     fi
@@ -1479,7 +1482,7 @@ function resolve_gnome_recommends_choice() {
         return 0
     fi
 
-    if [[ -t 0 ]]; then
+    if prompts_enabled; then
         interactive_gnome_recommends_pick
         return 0
     fi
@@ -1488,7 +1491,7 @@ function resolve_gnome_recommends_choice() {
 }
 
 function interactive_brave_channel_pick() {
-    if [[ ! -t 0 ]]; then
+    if ! prompts_enabled; then
         ui_err "No terminal is available. Set TARGET_BRAVE_CHANNEL=none|release|origin (or legacy TARGET_BROWSER=release|origin)."
         exit 1
     fi
@@ -1540,7 +1543,7 @@ function interactive_brave_channel_pick() {
 function interactive_toggle_pick() {
     local var_name="$1" heading="$2" install_label="$3" skip_label="$4" prompt_label="$5"
 
-    if [[ ! -t 0 ]]; then
+    if ! prompts_enabled; then
         ui_err "No terminal is available. Set ${var_name}=0|1."
         exit 1
     fi
@@ -1576,7 +1579,7 @@ function interactive_librewolf_pick() {
 }
 
 function interactive_firefox_pick() {
-    if [[ ! -t 0 ]]; then
+    if ! prompts_enabled; then
         ui_err "No terminal is available. Set TARGET_FIREFOX=0|1 and TARGET_FIREFOX_ESR=0|1."
         exit 1
     fi
@@ -1641,7 +1644,7 @@ function resolve_browser_selection() {
     fi
 
     if [[ -z "${TARGET_BRAVE_CHANNEL:-}" ]]; then
-        if [[ -t 0 ]]; then
+        if prompts_enabled; then
             interactive_brave_channel_pick
         else
             export TARGET_BRAVE_CHANNEL="release"
@@ -1649,7 +1652,7 @@ function resolve_browser_selection() {
     fi
 
     if [[ -z "${TARGET_LIBREWOLF+x}" ]]; then
-        if [[ -t 0 ]]; then
+        if prompts_enabled; then
             interactive_librewolf_pick
         else
             export TARGET_LIBREWOLF="0"
@@ -1657,7 +1660,7 @@ function resolve_browser_selection() {
     fi
 
     if [[ -z "${TARGET_FIREFOX+x}" || -z "${TARGET_FIREFOX_ESR+x}" ]]; then
-        if [[ -t 0 ]]; then
+        if prompts_enabled; then
             interactive_firefox_pick
         else
             export TARGET_FIREFOX="${TARGET_FIREFOX:-0}"
@@ -1666,7 +1669,7 @@ function resolve_browser_selection() {
     fi
 
     if [[ -z "${TARGET_THUNDERBIRD+x}" ]]; then
-        if [[ -t 0 ]]; then
+        if prompts_enabled; then
             interactive_thunderbird_pick
         else
             export TARGET_THUNDERBIRD="0"
@@ -1685,7 +1688,7 @@ function resolve_ubuntu_studio_choice() {
         return 0
     fi
 
-    if [[ -t 0 ]]; then
+    if prompts_enabled; then
         ui_heading "Ubuntu Studio"
         echo "    Large bundle: ubuntustudio-audio/graphics/photography/publishing/video,"
         echo "    ubuntustudio-wallpapers, ubuntustudio-menu, ubuntu-edu-music."
@@ -1720,7 +1723,7 @@ function resolve_pacstall_choice() {
         return 0
     fi
 
-    if [[ -t 0 ]]; then
+    if prompts_enabled; then
         ui_heading "Pacstall"
         echo "    AUR-like package manager for Ubuntu (installed from https://pacstall.dev)."
         local yn
@@ -1749,7 +1752,7 @@ function resolve_pacstall_choice() {
 }
 
 function interactive_installer_pick() {
-    if [[ ! -t 0 ]]; then
+    if ! prompts_enabled; then
         ui_err "No terminal is available. Use --installer=calamares|ubiquity."
         exit 1
     fi
@@ -1795,7 +1798,7 @@ function resolve_installer_choice() {
         return 0
     fi
 
-    if [[ -t 0 ]]; then
+    if prompts_enabled; then
         interactive_installer_pick
         return 0
     fi
@@ -1905,7 +1908,7 @@ function print_build_result() {
 # generate_config_wizard — interactive wizard that generates a build.cfg file.
 # Walks the user through each setting and writes the result.
 function generate_config_wizard() {
-    if [[ ! -t 0 ]]; then
+    if ! prompts_enabled; then
         ui_err "Config wizard requires an interactive terminal."
         exit 1
     fi
@@ -2026,28 +2029,29 @@ TARGET_PACSTALL=${_pacstall}
 TARGET_UBUNTU_STUDIO=${_ubuntu_studio}
 WIZARD_EOF
 
-    if [[ -n "$_locale" ]]; then
-        echo "" >> "$out_path"
-        echo "# --- Locale & Keyboard ---" >> "$out_path"
-        echo "TARGET_LOCALE=${_locale}" >> "$out_path"
-    fi
-    if [[ -n "$_keyboard_layout" ]]; then
-        [[ -z "$_locale" ]] && { echo "" >> "$out_path"; echo "# --- Locale & Keyboard ---" >> "$out_path"; }
-        echo "TARGET_KEYBOARD_LAYOUT=${_keyboard_layout}" >> "$out_path"
-        [[ -n "$_keyboard_variant" ]] && echo "TARGET_KEYBOARD_VARIANT=${_keyboard_variant}" >> "$out_path"
-    fi
+    {
+        if [[ -n "$_locale" || -n "$_keyboard_layout" ]]; then
+            echo ""
+            echo "# --- Locale & Keyboard ---"
+            [[ -n "$_locale" ]] && echo "TARGET_LOCALE=${_locale}"
+            if [[ -n "$_keyboard_layout" ]]; then
+                echo "TARGET_KEYBOARD_LAYOUT=${_keyboard_layout}"
+                [[ -n "$_keyboard_variant" ]] && echo "TARGET_KEYBOARD_VARIANT=${_keyboard_variant}"
+            fi
+        fi
 
-    if [[ "$_advanced" == "1" ]]; then
-        echo "" >> "$out_path"
-        echo "# --- Advanced ---" >> "$out_path"
-        echo "ADVANCED_MODE=1" >> "$out_path"
-    fi
+        if [[ "$_advanced" == "1" ]]; then
+            echo ""
+            echo "# --- Advanced ---"
+            echo "ADVANCED_MODE=1"
+        fi
 
-    if [[ -n "$_name" ]]; then
-        echo "" >> "$out_path"
-        echo "# --- Output ---" >> "$out_path"
-        echo "TARGET_NAME=${_name}" >> "$out_path"
-    fi
+        if [[ -n "$_name" ]]; then
+            echo ""
+            echo "# --- Output ---"
+            echo "TARGET_NAME=${_name}"
+        fi
+    } >> "$out_path"
 
     echo
     ui_ok "Config written to: $out_path"
@@ -2332,6 +2336,9 @@ function host_main() {
                 ;;
             --generate-config)
                 export ADVANCED_MODE=1
+                # The wizard runs during argument parsing, before the
+                # --interactive handling below; honor an earlier --interactive.
+                [[ "$cli_interactive" == "1" ]] && FORCE_INTERACTIVE=1
                 generate_config_wizard
                 ;;
             -h|--help)
@@ -2357,12 +2364,14 @@ function host_main() {
     fi
 
     # Handle --interactive / --no-interactive. The INTERACTIVE variable can also come from the config file.
-    # --no-interactive: redirect stdin from /dev/null so that all [[ -t 0 ]] checks return false,
+    # --no-interactive: redirect stdin from /dev/null so prompts_enabled() returns false,
     # making the build fully non-interactive (all missing values use defaults or fail with an error).
-    # --interactive: force interactive mode even when stdin is not a TTY (e.g. piped).
+    # --interactive: force prompts_enabled() true even when stdin is not a TTY (e.g. piped).
     if [[ "$cli_interactive" == "0" ]] || [[ "${INTERACTIVE:-}" == "0" && -z "$cli_interactive" ]]; then
         exec 0</dev/null
         export NO_CONFIRM=1
+    elif [[ "$cli_interactive" == "1" ]] || [[ "${INTERACTIVE:-}" == "1" ]]; then
+        FORCE_INTERACTIVE=1
     fi
 
     cd "$SCRIPT_DIR"
@@ -2374,7 +2383,6 @@ function host_main() {
     ui_kv "Started at" "$(date '+%Y-%m-%d %H:%M:%S %Z')"
 
     HOST_ABORT_CLEANUP_DONE=0
-    CHROOT_MOUNTS_ACTIVE=0
     trap host_build_exit_trap EXIT
     trap 'host_build_signal_trap 130' INT
     trap 'host_build_signal_trap 143' TERM
@@ -2478,7 +2486,7 @@ function host_main() {
     print_build_summary
     ui_info "Phases to run: ${HOST_CMD[*]:$start_index:$((end_index - start_index))}"
     echo
-    if [[ -t 0 ]] && [[ "${NO_CONFIRM:-0}" != "1" ]]; then
+    if prompts_enabled && [[ "${NO_CONFIRM:-0}" != "1" ]]; then
         if ! ui_confirm "Start build now?" y; then
             echo
             ui_info "Build cancelled by user. No changes were made."
