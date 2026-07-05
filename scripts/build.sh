@@ -1964,12 +1964,11 @@ function print_build_result() {
     fi
     echo
     echo "  Next steps:"
-    echo "    * Write to USB on Linux (replace /dev/sdX with your stick's device):"
-    echo "        sudo dd if=\"$iso_path\" of=/dev/sdX bs=4M status=progress conv=fsync"
-    echo "    * Write to USB on Windows: Rufus or balenaEtcher in ISO/DD image mode"
-    echo "    * Test-boot in QEMU (UEFI):"
-    echo "        qemu-system-x86_64 -m 4G -enable-kvm -cdrom \"$iso_path\" \\"
-    echo "            -bios /usr/share/OVMF/OVMF_CODE.fd"
+    echo "    The ISO is ready to use. Write it to a USB stick with your favorite"
+    echo "    USB burner, or simply copy the file onto a USB drive that has Ventoy"
+    echo "    installed. It also works as-is for PXE network boot, and for virtual"
+    echo "    machines: just create a VM on whatever platform you prefer and boot"
+    echo "    it from this ISO."
     echo
 }
 
