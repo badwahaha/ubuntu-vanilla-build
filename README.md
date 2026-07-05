@@ -262,7 +262,7 @@ If values are not explicitly set and interactive prompts are skipped, the defaul
 
 ### Config File & Interactive Mode
 - `--config=FILE` - Load build options from a config file (KEY=VALUE format; **requires `--advanced`**). If not specified, `scripts/build.cfg` is loaded automatically when present in advanced mode.
-- `--generate-config` - Launch an interactive wizard to generate a `build.cfg` file (advanced mode).
+- `--generate-config` - Launch an interactive wizard to generate a `build.cfg` file (advanced mode). Also available from the repository root as `./start-here.sh --create-config` (or `--generate-config`), which first asks which builder (Ubuntu or Pop!_OS) to generate the config for, then forwards `--generate-config` to it — no sudo or host dependencies needed for this shortcut.
 - `--interactive` - Force interactive prompts even when stdin is not a TTY (**requires `--advanced`**).
 - `--no-interactive` - Disable all interactive prompts; missing required values use defaults or cause an error (**requires `--advanced`**).
 
@@ -454,6 +454,8 @@ TARGET_GNOME_INSTALL_RECOMMENDS=1 ./build.sh --release=resolute --kernel=generic
 
 # Advanced mode: generate a config file with the wizard
 ./build.sh --generate-config
+# ...or from the repository root (asks Ubuntu or Pop!_OS first):
+# ./start-here.sh --create-config
 
 # Advanced mode: build using a config file
 ./build.sh --advanced --config=build.cfg -

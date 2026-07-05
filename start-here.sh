@@ -8,6 +8,19 @@ if [[ -t 1 ]]; then
     clear || true
 fi
 
+# ── Config-wizard shortcut ───────────────────────────────────────────
+# "./start-here.sh --create-config" (or --generate-config) only runs the
+# builder's config wizard: no host dependencies or sudo credentials are
+# needed, so both setup steps below are skipped. The distro question is
+# still asked first, then the chosen builder is invoked with
+# --generate-config.
+GENERATE_CONFIG=0
+for arg in "$@"; do
+    case "$arg" in
+        --create-config|--generate-config) GENERATE_CONFIG=1 ;;
+    esac
+done
+
 # Determine if running on a Debian-based host (excluding Ubuntu-based)
 IS_DEBIAN_OR_UBUNTU=0
 IS_DEBIAN=0
@@ -26,7 +39,7 @@ if [[ -r /etc/os-release ]]; then
 fi
 
 # Only perform Debian/Ubuntu dependency checks if on a supported Debian/Ubuntu host
-if [[ "$IS_DEBIAN_OR_UBUNTU" -eq 1 ]] && command -v dpkg &>/dev/null; then
+if [[ "$GENERATE_CONFIG" -eq 0 ]] && [[ "$IS_DEBIAN_OR_UBUNTU" -eq 1 ]] && command -v dpkg &>/dev/null; then
     # Define dependencies
     DEPS=("debootstrap" "squashfs-tools" "xorriso")
     if [[ "$IS_DEBIAN" -eq 1 ]]; then
@@ -67,7 +80,7 @@ cleanup_sudo_keepalive() {
     fi
 }
 
-if [[ "$(id -u)" -ne 0 ]]; then
+if [[ "$GENERATE_CONFIG" -eq 0 ]] && [[ "$(id -u)" -ne 0 ]]; then
     echo "=====> Requesting sudo credentials (will be kept alive for the entire build) ..."
     if ! sudo -v 2>/dev/null; then
         echo "=====> ERROR: Failed to obtain sudo credentials. The build requires sudo access." >&2
@@ -92,10 +105,16 @@ BUILD_DISTRO="${BUILD_DISTRO:-}"
 PASS_ARGS=()
 for arg in "$@"; do
     case "$arg" in
-        --distro=*) BUILD_DISTRO="${arg#--distro=}" ;;
-        *)          PASS_ARGS+=("$arg") ;;
+        --distro=*)       BUILD_DISTRO="${arg#--distro=}" ;;
+        # Translated to the builders' --generate-config below; keep it out of
+        # PASS_ARGS so it is not forwarded twice.
+        --create-config|--generate-config) ;;
+        *)                PASS_ARGS+=("$arg") ;;
     esac
 done
+if [[ "$GENERATE_CONFIG" -eq 1 ]]; then
+    PASS_ARGS+=("--generate-config")
+fi
 
 case "${BUILD_DISTRO,,}" in
     pop|pop-os|pop_os|popos) BUILD_DISTRO="popos" ;;
@@ -104,6 +123,9 @@ case "${BUILD_DISTRO,,}" in
         if [[ -t 0 ]]; then
             echo ""
             echo "--- Distribution ---"
+            if [[ "$GENERATE_CONFIG" -eq 1 ]]; then
+                echo "    (config wizard: choose which builder to generate a config for)"
+            fi
             echo "    1) Ubuntu   Vanilla Ubuntu ISO (scripts/build.sh)  [default]"
             echo "    2) Pop!_OS  Pop!_OS ISO from apt.pop-os.org repos (scripts/build-popos.sh)"
             while true; do
