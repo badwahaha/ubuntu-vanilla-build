@@ -84,7 +84,54 @@ fi
 # Set the toggle indicating launched from start-here.sh
 export LAUNCHED_FROM_START_HERE=1
 
-# Call the main build script with all arguments passed through.
+# ── Distro selection ─────────────────────────────────────────────────
+# Choose which ISO to build: Ubuntu (scripts/build.sh) or Pop!_OS
+# (scripts/build-popos.sh). Selectable via --distro=ubuntu|popos, the
+# BUILD_DISTRO env var, or an interactive prompt on a TTY (default: ubuntu).
+BUILD_DISTRO="${BUILD_DISTRO:-}"
+PASS_ARGS=()
+for arg in "$@"; do
+    case "$arg" in
+        --distro=*) BUILD_DISTRO="${arg#--distro=}" ;;
+        *)          PASS_ARGS+=("$arg") ;;
+    esac
+done
+
+case "${BUILD_DISTRO,,}" in
+    pop|pop-os|pop_os|popos) BUILD_DISTRO="popos" ;;
+    ubuntu)                  BUILD_DISTRO="ubuntu" ;;
+    "")
+        if [[ -t 0 ]]; then
+            echo ""
+            echo "--- Distribution ---"
+            echo "    1) Ubuntu   Vanilla Ubuntu ISO (scripts/build.sh)  [default]"
+            echo "    2) Pop!_OS  Pop!_OS ISO from apt.pop-os.org repos (scripts/build-popos.sh)"
+            while true; do
+                read -r -p "  Distro [1/2, Enter=1]: " _choice
+                case "${_choice,,}" in
+                    ""|1|u|ubuntu)           BUILD_DISTRO="ubuntu"; break ;;
+                    2|p|pop|pop-os|popos)    BUILD_DISTRO="popos";  break ;;
+                    *) echo "  Invalid selection: '${_choice}'." ;;
+                esac
+            done
+        else
+            BUILD_DISTRO="ubuntu"
+        fi
+        ;;
+    *)
+        echo "ERROR: BUILD_DISTRO/--distro must be 'ubuntu' or 'popos' (got: '${BUILD_DISTRO}')." >&2
+        exit 1
+        ;;
+esac
+
+if [[ "$BUILD_DISTRO" == "popos" ]]; then
+    BUILD_SCRIPT="build-popos.sh"
+else
+    BUILD_SCRIPT="build.sh"
+fi
+echo "=====> Selected distro: ${BUILD_DISTRO} (scripts/${BUILD_SCRIPT})"
+
+# Call the selected build script with all remaining arguments passed through.
 # Use a regular invocation (not exec) so the EXIT trap can clean up the
 # sudo keep-alive background process when the build finishes.
-"$(dirname "$0")/scripts/build.sh" "$@"
+"$(dirname "$0")/scripts/${BUILD_SCRIPT}" ${PASS_ARGS[@]+"${PASS_ARGS[@]}"}

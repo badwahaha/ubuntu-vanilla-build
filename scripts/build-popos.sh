@@ -1,10 +1,36 @@
 #!/bin/bash
 
+# build-popos.sh — Pop!_OS variant of build.sh.
+#
+# Repositories: everything comes from https://apt-origin.pop-os.org/ — the
+# ubuntu mirror plus the release, proprietary, and release-ubuntu suites
+# (staging suites are intentionally excluded).
+# Calamares configuration comes from scripts/calamares-popos.
+# Supported releases: jammy (22.04), noble (24.04), resolute (26.04) — LTS only.
+#
+# Deliberate differences from official Pop!_OS media:
+#   * Bootloader: official Pop!_OS ISOs use systemd-boot, which wants a large
+#     (>= 1 GiB) EFI System Partition. This build keeps GRUB (BIOS + UEFI
+#     hybrid) so no oversized ESP is required.
+#   * Desktop: Pop's own desktops (pop-desktop, and COSMIC on noble/resolute)
+#     are NOT offered — COSMIC still has too many bugs when installed through
+#     Calamares. Users can install COSMIC after installation; see the note
+#     printed at the end of the build (print_build_result).
+#   * Kernel: choose the System76 kernel (linux-system76, tracking the stable
+#     Linux branch, from the Pop!_OS repos) or stock Ubuntu HWE kernels
+#     (generic / lowlatency).
+
 set -e
 set -o pipefail
 set -u
 
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+# Pop!_OS APT archive (apt-origin.pop-os.org, used for all suites). Suites:
+# ubuntu (mirror, via TARGET_UBUNTU_MIRROR), release, proprietary, and
+# release-ubuntu. Staging suites are excluded.
+POP_APT_URL="https://apt-origin.pop-os.org"
+# Pop!_OS archive signing key (pop-keyring).
+POP_KEY_FINGERPRINT="63C46DF0140D738961429F4E204DD8AEC33A7AFF"
 # Set in resolve_workspace_paths() during host_main (WSL: avoid /mnt/c for debootstrap).
 WORKSPACE_DIR=""
 WORKSPACE_CHROOT=""
@@ -317,7 +343,7 @@ function default_target_package_remove() {
 
 function set_defaults() {
     export TARGET_UBUNTU_VERSION="${TARGET_UBUNTU_VERSION:-}"
-    export TARGET_UBUNTU_MIRROR="${TARGET_UBUNTU_MIRROR:-https://archive.ubuntu.com/ubuntu/}"
+    export TARGET_UBUNTU_MIRROR="${TARGET_UBUNTU_MIRROR:-https://apt-origin.pop-os.org/ubuntu}"
     export TARGET_KERNEL_FLAVOR="${TARGET_KERNEL_FLAVOR:-}"
     export TARGET_KERNEL_PACKAGE="${TARGET_KERNEL_PACKAGE:-}"
     export TARGET_DESKTOP="${TARGET_DESKTOP:-}"
@@ -330,8 +356,10 @@ function set_defaults() {
     # resolve_ubuntu_studio_choice(), and resolve_pacstall_choice() can distinguish
     # "user never specified" (unset) from "user explicitly set to 0/1" via ${VAR+x}.
     # Only env/CLI paths should set these.
+    # TARGET_SYSTEM76_DRIVER: left unset here so resolve_system76_driver_choice()
+    # can distinguish "user never specified" (unset) from an explicit 0/1.
     export TARGET_NAME="${TARGET_NAME:-}"
-    export GRUB_LIVEBOOT_LABEL="${GRUB_LIVEBOOT_LABEL:-Try Ubuntu without installing}"
+    export GRUB_LIVEBOOT_LABEL="${GRUB_LIVEBOOT_LABEL:-Try Pop!_OS without installing}"
 }
 
 # TARGET_INSTALLER / TARGET_PACKAGE_REMOVE (after CLI and interactive resolution on the host).
@@ -362,7 +390,7 @@ function default_target_name() {
     local version desktop
     version="$(release_version "${TARGET_UBUNTU_VERSION:-}")"
     desktop="${TARGET_DESKTOP:-gnome}"
-    echo "ubuntu-${version}-${desktop}-amd64-${DATE}"
+    echo "popos-${version}-${desktop}-amd64-${DATE}"
 }
 
 function normalize_desktop_variant() {
@@ -400,12 +428,19 @@ function set_target_kernel_package_from_flavor() {
     assert_supported_release || exit 1
 
     case "${TARGET_KERNEL_FLAVOR:-}" in
-        generic|lowlatency) ;;
+        system76|generic|lowlatency) ;;
         *)
-            >&2 echo "TARGET_KERNEL_FLAVOR must be generic or lowlatency (got: '${TARGET_KERNEL_FLAVOR:-}')."
+            >&2 echo "TARGET_KERNEL_FLAVOR must be system76, generic, or lowlatency (got: '${TARGET_KERNEL_FLAVOR:-}')."
             exit 1
             ;;
     esac
+
+    # System76 kernel: shipped in the Pop!_OS repos, tracks the stable Linux
+    # branch. No HWE suffix applies.
+    if [[ "$TARGET_KERNEL_FLAVOR" == "system76" ]]; then
+        export TARGET_KERNEL_PACKAGE="linux-system76"
+        return 0
+    fi
 
     local hv
     hv="$(release_version "$TARGET_UBUNTU_VERSION")"
@@ -709,6 +744,13 @@ EOF
             ubuntu-edu-music
     fi
 
+    if [[ "${TARGET_SYSTEM76_DRIVER:-0}" == "1" ]]; then
+        echo "=====> System76 hardware driver: system76-driver (from the Pop!_OS repos)"
+        apt-get install -y system76-driver
+    else
+        echo "=====> System76 driver: skipped (repos remain configured; apt install system76-driver on System76 hardware)"
+    fi
+
     apt-get install -y \
         git \
         vim \
@@ -791,6 +833,7 @@ function check_settings() {
     assert_bool_var TARGET_THUNDERBIRD
     assert_bool_var TARGET_UBUNTU_STUDIO
     assert_bool_var TARGET_PACSTALL 1
+    assert_bool_var TARGET_SYSTEM76_DRIVER
     if [[ "${TARGET_DESKTOP:-}" == "mate" ]]; then
         case "${TARGET_MATE_PACKAGE:-mate-desktop-environment}" in
             full)
@@ -815,7 +858,7 @@ function check_settings() {
 # shellcheck disable=SC2120  # called indirectly with an error message via parse_cmd_range/cmd_find_index
 function host_help() {
     if [ -z "${1+x}" ]; then
-        echo "This script builds a bootable Ubuntu ISO image."
+        echo "This script builds a bootable Pop!_OS ISO image (repos from https://apt-origin.pop-os.org/, staging excluded)."
         echo
     else
         echo "$1"
@@ -825,7 +868,7 @@ function host_help() {
     echo "Supported commands: ${HOST_CMD[*]}"
     echo
     echo "Options:"
-    echo "  --release=jammy|noble|resolute          Target Ubuntu release (omit to be prompted on a TTY)"
+    echo "  --release=jammy|noble|resolute          Target Pop!_OS release / Ubuntu base codename (omit to be prompted on a TTY)"
     echo "  --mirror=URL                            Ubuntu package mirror"
     echo "  UBUNTU_VANILLA_WORKSPACE=DIR             Parent directory for build workspace (optional; auto on WSL /mnt/c)"
     echo "  TARGET_INSTALLER=calamares|ubiquity       Live installer (optional; default calamares)"
@@ -840,8 +883,9 @@ function host_help() {
     echo "  TARGET_FIREFOX_ESR=0|1                   Pre-install Firefox ESR from Mozilla PPA (optional; default 0; PPA always added)"
     echo "  TARGET_THUNDERBIRD=0|1                   Pre-install Thunderbird from Mozilla PPA (optional; default 0; PPA always added)"
     echo "  TARGET_UBUNTU_STUDIO=0|1                 Ubuntu Studio metapackages (optional; default 0)"
+    echo "  TARGET_SYSTEM76_DRIVER=0|1               Pre-install system76-driver for System76 hardware (optional; default 0)"
     echo "  TARGET_GNOME_INSTALL_RECOMMENDS=0|1       GNOME install with recommends (optional; default 0)"
-    echo "  --kernel=generic|lowlatency             Kernel type to install"
+    echo "  --kernel=system76|generic|lowlatency    Kernel: System76 (stable branch, Pop!_OS repos) or Ubuntu HWE"
     echo "  --installer=calamares|ubiquity           Calamares (default), or Ubiquity (jammy/22.04 only)"
     echo "  --desktop=<desktop>                      Desktop variant (gnome, xfce, lxde, lxqt, mate, cinnamon, budgie, kde-plasma)"
     echo "  --kde=kde-full|kde-standard|kde-plasma-desktop  KDE package tier (used with --desktop=kde-plasma)"
@@ -855,6 +899,7 @@ function host_help() {
     echo "  --thunderbird / --no-thunderbird       Pre-install Thunderbird (Mozilla PPA always configured)"
     echo "  --ubuntu-studio / --no-ubuntu-studio     Ubuntu Studio metapackage set (heavy)"
     echo "  --pacstall / --no-pacstall               Install Pacstall package manager (default: yes)"
+    echo "  --system76-driver / --no-system76-driver  Pre-install system76-driver for System76 hardware (default: no)"
     echo "  --locale=LOCALE                          System locale (e.g. en_US.UTF-8) for unattended builds"
     echo "  --keyboard-layout=LAYOUT                 Keyboard layout code (e.g. us, de, fr) for unattended builds"
     echo "  --keyboard-variant=VARIANT               Keyboard variant (e.g. intl, nodeadkeys; optional)"
@@ -864,7 +909,7 @@ function host_help() {
     echo "  --interactive                            Force interactive prompts even if stdin is not a TTY (advanced only)"
     echo "  --no-interactive                         Disable all interactive prompts, use defaults or fail (advanced only)"
     echo "  --config=FILE                            Load build options from a .cfg file (KEY=VALUE format; advanced mode only)"
-    echo "  --generate-config                        Launch config wizard to generate a build.cfg file"
+    echo "  --generate-config                        Launch config wizard to generate a build-popos.cfg file"
     echo "  --hooks-dir=PATH                         Custom hooks directory (default: scripts/hooks/)"
     echo
     echo "Syntax: $0 [options] [start_cmd] [-] [end_cmd]"
@@ -912,7 +957,7 @@ PKG_CACHE_MOUNTED=0
 
 function resolve_package_cache_dir() {
     local _cache="${XDG_CACHE_HOME:-${HOME:-/root}/.cache}"
-    echo "$_cache/ubuntu-vanilla-build/apt-cache"
+    echo "$_cache/popos-vanilla-build/apt-cache"
 }
 
 function mount_package_cache() {
@@ -1083,10 +1128,10 @@ function run_chroot() {
     chroot_enter_setup
     mount_package_cache
 
-    host_priv cp "$SCRIPT_DIR/build.sh" "$WORKSPACE_CHROOT/root/build.sh"
+    host_priv cp "$SCRIPT_DIR/build-popos.sh" "$WORKSPACE_CHROOT/root/build.sh"
     host_priv rm -rf "$WORKSPACE_CHROOT/root/calamares-config"
-    if [[ -d "$SCRIPT_DIR/calamares" ]]; then
-        host_priv cp -a "$SCRIPT_DIR/calamares" "$WORKSPACE_CHROOT/root/calamares-config"
+    if [[ -d "$SCRIPT_DIR/calamares-popos" ]]; then
+        host_priv cp -a "$SCRIPT_DIR/calamares-popos" "$WORKSPACE_CHROOT/root/calamares-config"
     fi
 
     # Copy hooks into chroot so chroot-phase hooks can run inside.
@@ -1115,6 +1160,7 @@ function run_chroot() {
         TARGET_THUNDERBIRD="${TARGET_THUNDERBIRD:-0}" \
         TARGET_UBUNTU_STUDIO="${TARGET_UBUNTU_STUDIO:-0}" \
         TARGET_PACSTALL="${TARGET_PACSTALL:-1}" \
+        TARGET_SYSTEM76_DRIVER="${TARGET_SYSTEM76_DRIVER:-0}" \
         TARGET_LOCALE="${TARGET_LOCALE:-}" \
         TARGET_KEYBOARD_LAYOUT="${TARGET_KEYBOARD_LAYOUT:-}" \
         TARGET_KEYBOARD_VARIANT="${TARGET_KEYBOARD_VARIANT:-}" \
@@ -1263,7 +1309,7 @@ function interactive_mode_pick() {
 
     ui_heading "Build mode"
     echo "    1) Basic     Guided build with sensible defaults  [default]"
-    echo "    2) Advanced  Adds config file loading (build.cfg / --config),"
+    echo "    2) Advanced  Adds config file loading (build-popos.cfg / --config),"
     echo "                 workspace preservation on failure, package caching,"
     echo "                 and the --interactive / --no-interactive overrides"
 
@@ -1285,11 +1331,11 @@ function interactive_release_pick() {
         exit 1
     fi
 
-    ui_heading "Ubuntu release"
+    ui_heading "Pop!_OS release (Ubuntu base codename)"
     cat <<'EOF'
-    1) jammy     Ubuntu 22.04 LTS
-    2) noble     Ubuntu 24.04 LTS
-    3) resolute  Ubuntu 26.04 LTS
+    1) jammy     Pop!_OS 22.04 LTS
+    2) noble     Pop!_OS 24.04 LTS
+    3) resolute  Pop!_OS 26.04 LTS
 EOF
 
     local choice
@@ -1322,27 +1368,29 @@ function resolve_release_choice() {
 
 function interactive_kernel_pick() {
     if ! prompts_enabled; then
-        ui_err "No terminal is available. Use --kernel=generic|lowlatency."
+        ui_err "No terminal is available. Use --kernel=system76|generic|lowlatency."
         exit 1
     fi
 
     local hv=""
     hv="$(release_version "${TARGET_UBUNTU_VERSION:-}")"
 
-    ui_heading "Kernel flavor${hv:+ (HWE stream for Ubuntu ${hv})}"
-    printf '    1) generic     Recommended for most systems%s\n' \
+    ui_heading "Kernel flavor"
+    echo "    1) system76    System76 kernel from the Pop!_OS repos (linux-system76,"
+    echo "                   tracks the stable Linux branch)  [default]"
+    printf '    2) generic     Ubuntu HWE kernel%s\n' \
         "${hv:+  (linux-generic-hwe-${hv})}"
-    printf '    2) lowlatency  Better for audio / low-latency workloads%s\n' \
+    printf '    3) lowlatency  Ubuntu HWE low-latency kernel, better for audio workloads%s\n' \
         "${hv:+  (linux-lowlatency-hwe-${hv})}"
 
     local choice
     while true; do
-        read -r -p "  Kernel [1/2]: " choice
+        read -r -p "  Kernel [1/2/3, Enter=1]: " choice
         case "${choice,,}" in
-            1|g|generic)    export TARGET_KERNEL_FLAVOR="generic";    break ;;
-            2|l|lowlatency) export TARGET_KERNEL_FLAVOR="lowlatency"; break ;;
-            "")  ui_warn "Please choose 1 or 2." ;;
-            *)   ui_warn "Invalid selection: '$choice'. Please choose 1 or 2." ;;
+            ""|1|s|system76) export TARGET_KERNEL_FLAVOR="system76";   break ;;
+            2|g|generic)     export TARGET_KERNEL_FLAVOR="generic";    break ;;
+            3|l|lowlatency)  export TARGET_KERNEL_FLAVOR="lowlatency"; break ;;
+            *)   ui_warn "Invalid selection: '$choice'. Please choose 1, 2, or 3." ;;
         esac
     done
     ui_ok "TARGET_KERNEL_FLAVOR=$TARGET_KERNEL_FLAVOR"
@@ -1358,7 +1406,7 @@ function resolve_kernel_choice() {
         return 0
     fi
 
-    >&2 echo "TARGET_KERNEL_FLAVOR is not set. Use --kernel=generic|lowlatency for non-interactive runs."
+    >&2 echo "TARGET_KERNEL_FLAVOR is not set. Use --kernel=system76|generic|lowlatency for non-interactive runs."
     exit 1
 }
 
@@ -1369,7 +1417,8 @@ function interactive_desktop_pick() {
     fi
 
     ui_heading "Desktop environment"
-    echo "    (Ordered A-Z by desktop name.)"
+    echo "    (Ordered A-Z by desktop name. Pop's own desktops — pop-desktop and COSMIC —"
+    echo "     are intentionally NOT offered here; see the COSMIC note at the end of the build.)"
     echo "    1) Budgie         Modern GTK desktop with Raven applets/sidebar. budgie-desktop-environment; lightdm + slick-greeter."
     echo "    2) Cinnamon       Familiar bottom panel and menu layout. cinnamon-desktop-environment; lightdm + slick-greeter."
     echo "    3) GNOME          Modern, full-featured desktop (similar to stock Ubuntu). Installs vanilla-gnome-desktop; next prompt offers optional extra apps (APT recommends)."
@@ -1819,6 +1868,26 @@ function resolve_pacstall_choice() {
     fi
 }
 
+# System76 hardware driver (system76-driver from the Pop!_OS repos): fan/
+# keyboard/suspend support and system76-power. Only useful on System76
+# machines; default is to skip.
+function resolve_system76_driver_choice() {
+    if [[ -n "${TARGET_SYSTEM76_DRIVER+x}" ]]; then
+        export TARGET_SYSTEM76_DRIVER="${TARGET_SYSTEM76_DRIVER:-0}"
+        return 0
+    fi
+
+    if prompts_enabled; then
+        interactive_toggle_pick TARGET_SYSTEM76_DRIVER \
+            "System76 hardware driver" \
+            "Pre-install system76-driver (recommended only for System76 hardware)" \
+            "Skip the System76 driver" \
+            "System76 driver"
+    else
+        export TARGET_SYSTEM76_DRIVER=0
+    fi
+}
+
 function interactive_installer_pick() {
     if ! prompts_enabled; then
         ui_err "No terminal is available. Use --installer=calamares|ubiquity."
@@ -1826,7 +1895,7 @@ function interactive_installer_pick() {
     fi
 
     ui_heading "Live installer"
-    echo "    1) Calamares  Default. Project config in scripts/calamares (all releases)"
+    echo "    1) Calamares  Default. Project config in scripts/calamares-popos (all releases)"
     echo "    2) Ubiquity   Classic Ubuntu installer (supported only on jammy / 22.04 LTS)"
 
     local choice
@@ -1883,16 +1952,16 @@ function resolve_workspace_paths() {
     ft_lower="$(printf '%s' "$fs_type" | tr '[:upper:]' '[:lower:]')"
 
     if [[ -n "${UBUNTU_VANILLA_WORKSPACE:-}" ]]; then
-        WORKSPACE_DIR="${UBUNTU_VANILLA_WORKSPACE%/}/workspace"
+        WORKSPACE_DIR="${UBUNTU_VANILLA_WORKSPACE%/}/workspace-popos"
         echo "=====> Workspace (UBUNTU_VANILLA_WORKSPACE): $WORKSPACE_DIR" >&2
     elif [[ "$repo_root" == /mnt/* ]] || [[ "$repo_root" == /media/* ]] || \
          [[ "$fs_type" == 9p ]] || [[ "$ft_lower" == drvfs ]]; then
         local _cache="${XDG_CACHE_HOME:-${HOME:-/root}/.cache}"
-        WORKSPACE_DIR="$_cache/ubuntu-vanilla-build/workspace"
+        WORKSPACE_DIR="$_cache/popos-vanilla-build/workspace-popos"
         echo "=====> Windows/WSL filesystem (${fs_type:-unknown}) at $repo_root — debootstrap cannot unpack reliably there." >&2
         echo "=====> Using Linux-native workspace: $WORKSPACE_DIR" >&2
     else
-        WORKSPACE_DIR="$repo_root/workspace"
+        WORKSPACE_DIR="$repo_root/workspace-popos"
     fi
     WORKSPACE_CHROOT="$WORKSPACE_DIR/chroot"
     WORKSPACE_IMAGE="$WORKSPACE_DIR/image"
@@ -1908,7 +1977,7 @@ function print_build_summary() {
     hv="$(release_version "${TARGET_UBUNTU_VERSION:-}")"
 
     ui_heading "Build configuration"
-    ui_kv "Ubuntu release"  "${TARGET_UBUNTU_VERSION:-?}${hv:+  (Ubuntu ${hv} LTS)}"
+    ui_kv "Pop!_OS release" "${TARGET_UBUNTU_VERSION:-?}${hv:+  (Pop!_OS ${hv} LTS)}"
     ui_kv "Kernel"          "${TARGET_KERNEL_FLAVOR:-?}${TARGET_KERNEL_PACKAGE:+  [${TARGET_KERNEL_PACKAGE}]}"
     ui_kv "Desktop"         "${TARGET_DESKTOP:-?}"
     case "${TARGET_DESKTOP:-}" in
@@ -1933,18 +2002,19 @@ function print_build_summary() {
     ui_kv "Browsers"       "${_bs}"
     ui_kv "Ubuntu Studio"  "${TARGET_UBUNTU_STUDIO:-0}"
     ui_kv "Pacstall"        "${TARGET_PACSTALL:-1}"
+    ui_kv "System76 driver" "${TARGET_SYSTEM76_DRIVER:-0}"
     if [[ "${ADVANCED_MODE:-0}" == "1" ]]; then
         ui_kv "Advanced mode"   "enabled (workspace preserved, package cache active)"
     fi
     ui_kv "Target name"     "${TARGET_NAME:-?}"
     ui_kv "Mirror"          "${TARGET_UBUNTU_MIRROR:-?}"
     ui_kv "Workspace"       "${WORKSPACE_DIR:-?}"
-    ui_kv "Output ISO"      "${SCRIPT_DIR}/${TARGET_NAME:-ubuntu}.iso"
+    ui_kv "Output ISO"      "${SCRIPT_DIR}/${TARGET_NAME:-popos}.iso"
     echo
 }
 
 function print_build_result() {
-    local iso_path="${SCRIPT_DIR}/${TARGET_NAME:-ubuntu}.iso"
+    local iso_path="${SCRIPT_DIR}/${TARGET_NAME:-popos}.iso"
     if [[ ! -f "$iso_path" ]]; then
         ui_heading "Build finished"
         ui_info "No ISO produced at $iso_path (this is expected for partial runs)."
@@ -1971,9 +2041,24 @@ function print_build_result() {
     echo "        qemu-system-x86_64 -m 4G -enable-kvm -cdrom \"$iso_path\" \\"
     echo "            -bios /usr/share/OVMF/OVMF_CODE.fd"
     echo
+    case "${TARGET_UBUNTU_VERSION:-}" in
+        noble|resolute)
+            ui_heading "COSMIC desktop (optional, after installation)"
+            echo "  COSMIC is not offered by this builder because it is still too buggy when"
+            echo "  installed through Calamares. On the installed system (noble/resolute),"
+            echo "  the Pop!_OS repositories are already configured, so you can add it with:"
+            echo
+            echo "      sudo apt update"
+            echo "      sudo apt install cosmic-session"
+            echo
+            echo "  Then log out and pick the COSMIC session on the login screen"
+            echo "  (gear/session menu), or install pop-desktop for the full Pop!_OS stack."
+            echo
+            ;;
+    esac
 }
 
-# generate_config_wizard — interactive wizard that generates a build.cfg file.
+# generate_config_wizard — interactive wizard that generates a build-popos.cfg file.
 # Walks the user through each setting and writes the result.
 function generate_config_wizard() {
     if ! prompts_enabled; then
@@ -1981,10 +2066,10 @@ function generate_config_wizard() {
         exit 1
     fi
 
-    local out_path="$SCRIPT_DIR/build.cfg"
+    local out_path="$SCRIPT_DIR/build-popos.cfg"
 
     ui_banner "Build Configuration Wizard"
-    echo "  This wizard will generate a build.cfg file with your settings."
+    echo "  This wizard will generate a build-popos.cfg file with your settings."
     echo "  Press Enter to accept the [default] value shown in brackets."
     echo
 
@@ -1997,17 +2082,17 @@ function generate_config_wizard() {
 
     local _release _kernel _desktop _installer _mirror
     local _brave _librewolf _firefox _firefox_esr _thunderbird
-    local _pacstall _ubuntu_studio _locale _keyboard_layout _keyboard_variant
+    local _pacstall _ubuntu_studio _system76_driver _locale _keyboard_layout _keyboard_variant
     local _advanced _name
 
     # Release
-    echo "  Supported releases: jammy (22.04), noble (24.04), resolute (26.04)"
+    echo "  Supported releases (Pop!_OS LTS): jammy (22.04), noble (24.04), resolute (26.04)"
     read -r -p "  Release [noble]: " _release
     _release="${_release:-noble}"
 
     # Kernel
-    read -r -p "  Kernel flavor (generic / lowlatency) [generic]: " _kernel
-    _kernel="${_kernel:-generic}"
+    read -r -p "  Kernel flavor (system76 / generic / lowlatency) [system76]: " _kernel
+    _kernel="${_kernel:-system76}"
 
     # Desktop
     echo "  Desktops: gnome, xfce, lxde, lxqt, mate, cinnamon, budgie, kde-plasma"
@@ -2019,8 +2104,8 @@ function generate_config_wizard() {
     _installer="${_installer:-calamares}"
 
     # Mirror
-    read -r -p "  Mirror [https://archive.ubuntu.com/ubuntu/]: " _mirror
-    _mirror="${_mirror:-https://archive.ubuntu.com/ubuntu/}"
+    read -r -p "  Mirror [https://apt-origin.pop-os.org/ubuntu]: " _mirror
+    _mirror="${_mirror:-https://apt-origin.pop-os.org/ubuntu}"
 
     # Brave
     echo "  Brave browser channel: none, release, origin"
@@ -2051,6 +2136,10 @@ function generate_config_wizard() {
     read -r -p "  Install Ubuntu Studio packages? (0/1) [0]: " _ubuntu_studio
     _ubuntu_studio="${_ubuntu_studio:-0}"
 
+    # System76 driver
+    read -r -p "  Pre-install system76-driver (System76 hardware)? (0/1) [0]: " _system76_driver
+    _system76_driver="${_system76_driver:-0}"
+
     # Locale
     read -r -p "  System locale (blank to skip, e.g. en_US.UTF-8): " _locale
 
@@ -2073,7 +2162,7 @@ function generate_config_wizard() {
 
     # Write the config file
     cat > "$out_path" <<WIZARD_EOF
-# Ubuntu Vanilla ISO Builder — generated by config wizard
+# Pop!_OS Vanilla ISO Builder — generated by config wizard
 # $(date '+%Y-%m-%d %H:%M:%S %Z')
 
 # --- Core ---
@@ -2095,6 +2184,7 @@ TARGET_PACSTALL=${_pacstall}
 
 # --- Extras ---
 TARGET_UBUNTU_STUDIO=${_ubuntu_studio}
+TARGET_SYSTEM76_DRIVER=${_system76_driver}
 WIZARD_EOF
 
     {
@@ -2158,7 +2248,7 @@ function load_config_file() {
                 TARGET_MATE_PACKAGE|TARGET_MATE_EXTRAS|TARGET_BROWSER|\
                 TARGET_BRAVE_CHANNEL|TARGET_LIBREWOLF|TARGET_FIREFOX|\
                 TARGET_FIREFOX_ESR|TARGET_THUNDERBIRD|TARGET_UBUNTU_STUDIO|\
-                TARGET_PACSTALL|TARGET_GNOME_INSTALL_RECOMMENDS|TARGET_NAME|\
+                TARGET_PACSTALL|TARGET_SYSTEM76_DRIVER|TARGET_GNOME_INSTALL_RECOMMENDS|TARGET_NAME|\
                 TARGET_LOCALE|TARGET_KEYBOARD_LAYOUT|TARGET_KEYBOARD_VARIANT|\
                 TARGET_INSTALLER|TARGET_PACKAGE_REMOVE|\
                 GRUB_LIVEBOOT_LABEL|UBUNTU_VANILLA_WORKSPACE|NO_CONFIRM|\
@@ -2197,6 +2287,8 @@ function host_main() {
     local cli_ubuntustudio=0
     local cli_pacstall_set=0
     local cli_pacstall=0
+    local cli_system76_driver_set=0
+    local cli_system76_driver=0
     local cli_locale=""
     local cli_keyboard_layout=""
     local cli_keyboard_variant=""
@@ -2208,7 +2300,7 @@ function host_main() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --kernel=generic|--kernel=lowlatency)
+            --kernel=system76|--kernel=generic|--kernel=lowlatency)
                 cli_kernel="${1#--kernel=}"
                 shift
                 ;;
@@ -2340,6 +2432,16 @@ function host_main() {
                 cli_ubuntustudio=0
                 shift
                 ;;
+            --system76-driver)
+                cli_system76_driver_set=1
+                cli_system76_driver=1
+                shift
+                ;;
+            --no-system76-driver)
+                cli_system76_driver_set=1
+                cli_system76_driver=0
+                shift
+                ;;
             --pacstall)
                 cli_pacstall_set=1
                 cli_pacstall=1
@@ -2431,8 +2533,8 @@ function host_main() {
     if [[ "${ADVANCED_MODE:-0}" == "1" ]]; then
         if [[ -n "$cli_config" ]]; then
             load_config_file "$cli_config"
-        elif [[ -f "$SCRIPT_DIR/build.cfg" ]]; then
-            load_config_file "$SCRIPT_DIR/build.cfg"
+        elif [[ -f "$SCRIPT_DIR/build-popos.cfg" ]]; then
+            load_config_file "$SCRIPT_DIR/build-popos.cfg"
         fi
     elif [[ -n "$cli_config" ]]; then
         ui_warn "--config requires --advanced mode. Ignoring config file."
@@ -2458,7 +2560,7 @@ function host_main() {
     cd "$SCRIPT_DIR"
     resolve_workspace_paths
 
-    ui_banner "Ubuntu Vanilla ISO Builder"
+    ui_banner "Pop!_OS Vanilla ISO Builder"
     ui_kv "Script"     "$0"
     ui_kv "Workspace"  "$WORKSPACE_DIR"
     ui_kv "Started at" "$(date '+%Y-%m-%d %H:%M:%S %Z')"
@@ -2518,6 +2620,9 @@ function host_main() {
     if [[ "$cli_pacstall_set" -eq 1 ]]; then
         export TARGET_PACSTALL="$cli_pacstall"
     fi
+    if [[ "$cli_system76_driver_set" -eq 1 ]]; then
+        export TARGET_SYSTEM76_DRIVER="$cli_system76_driver"
+    fi
     if [[ -n "$cli_locale" ]]; then
         export TARGET_LOCALE="$cli_locale"
     fi
@@ -2558,6 +2663,7 @@ function host_main() {
     resolve_browser_selection
     resolve_ubuntu_studio_choice
     resolve_pacstall_choice
+    resolve_system76_driver_choice
 
     check_settings
     set_target_kernel_package_from_flavor
@@ -2612,6 +2718,82 @@ function check_chroot_root() {
     export LC_ALL=C
 }
 
+# Configure the Pop!_OS repositories inside the chroot: the release,
+# proprietary, and release-ubuntu suites, all from apt-origin.pop-os.org
+# (staging suites are intentionally excluded). The archive signing key is
+# fetched from the Ubuntu keyserver; once the repos are reachable, the
+# pop-keyring package takes over key maintenance. All three LTS targets are
+# published, including resolute (26.04 LTS, released early July 2026); a
+# suite that is temporarily unreachable is skipped with a warning, but the
+# build aborts if none of the Pop!_OS suites can be added.
+function setup_pop_apt_repos() {
+    echo "=====> configuring Pop!_OS APT repositories from ${POP_APT_URL} (staging excluded) ..."
+
+    apt-get install -y gnupg dirmngr ca-certificates curl
+
+    install -d /usr/share/keyrings /etc/apt/sources.list.d /etc/apt/preferences.d
+
+    local keyring=/usr/share/keyrings/pop-os-archive-keyring.gpg
+    local tmp_gpg_home
+    tmp_gpg_home="$(mktemp -d)"
+    gpg --homedir "$tmp_gpg_home" --batch --keyserver hkps://keyserver.ubuntu.com \
+        --recv-keys "$POP_KEY_FINGERPRINT"
+    gpg --homedir "$tmp_gpg_home" --batch --export "$POP_KEY_FINGERPRINT" > "$keyring"
+    rm -rf "$tmp_gpg_home"
+
+    # name|base-URL pairs; staging suites are deliberately absent from this list.
+    local entry name url added_any=0
+    for entry in \
+        "release|${POP_APT_URL}/release" \
+        "proprietary|${POP_APT_URL}/proprietary" \
+        "release-ubuntu|${POP_APT_URL}/release-ubuntu"; do
+        name="${entry%%|*}"
+        url="${entry#*|}"
+        if curl -fsIL "${url}/dists/${TARGET_UBUNTU_VERSION}/Release" >/dev/null 2>&1; then
+            echo "deb [signed-by=${keyring}] ${url} ${TARGET_UBUNTU_VERSION} main" \
+                > "/etc/apt/sources.list.d/pop-os-${name}.list"
+            echo "=====> Pop!_OS APT: added ${url} ${TARGET_UBUNTU_VERSION} main"
+            added_any=1
+        else
+            echo "  WARN  ${url} '${TARGET_UBUNTU_VERSION}' is unreachable — skipping this suite." >&2
+        fi
+    done
+    if [[ "$added_any" -eq 0 ]]; then
+        >&2 echo "ERROR: none of the Pop!_OS suites (release, proprietary, release-ubuntu) could be added for '${TARGET_UBUNTU_VERSION}'."
+        >&2 echo "       Cannot build a Pop!_OS image for this release."
+        exit 1
+    fi
+
+    # Prefer Pop!_OS packages over the Ubuntu archive (same pin Pop!_OS ships
+    # in pop-default-settings).
+    cat <<'EOF' > /etc/apt/preferences.d/pop-os-release
+Package: *
+Pin: release o=pop-os-release
+Pin-Priority: 1001
+EOF
+
+    apt-get update
+
+    # Hand key maintenance to the packaged keyring when available.
+    apt-get install -y pop-keyring || \
+        echo "  WARN  pop-keyring not installable; keeping the keyserver-fetched key." >&2
+
+    # /etc/os-release comes from base-files. Debootstrap installs Ubuntu's
+    # base-files (ID=ubuntu); explicitly switch to Pop!_OS's base-files (the
+    # o=pop-os-release pin at 1001 selects it even as a version downgrade) so
+    # the identity is NAME="Pop!_OS" / ID=pop deterministically, instead of
+    # relying on the later apt-get upgrade to swap it.
+    echo "=====> switching to Pop!_OS base-files (/etc/os-release identity) ..."
+    apt-get install -y --allow-downgrades base-files
+    if grep -qs '^ID=pop$' /etc/os-release; then
+        # shellcheck source=/dev/null
+        echo "=====> /etc/os-release: $(. /etc/os-release && echo "${PRETTY_NAME:-${NAME:-unknown}}")"
+    else
+        echo "  WARN  /etc/os-release still does not identify as Pop!_OS (ID=pop)." >&2
+        echo "  WARN  Pop!_OS base-files may not be published for '${TARGET_UBUNTU_VERSION}' yet." >&2
+    fi
+}
+
 function chroot_prepare() {
     echo "=====> running chroot_prepare ..."
 
@@ -2634,6 +2816,8 @@ EOF
 
     apt-get install -y libterm-readline-gnu-perl systemd-sysv
 
+    setup_pop_apt_repos
+
     dbus-uuidgen > /etc/machine-id
     ln -fs /etc/machine-id /var/lib/dbus/machine-id
 
@@ -2643,12 +2827,12 @@ EOF
     ln -sf /bin/true /sbin/initctl
 }
 
-# Full Calamares layout from scripts/calamares (settings.conf + modules + curated i18n).
+# Full Calamares layout from scripts/calamares-popos (settings.conf + modules + curated i18n).
 # Only the calamares binary package is installed — no calamares-settings-* metapackages.
 function apply_calamares_custom_config() {
-    echo "=====> installing Calamares configuration from scripts/calamares ..."
+    echo "=====> installing Calamares configuration from scripts/calamares-popos ..."
     if [[ ! -d /root/calamares-config ]] || [[ ! -f /root/calamares-config/settings.conf ]]; then
-        >&2 echo "Internal error: scripts/calamares must include settings.conf (host did not copy scripts/calamares into the chroot)."
+        >&2 echo "Internal error: scripts/calamares-popos must include settings.conf (host did not copy scripts/calamares-popos into the chroot)."
         exit 1
     fi
     install -d /etc/calamares/modules
@@ -2663,26 +2847,26 @@ function apply_calamares_custom_config() {
         cp /root/calamares-config/i18n/SUPPORTED /usr/share/i18n/SUPPORTED
     fi
 
-    # Render the Ubuntu branding template with the correct release version so the installer
-    # shows "Ubuntu 24.04 LTS" / "Ubuntu 26.04 LTS" instead of the stock Calamares default
+    # Render the Pop!_OS branding template with the correct release version so the installer
+    # shows "Pop!_OS 24.04 LTS" / "Pop!_OS 26.04 LTS" instead of the stock Calamares default
     # ("Fancy GNU/Linux ..."). Matches calamares-settings-ubuntu's per-flavor branding approach.
     local ubuntu_version
     ubuntu_version="$(release_version "$TARGET_UBUNTU_VERSION")"
     if [[ -z "$ubuntu_version" ]]; then
-        >&2 echo "Internal error: no Ubuntu marketing version for TARGET_UBUNTU_VERSION='$TARGET_UBUNTU_VERSION'."
+        >&2 echo "Internal error: no Pop!_OS marketing version for TARGET_UBUNTU_VERSION='$TARGET_UBUNTU_VERSION'."
         exit 1
     fi
-    if [[ ! -f /root/calamares-config/branding/ubuntu/branding.desc ]]; then
-        >&2 echo "Internal error: scripts/calamares/branding/ubuntu/branding.desc is missing."
+    if [[ ! -f /root/calamares-config/branding/pop/branding.desc ]]; then
+        >&2 echo "Internal error: scripts/calamares-popos/branding/pop/branding.desc is missing."
         exit 1
     fi
-    install -d /etc/calamares/branding/ubuntu
+    install -d /etc/calamares/branding/pop
     # Copy all branding assets (QML slideshow, images); branding.desc is templated next.
-    cp -a /root/calamares-config/branding/ubuntu/. /etc/calamares/branding/ubuntu/
+    cp -a /root/calamares-config/branding/pop/. /etc/calamares/branding/pop/
     sed -e "s|@VERSION@|${ubuntu_version}|g" \
         -e "s|@CODENAME@|${TARGET_UBUNTU_VERSION}|g" \
-        /root/calamares-config/branding/ubuntu/branding.desc \
-        > /etc/calamares/branding/ubuntu/branding.desc
+        /root/calamares-config/branding/pop/branding.desc \
+        > /etc/calamares/branding/pop/branding.desc
 }
 
 function install_pkg() {
@@ -2724,7 +2908,7 @@ function install_pkg() {
     echo "=====> live installer: ${TARGET_INSTALLER}"
     case "${TARGET_INSTALLER}" in
         calamares)
-            # Depends only (no Recommends): avoids pulling calamares-settings-* packages; config is 100% scripts/calamares.
+            # Depends only (no Recommends): avoids pulling calamares-settings-* packages; config is 100% scripts/calamares-popos.
             apt-get install -y --no-install-recommends calamares
             apply_calamares_custom_config
             ;;
@@ -2958,6 +3142,7 @@ function chroot_main() {
     export TARGET_FIREFOX_ESR="${TARGET_FIREFOX_ESR:-0}"
     export TARGET_THUNDERBIRD="${TARGET_THUNDERBIRD:-0}"
     export TARGET_UBUNTU_STUDIO="${TARGET_UBUNTU_STUDIO:-0}"
+    export TARGET_SYSTEM76_DRIVER="${TARGET_SYSTEM76_DRIVER:-0}"
     validate_ubiquity_jammy_only
     check_settings
     set_target_kernel_package_from_flavor

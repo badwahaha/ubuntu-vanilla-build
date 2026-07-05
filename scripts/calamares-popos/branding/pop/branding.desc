@@ -1,0 +1,30 @@
+---
+componentName: pop
+
+welcomeStyleCalamares: true
+welcomeExpandingLogo:  true
+windowExpanding:       normal
+windowSize:            800px,520px
+
+strings:
+    productName:         Pop!_OS
+    shortProductName:    Pop!_OS
+    version:             @VERSION@
+    shortVersion:        @CODENAME@
+    versionedName:       Pop!_OS @VERSION@ LTS
+    shortVersionedName:  Pop!_OS @VERSION@ LTS
+    bootloaderEntryName: Pop!_OS
+    productUrl:          https://pop.system76.com/
+
+images:
+    productLogo:         "logo.png"
+    productIcon:         "icon.png"
+
+slideshow:               "show.qml"
+slideshowAPI:            1
+
+style:
+    SidebarBackground:    "#333136"
+    SidebarText:          "#FFFFFF"
+    SidebarTextCurrent:   "#FAA41A"
+
