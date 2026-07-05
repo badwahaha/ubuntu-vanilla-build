@@ -64,8 +64,10 @@ function ui_step() {
 }
 
 function ui_ok()   { _ui_c '32';   printf '  OK    %s\n' "$1"; _ui_r; }
-function ui_warn() { _ui_c '33';   printf '  WARN  %s\n' "$1" >&2; _ui_r; }
-function ui_err()  { _ui_c '1;31'; printf '  ERROR %s\n' "$1" >&2; _ui_r; }
+# Color escapes and text must go to the same stream, or redirecting stderr
+# leaves stray/unbalanced escape codes on stdout.
+function ui_warn() { { _ui_c '33';   printf '  WARN  %s\n' "$1"; _ui_r; } >&2; }
+function ui_err()  { { _ui_c '1;31'; printf '  ERROR %s\n' "$1"; _ui_r; } >&2; }
 function ui_info() { _ui_c '36';   printf '  info  %s\n' "$1"; _ui_r; }
 
 function ui_kv() {
@@ -635,8 +637,9 @@ EOF
     if [[ "${TARGET_PACSTALL:-1}" == "1" ]]; then
         echo "=====> Pacstall (official installer from https://pacstall.dev/q/install — not Chaotic PPR / apt package)"
         # Subshell: restore DEBIAN_FRONTEND after upstream script. Pipe declines optional axel; GITHUB_ACTIONS quiets apt.
-        # The installer script is fetched over HTTPS and verified with a SHA-256 checksum
-        # pinned to the audited version below. Update the hash when upgrading Pacstall.
+        # The installer script is fetched over HTTPS. Set _pacstall_sha256 to the
+        # SHA-256 of an audited installer version to enforce verification; "SKIP"
+        # disables it (the script then runs UNVERIFIED as root inside the chroot).
         local _pacstall_installer="/tmp/pacstall-install.sh"
         local _pacstall_sha256="SKIP"
         curl -fsSL https://pacstall.dev/q/install -o "$_pacstall_installer"
@@ -646,6 +649,9 @@ EOF
                 rm -f "$_pacstall_installer"
                 exit 1
             }
+        else
+            echo "  WARN  Pacstall installer checksum verification is DISABLED (_pacstall_sha256=SKIP)." >&2
+            echo "  WARN  The downloaded script will run unverified as root. Pin its SHA-256 to enforce verification." >&2
         fi
         (
             export DEBIAN_FRONTEND=noninteractive
@@ -1022,6 +1028,13 @@ function setup_host() {
 }
 
 function debootstrap() {
+    # Advanced mode preserves the workspace across runs; re-running debootstrap
+    # into an already-bootstrapped chroot fails midway and corrupts it.
+    if [[ "${ADVANCED_MODE:-0}" == "1" ]] && [[ -f "$WORKSPACE_CHROOT/etc/os-release" ]]; then
+        echo "=====> [advanced] Chroot already bootstrapped at $WORKSPACE_CHROOT — skipping debootstrap."
+        echo "=====> [advanced] Delete the workspace to force a fresh bootstrap."
+        return 0
+    fi
     echo "=====> running debootstrap ... this will take a few minutes ..."
     host_priv debootstrap --arch=amd64 --variant=minbase "$TARGET_UBUNTU_VERSION" "$WORKSPACE_CHROOT" "$TARGET_UBUNTU_MIRROR"
 }
@@ -1481,13 +1494,13 @@ function interactive_brave_channel_pick() {
     fi
 
     ui_heading "Brave Browser"
-    echo "    1) Brave Stable"
+    echo "    1) Brave Stable [default]"
     echo "       Official release from Brave's repository (brave-browser package)"
     echo "       This is the standard Brave browser with all features enabled by default"
     echo "       Includes Leo AI, News, Playlist, Rewards, Wallet, VPN, and other integrated features"
     echo "       Completely free to use on all platforms with regular security updates"
     echo ""
-    echo "    2) Brave Origin [default]"
+    echo "    2) Brave Origin"
     echo "       Origin build (brave-origin package) - a minimalist version of Brave"
     echo "       Streamlined to the core of Brave's ad blocking and privacy protections"
     echo "       Lets you manage or completely remove features you don't want"
@@ -1502,13 +1515,13 @@ function interactive_brave_channel_pick() {
 
     local choice
     while true; do
-        read -r -p "  Brave [1/2/3, Enter=2]: " choice
+        read -r -p "  Brave [1/2/3, Enter=1]: " choice
         case "${choice,,}" in
-            1|r|release|stable)
+            ""|1|r|release|stable)
                 export TARGET_BRAVE_CHANNEL="release"
                 break
                 ;;
-            ""|2|o|origin)
+            2|o|origin)
                 export TARGET_BRAVE_CHANNEL="origin"
                 break
                 ;;
@@ -1538,18 +1551,14 @@ function interactive_toggle_pick() {
 
     local choice
     while true; do
-        read -r -p "  ${prompt_label} [1/2/3, Enter=2]: " choice
+        read -r -p "  ${prompt_label} [1/2, Enter=2]: " choice
         case "${choice,,}" in
-            ""|2|n|no|off|skip|s)
+            ""|2|n|no|off|skip|s|none)
                 export "$var_name"="0"
                 break
                 ;;
             1|y|yes|install|pre|on)
                 export "$var_name"="1"
-                break
-                ;;
-            3|none)
-                export "$var_name"="0"
                 break
                 ;;
             *) ui_warn "Invalid selection: '$choice'." ;;
@@ -1573,7 +1582,7 @@ function interactive_firefox_pick() {
     fi
 
     ui_heading "Firefox Browser"
-    echo "    1) Firefox Release [default]"
+    echo "    1) Firefox Release"
     echo "       Official release from Mozilla's repository (firefox package)"
     echo "       This is the standard Firefox browser with the latest features"
     echo "       Includes the newest web standards, performance improvements, and UI updates"
@@ -1588,16 +1597,16 @@ function interactive_firefox_pick() {
     echo "       Ideal for users who prefer stability and consistency over new features"
     echo "       Recommended for organizations that need standardized browser environments"
     echo ""
-    echo "    3) Skip Firefox"
+    echo "    3) Skip Firefox [default]"
     echo "       Do not install Firefox browser"
     echo "       Choose this if you prefer another browser or don't need Firefox"
     echo ""
 
     local choice
     while true; do
-        read -r -p "  Firefox [1/2/3, Enter=1]: " choice
+        read -r -p "  Firefox [1/2/3, Enter=3]: " choice
         case "${choice,,}" in
-            1|""|r|release)
+            1|r|release)
                 export TARGET_FIREFOX="1"
                 export TARGET_FIREFOX_ESR="0"
                 break
@@ -1607,7 +1616,7 @@ function interactive_firefox_pick() {
                 export TARGET_FIREFOX_ESR="1"
                 break
                 ;;
-            3|n|none|skip)
+            ""|3|n|none|skip)
                 export TARGET_FIREFOX="0"
                 export TARGET_FIREFOX_ESR="0"
                 break
@@ -2060,8 +2069,9 @@ function load_config_file() {
     while IFS= read -r line || [[ -n "$line" ]]; do
         # Skip blank lines and comments.
         [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-        # Strip inline comments.
-        line="${line%%#*}"
+        # Strip inline comments: only "#" preceded by whitespace starts a
+        # comment, so values containing "#" (e.g. GRUB labels) survive.
+        line="${line%%[[:space:]]\#*}"
         # Match KEY=VALUE (with optional quotes).
         if [[ "$line" =~ ^[[:space:]]*([A-Z_][A-Z0-9_]*)=(.*)$ ]]; then
             key="${BASH_REMATCH[1]}"
@@ -2537,7 +2547,9 @@ EOF
     ln -fs /etc/machine-id /var/lib/dbus/machine-id
 
     dpkg-divert --local --rename --add /sbin/initctl
-    ln -s /bin/true /sbin/initctl
+    # -f: advanced-mode re-runs enter this stage with the symlink already in
+    # place; plain ln -s would fail under set -e.
+    ln -sf /bin/true /sbin/initctl
 }
 
 # Full Calamares layout from scripts/calamares (settings.conf + modules + curated i18n).
@@ -2741,7 +2753,6 @@ menuentry "Check the disc for defects" {
     initrd /casper/initrd
 }
 
-grub_platform
 if [ "\$grub_platform" = "efi" ]; then
 menuentry "UEFI firmware settings" {
     fwsetup
@@ -2761,9 +2772,14 @@ EOF
 
     cp -v casper/filesystem.manifest casper/filesystem.manifest-desktop
 
-    local pkg
+    # Anchor to "^package " so only the exact package is removed. An unanchored
+    # substring match would also delete unrelated packages that merely contain
+    # the name (e.g. removing "discover" would strip "plasma-discover" on KDE
+    # builds, and casper would then purge it from the installed system).
+    local pkg pkg_re
     for pkg in $TARGET_PACKAGE_REMOVE; do
-        sed -i "/$pkg/d" casper/filesystem.manifest-desktop
+        pkg_re="$(printf '%s' "$pkg" | sed 's/[][\\.*^$/]/\\&/g')"
+        sed -i "/^${pkg_re} /d" casper/filesystem.manifest-desktop
     done
 
     cat <<EOF > README.diskdefines
@@ -2825,7 +2841,9 @@ function finish_up() {
 
     truncate -s 0 /etc/machine-id
 
-    rm /sbin/initctl
+    # -f: keep this stage re-runnable (advanced mode) after the symlink was
+    # already removed by a previous pass.
+    rm -f /sbin/initctl
     dpkg-divert --rename --remove /sbin/initctl
 
     rm -rf /tmp/* ~/.bash_history
