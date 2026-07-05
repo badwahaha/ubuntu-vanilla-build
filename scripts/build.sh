@@ -9,15 +9,21 @@ SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 WORKSPACE_DIR=""
 WORKSPACE_CHROOT=""
 WORKSPACE_IMAGE=""
-# Set to 1 while chroot bind mounts (dev, run, proc, sys, dev/pts) are active (host phase).
-CHROOT_MOUNTS_ACTIVE=0
 # Prevents duplicate teardown when both a signal handler and EXIT run.
 HOST_ABORT_CLEANUP_DONE=0
 DATE="$(TZ="UTC" date +"%y%m%d-%H%M%S")"
 # Default hooks directory; overridden by --hooks-dir=PATH.
 HOOKS_DIR=""
-# Advanced mode: set to 1 via --advanced to preserve workspace on failure/interrupt
-# and enable package caching.
+# Advanced mode: set to 1 via --advanced (or the startup mode prompt) to enable
+# config file loading, workspace preservation on failure/interrupt, package
+# caching, and the --interactive/--no-interactive overrides.
+# ADVANCED_MODE_EXPLICIT tracks whether the user chose a mode (env or CLI);
+# when 0, host_main asks interactively on a TTY and defaults to basic otherwise.
+if [[ -n "${ADVANCED_MODE+x}" ]]; then
+    ADVANCED_MODE_EXPLICIT=1
+else
+    ADVANCED_MODE_EXPLICIT=0
+fi
 ADVANCED_MODE="${ADVANCED_MODE:-0}"
 
 # ---------------------------------------------------------------------------
@@ -64,8 +70,10 @@ function ui_step() {
 }
 
 function ui_ok()   { _ui_c '32';   printf '  OK    %s\n' "$1"; _ui_r; }
-function ui_warn() { _ui_c '33';   printf '  WARN  %s\n' "$1" >&2; _ui_r; }
-function ui_err()  { _ui_c '1;31'; printf '  ERROR %s\n' "$1" >&2; _ui_r; }
+# Color escapes and text must go to the same stream, or redirecting stderr
+# leaves stray/unbalanced escape codes on stdout.
+function ui_warn() { { _ui_c '33';   printf '  WARN  %s\n' "$1"; _ui_r; } >&2; }
+function ui_err()  { { _ui_c '1;31'; printf '  ERROR %s\n' "$1"; _ui_r; } >&2; }
 function ui_info() { _ui_c '36';   printf '  info  %s\n' "$1"; _ui_r; }
 
 function ui_kv() {
@@ -92,6 +100,15 @@ function ui_confirm() {
             *)     echo "  Please answer y or n." ;;
         esac
     done
+}
+
+# Prompting policy: interactive prompts run when stdin is a TTY, or when forced
+# via --interactive / INTERACTIVE=1 (config file). --no-interactive redirects
+# stdin from /dev/null, which makes both conditions false.
+FORCE_INTERACTIVE=0
+
+function prompts_enabled() {
+    [[ "$FORCE_INTERACTIVE" == "1" ]] || [[ -t 0 ]]
 }
 
 # assert_bool_var VAR_NAME [DEFAULT]  — validate that $VAR_NAME is 0 or 1.
@@ -155,6 +172,9 @@ function parse_cmd_range() {
     done
     if [[ $dash_flag == false ]]; then
         end_index=$((start_index + 1))
+    fi
+    if [[ $end_index -le $start_index ]]; then
+        "$help_fn" "Invalid range: end command '${_arr[end_index-1]}' comes before start command '${_arr[start_index]}'."
     fi
 }
 
@@ -635,18 +655,8 @@ EOF
     if [[ "${TARGET_PACSTALL:-1}" == "1" ]]; then
         echo "=====> Pacstall (official installer from https://pacstall.dev/q/install — not Chaotic PPR / apt package)"
         # Subshell: restore DEBIAN_FRONTEND after upstream script. Pipe declines optional axel; GITHUB_ACTIONS quiets apt.
-        # The installer script is fetched over HTTPS and verified with a SHA-256 checksum
-        # pinned to the audited version below. Update the hash when upgrading Pacstall.
         local _pacstall_installer="/tmp/pacstall-install.sh"
-        local _pacstall_sha256="SKIP"
         curl -fsSL https://pacstall.dev/q/install -o "$_pacstall_installer"
-        if [[ "$_pacstall_sha256" != "SKIP" ]]; then
-            echo "${_pacstall_sha256}  ${_pacstall_installer}" | sha256sum -c - || {
-                >&2 echo "ERROR: Pacstall installer checksum mismatch — aborting."
-                rm -f "$_pacstall_installer"
-                exit 1
-            }
-        fi
         (
             export DEBIAN_FRONTEND=noninteractive
             printf 'n\n' | env GITHUB_ACTIONS=true bash -e "$_pacstall_installer"
@@ -771,6 +781,7 @@ function check_settings() {
     fi
 }
 
+# shellcheck disable=SC2120  # called indirectly with an error message via parse_cmd_range/cmd_find_index
 function host_help() {
     if [ -z "${1+x}" ]; then
         echo "This script builds a bootable Ubuntu ISO image."
@@ -816,11 +827,11 @@ function host_help() {
     echo "  --locale=LOCALE                          System locale (e.g. en_US.UTF-8) for unattended builds"
     echo "  --keyboard-layout=LAYOUT                 Keyboard layout code (e.g. us, de, fr) for unattended builds"
     echo "  --keyboard-variant=VARIANT               Keyboard variant (e.g. intl, nodeadkeys; optional)"
-    echo "  --interactive                            Force interactive prompts (even if stdin is not a TTY)"
-    echo "  --no-interactive                         Disable all interactive prompts (use defaults or fail)"
     echo
-    echo "Advanced mode (--advanced):"
+    echo "Advanced mode (--advanced; also offered by the startup mode prompt):"
     echo "  --advanced                               Enable advanced mode (config file, workspace preservation, package cache)"
+    echo "  --interactive                            Force interactive prompts even if stdin is not a TTY (advanced only)"
+    echo "  --no-interactive                         Disable all interactive prompts, use defaults or fail (advanced only)"
     echo "  --config=FILE                            Load build options from a .cfg file (KEY=VALUE format; advanced mode only)"
     echo "  --generate-config                        Launch config wizard to generate a build.cfg file"
     echo "  --hooks-dir=PATH                         Custom hooks directory (default: scripts/hooks/)"
@@ -923,11 +934,9 @@ function chroot_enter_setup() {
     host_priv chroot "$WORKSPACE_CHROOT" mount none -t proc /proc
     host_priv chroot "$WORKSPACE_CHROOT" mount none -t sysfs /sys
     host_priv chroot "$WORKSPACE_CHROOT" mount none -t devpts /dev/pts
-    CHROOT_MOUNTS_ACTIVE=1
 }
 
 function chroot_exit_teardown() {
-    CHROOT_MOUNTS_ACTIVE=0
     [[ -z "${WORKSPACE_CHROOT:-}" ]] && return 0
     # Unmount from the host so we still unwind if chroot is unusable; order: inner mounts, then bind mounts.
     local _mp _rc
@@ -1022,6 +1031,13 @@ function setup_host() {
 }
 
 function debootstrap() {
+    # Advanced mode preserves the workspace across runs; re-running debootstrap
+    # into an already-bootstrapped chroot fails midway and corrupts it.
+    if [[ "${ADVANCED_MODE:-0}" == "1" ]] && [[ -f "$WORKSPACE_CHROOT/etc/os-release" ]]; then
+        echo "=====> [advanced] Chroot already bootstrapped at $WORKSPACE_CHROOT — skipping debootstrap."
+        echo "=====> [advanced] Delete the workspace to force a fresh bootstrap."
+        return 0
+    fi
     echo "=====> running debootstrap ... this will take a few minutes ..."
     host_priv debootstrap --arch=amd64 --variant=minbase "$TARGET_UBUNTU_VERSION" "$WORKSPACE_CHROOT" "$TARGET_UBUNTU_MIRROR"
 }
@@ -1117,7 +1133,15 @@ function build_iso() {
         -e "swapfile" \
         -e "image"
 
-    printf "%s" "$(host_priv du -sx --block-size=1 "$WORKSPACE_CHROOT" | cut -f1)" | host_priv tee "$WORKSPACE_IMAGE/casper/filesystem.size" >/dev/null
+    # Mirror the mksquashfs excludes above so the size casper reports matches
+    # what actually ships in the squashfs (instead of overcounting /root, /tmp,
+    # and the APT package cache).
+    printf "%s" "$(host_priv du -sx --block-size=1 \
+        --exclude="$WORKSPACE_CHROOT/root" \
+        --exclude="$WORKSPACE_CHROOT/tmp" \
+        --exclude="$WORKSPACE_CHROOT/var/cache/apt/archives" \
+        --exclude="$WORKSPACE_CHROOT/swapfile" \
+        "$WORKSPACE_CHROOT" | cut -f1)" | host_priv tee "$WORKSPACE_IMAGE/casper/filesystem.size" >/dev/null
 
     local boot_hybrid_img="$WORKSPACE_CHROOT/usr/lib/grub/i386-pc/boot_hybrid.img"
     if [[ ! -f "$boot_hybrid_img" ]]; then
@@ -1195,8 +1219,36 @@ function build_iso() {
     clean_workspace
 }
 
-function interactive_release_pick() {
+# Startup mode selection: alternative to passing --advanced. Only asked when
+# the user did not choose a mode via --advanced or the ADVANCED_MODE env var.
+# Uses a plain TTY check (not prompts_enabled): the --interactive override is
+# itself advanced-only, so it cannot apply before the mode is known.
+function interactive_mode_pick() {
     if [[ ! -t 0 ]]; then
+        # Non-interactive invocation without an explicit mode: default to basic.
+        return 0
+    fi
+
+    ui_heading "Build mode"
+    echo "    1) Basic     Guided build with sensible defaults  [default]"
+    echo "    2) Advanced  Adds config file loading (build.cfg / --config),"
+    echo "                 workspace preservation on failure, package caching,"
+    echo "                 and the --interactive / --no-interactive overrides"
+
+    local choice
+    while true; do
+        read -r -p "  Mode [1/2, Enter=1]: " choice
+        case "${choice,,}" in
+            ""|1|b|basic)    export ADVANCED_MODE=0; break ;;
+            2|a|adv|advanced) export ADVANCED_MODE=1; break ;;
+            *) ui_warn "Invalid selection: '$choice'." ;;
+        esac
+    done
+    ui_ok "ADVANCED_MODE=$ADVANCED_MODE"
+}
+
+function interactive_release_pick() {
+    if ! prompts_enabled; then
         ui_err "No terminal is available. Use --release=jammy|noble|resolute."
         exit 1
     fi
@@ -1227,7 +1279,7 @@ function resolve_release_choice() {
         return 0
     fi
 
-    if [[ -t 0 ]]; then
+    if prompts_enabled; then
         interactive_release_pick
         return 0
     fi
@@ -1237,7 +1289,7 @@ function resolve_release_choice() {
 }
 
 function interactive_kernel_pick() {
-    if [[ ! -t 0 ]]; then
+    if ! prompts_enabled; then
         ui_err "No terminal is available. Use --kernel=generic|lowlatency."
         exit 1
     fi
@@ -1269,7 +1321,7 @@ function resolve_kernel_choice() {
         return 0
     fi
 
-    if [[ -t 0 ]]; then
+    if prompts_enabled; then
         interactive_kernel_pick
         return 0
     fi
@@ -1279,7 +1331,7 @@ function resolve_kernel_choice() {
 }
 
 function interactive_desktop_pick() {
-    if [[ ! -t 0 ]]; then
+    if ! prompts_enabled; then
         ui_err "No terminal is available. Use --desktop=<desktop> (e.g. gnome, xfce, lxde, lxqt, mate, cinnamon, budgie, or kde-plasma)."
         exit 1
     fi
@@ -1318,7 +1370,7 @@ function resolve_desktop_choice() {
         return 0
     fi
 
-    if [[ -t 0 ]]; then
+    if prompts_enabled; then
         interactive_desktop_pick
         return 0
     fi
@@ -1327,7 +1379,7 @@ function resolve_desktop_choice() {
 }
 
 function interactive_kde_package_pick() {
-    if [[ ! -t 0 ]]; then
+    if ! prompts_enabled; then
         ui_err "No terminal is available. Use --kde=kde-full|kde-standard|kde-plasma-desktop."
         exit 1
     fi
@@ -1360,7 +1412,7 @@ function resolve_kde_package_choice() {
         return 0
     fi
 
-    if [[ -t 0 ]]; then
+    if prompts_enabled; then
         interactive_kde_package_pick
         return 0
     fi
@@ -1388,7 +1440,7 @@ function resolve_mate_choice() {
         return 0
     fi
 
-    if [[ -t 0 ]]; then
+    if prompts_enabled; then
         interactive_mate_options_pick
         return 0
     fi
@@ -1398,7 +1450,7 @@ function resolve_mate_choice() {
 }
 
 function interactive_mate_options_pick() {
-    if [[ ! -t 0 ]]; then
+    if ! prompts_enabled; then
         ui_err "No terminal is available. Use --mate=full|core, --mate-extras / --no-mate-extras, or set TARGET_MATE_PACKAGE and TARGET_MATE_EXTRAS=0|1."
         exit 1
     fi
@@ -1440,7 +1492,7 @@ function interactive_mate_options_pick() {
 }
 
 function interactive_gnome_recommends_pick() {
-    if [[ ! -t 0 ]]; then
+    if ! prompts_enabled; then
         ui_err "No terminal is available. Use TARGET_GNOME_INSTALL_RECOMMENDS=0|1."
         exit 1
     fi
@@ -1466,7 +1518,7 @@ function resolve_gnome_recommends_choice() {
         return 0
     fi
 
-    if [[ -t 0 ]]; then
+    if prompts_enabled; then
         interactive_gnome_recommends_pick
         return 0
     fi
@@ -1475,19 +1527,19 @@ function resolve_gnome_recommends_choice() {
 }
 
 function interactive_brave_channel_pick() {
-    if [[ ! -t 0 ]]; then
+    if ! prompts_enabled; then
         ui_err "No terminal is available. Set TARGET_BRAVE_CHANNEL=none|release|origin (or legacy TARGET_BROWSER=release|origin)."
         exit 1
     fi
 
     ui_heading "Brave Browser"
-    echo "    1) Brave Stable"
+    echo "    1) Brave Stable [default]"
     echo "       Official release from Brave's repository (brave-browser package)"
     echo "       This is the standard Brave browser with all features enabled by default"
     echo "       Includes Leo AI, News, Playlist, Rewards, Wallet, VPN, and other integrated features"
     echo "       Completely free to use on all platforms with regular security updates"
     echo ""
-    echo "    2) Brave Origin [default]"
+    echo "    2) Brave Origin"
     echo "       Origin build (brave-origin package) - a minimalist version of Brave"
     echo "       Streamlined to the core of Brave's ad blocking and privacy protections"
     echo "       Lets you manage or completely remove features you don't want"
@@ -1502,13 +1554,13 @@ function interactive_brave_channel_pick() {
 
     local choice
     while true; do
-        read -r -p "  Brave [1/2/3, Enter=2]: " choice
+        read -r -p "  Brave [1/2/3, Enter=1]: " choice
         case "${choice,,}" in
-            1|r|release|stable)
+            ""|1|r|release|stable)
                 export TARGET_BRAVE_CHANNEL="release"
                 break
                 ;;
-            ""|2|o|origin)
+            2|o|origin)
                 export TARGET_BRAVE_CHANNEL="origin"
                 break
                 ;;
@@ -1527,7 +1579,7 @@ function interactive_brave_channel_pick() {
 function interactive_toggle_pick() {
     local var_name="$1" heading="$2" install_label="$3" skip_label="$4" prompt_label="$5"
 
-    if [[ ! -t 0 ]]; then
+    if ! prompts_enabled; then
         ui_err "No terminal is available. Set ${var_name}=0|1."
         exit 1
     fi
@@ -1538,18 +1590,14 @@ function interactive_toggle_pick() {
 
     local choice
     while true; do
-        read -r -p "  ${prompt_label} [1/2/3, Enter=2]: " choice
+        read -r -p "  ${prompt_label} [1/2, Enter=2]: " choice
         case "${choice,,}" in
-            ""|2|n|no|off|skip|s)
+            ""|2|n|no|off|skip|s|none)
                 export "$var_name"="0"
                 break
                 ;;
             1|y|yes|install|pre|on)
                 export "$var_name"="1"
-                break
-                ;;
-            3|none)
-                export "$var_name"="0"
                 break
                 ;;
             *) ui_warn "Invalid selection: '$choice'." ;;
@@ -1567,13 +1615,13 @@ function interactive_librewolf_pick() {
 }
 
 function interactive_firefox_pick() {
-    if [[ ! -t 0 ]]; then
+    if ! prompts_enabled; then
         ui_err "No terminal is available. Set TARGET_FIREFOX=0|1 and TARGET_FIREFOX_ESR=0|1."
         exit 1
     fi
 
     ui_heading "Firefox Browser"
-    echo "    1) Firefox Release [default]"
+    echo "    1) Firefox Release"
     echo "       Official release from Mozilla's repository (firefox package)"
     echo "       This is the standard Firefox browser with the latest features"
     echo "       Includes the newest web standards, performance improvements, and UI updates"
@@ -1588,16 +1636,16 @@ function interactive_firefox_pick() {
     echo "       Ideal for users who prefer stability and consistency over new features"
     echo "       Recommended for organizations that need standardized browser environments"
     echo ""
-    echo "    3) Skip Firefox"
+    echo "    3) Skip Firefox [default]"
     echo "       Do not install Firefox browser"
     echo "       Choose this if you prefer another browser or don't need Firefox"
     echo ""
 
     local choice
     while true; do
-        read -r -p "  Firefox [1/2/3, Enter=1]: " choice
+        read -r -p "  Firefox [1/2/3, Enter=3]: " choice
         case "${choice,,}" in
-            1|""|r|release)
+            1|r|release)
                 export TARGET_FIREFOX="1"
                 export TARGET_FIREFOX_ESR="0"
                 break
@@ -1607,7 +1655,7 @@ function interactive_firefox_pick() {
                 export TARGET_FIREFOX_ESR="1"
                 break
                 ;;
-            3|n|none|skip)
+            ""|3|n|none|skip)
                 export TARGET_FIREFOX="0"
                 export TARGET_FIREFOX_ESR="0"
                 break
@@ -1632,7 +1680,7 @@ function resolve_browser_selection() {
     fi
 
     if [[ -z "${TARGET_BRAVE_CHANNEL:-}" ]]; then
-        if [[ -t 0 ]]; then
+        if prompts_enabled; then
             interactive_brave_channel_pick
         else
             export TARGET_BRAVE_CHANNEL="release"
@@ -1640,7 +1688,7 @@ function resolve_browser_selection() {
     fi
 
     if [[ -z "${TARGET_LIBREWOLF+x}" ]]; then
-        if [[ -t 0 ]]; then
+        if prompts_enabled; then
             interactive_librewolf_pick
         else
             export TARGET_LIBREWOLF="0"
@@ -1648,7 +1696,7 @@ function resolve_browser_selection() {
     fi
 
     if [[ -z "${TARGET_FIREFOX+x}" || -z "${TARGET_FIREFOX_ESR+x}" ]]; then
-        if [[ -t 0 ]]; then
+        if prompts_enabled; then
             interactive_firefox_pick
         else
             export TARGET_FIREFOX="${TARGET_FIREFOX:-0}"
@@ -1657,7 +1705,7 @@ function resolve_browser_selection() {
     fi
 
     if [[ -z "${TARGET_THUNDERBIRD+x}" ]]; then
-        if [[ -t 0 ]]; then
+        if prompts_enabled; then
             interactive_thunderbird_pick
         else
             export TARGET_THUNDERBIRD="0"
@@ -1676,7 +1724,7 @@ function resolve_ubuntu_studio_choice() {
         return 0
     fi
 
-    if [[ -t 0 ]]; then
+    if prompts_enabled; then
         ui_heading "Ubuntu Studio"
         echo "    Large bundle: ubuntustudio-audio/graphics/photography/publishing/video,"
         echo "    ubuntustudio-wallpapers, ubuntustudio-menu, ubuntu-edu-music."
@@ -1711,7 +1759,7 @@ function resolve_pacstall_choice() {
         return 0
     fi
 
-    if [[ -t 0 ]]; then
+    if prompts_enabled; then
         ui_heading "Pacstall"
         echo "    AUR-like package manager for Ubuntu (installed from https://pacstall.dev)."
         local yn
@@ -1740,7 +1788,7 @@ function resolve_pacstall_choice() {
 }
 
 function interactive_installer_pick() {
-    if [[ ! -t 0 ]]; then
+    if ! prompts_enabled; then
         ui_err "No terminal is available. Use --installer=calamares|ubiquity."
         exit 1
     fi
@@ -1786,7 +1834,7 @@ function resolve_installer_choice() {
         return 0
     fi
 
-    if [[ -t 0 ]]; then
+    if prompts_enabled; then
         interactive_installer_pick
         return 0
     fi
@@ -1896,7 +1944,7 @@ function print_build_result() {
 # generate_config_wizard — interactive wizard that generates a build.cfg file.
 # Walks the user through each setting and writes the result.
 function generate_config_wizard() {
-    if [[ ! -t 0 ]]; then
+    if ! prompts_enabled; then
         ui_err "Config wizard requires an interactive terminal."
         exit 1
     fi
@@ -2017,28 +2065,29 @@ TARGET_PACSTALL=${_pacstall}
 TARGET_UBUNTU_STUDIO=${_ubuntu_studio}
 WIZARD_EOF
 
-    if [[ -n "$_locale" ]]; then
-        echo "" >> "$out_path"
-        echo "# --- Locale & Keyboard ---" >> "$out_path"
-        echo "TARGET_LOCALE=${_locale}" >> "$out_path"
-    fi
-    if [[ -n "$_keyboard_layout" ]]; then
-        [[ -z "$_locale" ]] && { echo "" >> "$out_path"; echo "# --- Locale & Keyboard ---" >> "$out_path"; }
-        echo "TARGET_KEYBOARD_LAYOUT=${_keyboard_layout}" >> "$out_path"
-        [[ -n "$_keyboard_variant" ]] && echo "TARGET_KEYBOARD_VARIANT=${_keyboard_variant}" >> "$out_path"
-    fi
+    {
+        if [[ -n "$_locale" || -n "$_keyboard_layout" ]]; then
+            echo ""
+            echo "# --- Locale & Keyboard ---"
+            [[ -n "$_locale" ]] && echo "TARGET_LOCALE=${_locale}"
+            if [[ -n "$_keyboard_layout" ]]; then
+                echo "TARGET_KEYBOARD_LAYOUT=${_keyboard_layout}"
+                [[ -n "$_keyboard_variant" ]] && echo "TARGET_KEYBOARD_VARIANT=${_keyboard_variant}"
+            fi
+        fi
 
-    if [[ "$_advanced" == "1" ]]; then
-        echo "" >> "$out_path"
-        echo "# --- Advanced ---" >> "$out_path"
-        echo "ADVANCED_MODE=1" >> "$out_path"
-    fi
+        if [[ "$_advanced" == "1" ]]; then
+            echo ""
+            echo "# --- Advanced ---"
+            echo "ADVANCED_MODE=1"
+        fi
 
-    if [[ -n "$_name" ]]; then
-        echo "" >> "$out_path"
-        echo "# --- Output ---" >> "$out_path"
-        echo "TARGET_NAME=${_name}" >> "$out_path"
-    fi
+        if [[ -n "$_name" ]]; then
+            echo ""
+            echo "# --- Output ---"
+            echo "TARGET_NAME=${_name}"
+        fi
+    } >> "$out_path"
 
     echo
     ui_ok "Config written to: $out_path"
@@ -2060,8 +2109,9 @@ function load_config_file() {
     while IFS= read -r line || [[ -n "$line" ]]; do
         # Skip blank lines and comments.
         [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-        # Strip inline comments.
-        line="${line%%#*}"
+        # Strip inline comments: only "#" preceded by whitespace starts a
+        # comment, so values containing "#" (e.g. GRUB labels) survive.
+        line="${line%%[[:space:]]\#*}"
         # Match KEY=VALUE (with optional quotes).
         if [[ "$line" =~ ^[[:space:]]*([A-Z_][A-Z0-9_]*)=(.*)$ ]]; then
             key="${BASH_REMATCH[1]}"
@@ -2318,10 +2368,14 @@ function host_main() {
                 ;;
             --advanced)
                 export ADVANCED_MODE=1
+                ADVANCED_MODE_EXPLICIT=1
                 shift
                 ;;
             --generate-config)
                 export ADVANCED_MODE=1
+                # The wizard runs during argument parsing, before the
+                # --interactive handling below; honor an earlier --interactive.
+                [[ "$cli_interactive" == "1" ]] && FORCE_INTERACTIVE=1
                 generate_config_wizard
                 ;;
             -h|--help)
@@ -2335,6 +2389,12 @@ function host_main() {
     done
     set -- "${args[@]}"
 
+    # Resolve build mode first: everything below (config loading, interactive
+    # overrides) is gated on it. Asked only when no explicit mode was given.
+    if [[ "$ADVANCED_MODE_EXPLICIT" -eq 0 ]]; then
+        interactive_mode_pick
+    fi
+
     # Load config file (advanced mode only). Config values act as defaults; CLI flags override them below.
     if [[ "${ADVANCED_MODE:-0}" == "1" ]]; then
         if [[ -n "$cli_config" ]]; then
@@ -2346,13 +2406,21 @@ function host_main() {
         ui_warn "--config requires --advanced mode. Ignoring config file."
     fi
 
-    # Handle --interactive / --no-interactive. The INTERACTIVE variable can also come from the config file.
-    # --no-interactive: redirect stdin from /dev/null so that all [[ -t 0 ]] checks return false,
+    # Handle --interactive / --no-interactive (advanced mode only, like --config).
+    # The INTERACTIVE variable can also come from the config file.
+    # --no-interactive: redirect stdin from /dev/null so prompts_enabled() returns false,
     # making the build fully non-interactive (all missing values use defaults or fail with an error).
-    # --interactive: force interactive mode even when stdin is not a TTY (e.g. piped).
-    if [[ "$cli_interactive" == "0" ]] || [[ "${INTERACTIVE:-}" == "0" && -z "$cli_interactive" ]]; then
+    # --interactive: force prompts_enabled() true even when stdin is not a TTY (e.g. piped).
+    # Basic mode keeps the default behavior: prompts whenever stdin is a TTY.
+    if [[ "${ADVANCED_MODE:-0}" != "1" ]]; then
+        if [[ -n "$cli_interactive" ]] || [[ -n "${INTERACTIVE:-}" ]]; then
+            ui_warn "--interactive / --no-interactive / INTERACTIVE require --advanced mode. Ignoring."
+        fi
+    elif [[ "$cli_interactive" == "0" ]] || [[ "${INTERACTIVE:-}" == "0" && -z "$cli_interactive" ]]; then
         exec 0</dev/null
         export NO_CONFIRM=1
+    elif [[ "$cli_interactive" == "1" ]] || [[ "${INTERACTIVE:-}" == "1" ]]; then
+        FORCE_INTERACTIVE=1
     fi
 
     cd "$SCRIPT_DIR"
@@ -2364,7 +2432,6 @@ function host_main() {
     ui_kv "Started at" "$(date '+%Y-%m-%d %H:%M:%S %Z')"
 
     HOST_ABORT_CLEANUP_DONE=0
-    CHROOT_MOUNTS_ACTIVE=0
     trap host_build_exit_trap EXIT
     trap 'host_build_signal_trap 130' INT
     trap 'host_build_signal_trap 143' TERM
@@ -2468,7 +2535,7 @@ function host_main() {
     print_build_summary
     ui_info "Phases to run: ${HOST_CMD[*]:$start_index:$((end_index - start_index))}"
     echo
-    if [[ -t 0 ]] && [[ "${NO_CONFIRM:-0}" != "1" ]]; then
+    if prompts_enabled && [[ "${NO_CONFIRM:-0}" != "1" ]]; then
         if ! ui_confirm "Start build now?" y; then
             echo
             ui_info "Build cancelled by user. No changes were made."
@@ -2537,7 +2604,9 @@ EOF
     ln -fs /etc/machine-id /var/lib/dbus/machine-id
 
     dpkg-divert --local --rename --add /sbin/initctl
-    ln -s /bin/true /sbin/initctl
+    # -f: advanced-mode re-runs enter this stage with the symlink already in
+    # place; plain ln -s would fail under set -e.
+    ln -sf /bin/true /sbin/initctl
 }
 
 # Full Calamares layout from scripts/calamares (settings.conf + modules + curated i18n).
@@ -2741,7 +2810,6 @@ menuentry "Check the disc for defects" {
     initrd /casper/initrd
 }
 
-grub_platform
 if [ "\$grub_platform" = "efi" ]; then
 menuentry "UEFI firmware settings" {
     fwsetup
@@ -2761,9 +2829,14 @@ EOF
 
     cp -v casper/filesystem.manifest casper/filesystem.manifest-desktop
 
-    local pkg
+    # Anchor to "^package " so only the exact package is removed. An unanchored
+    # substring match would also delete unrelated packages that merely contain
+    # the name (e.g. removing "discover" would strip "plasma-discover" on KDE
+    # builds, and casper would then purge it from the installed system).
+    local pkg pkg_re
     for pkg in $TARGET_PACKAGE_REMOVE; do
-        sed -i "/$pkg/d" casper/filesystem.manifest-desktop
+        pkg_re="$(printf '%s' "$pkg" | sed 's/[][\\.*^$/]/\\&/g')"
+        sed -i "/^${pkg_re} /d" casper/filesystem.manifest-desktop
     done
 
     cat <<EOF > README.diskdefines
@@ -2825,7 +2898,9 @@ function finish_up() {
 
     truncate -s 0 /etc/machine-id
 
-    rm /sbin/initctl
+    # -f: keep this stage re-runnable (advanced mode) after the symlink was
+    # already removed by a previous pass.
+    rm -f /sbin/initctl
     dpkg-divert --rename --remove /sbin/initctl
 
     rm -rf /tmp/* ~/.bash_history
