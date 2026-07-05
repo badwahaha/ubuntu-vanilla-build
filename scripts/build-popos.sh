@@ -2923,6 +2923,19 @@ EOF
             added_any=1
         else
             echo "  WARN  ${name} '${TARGET_UBUNTU_VERSION}' is unreachable on both ${POP_APT_URL} and ${POP_APT_ORIGIN_URL} — skipping this suite." >&2
+            # Write a disabled stub anyway: the pop-default-settings postinst
+            # greps this exact file unconditionally and kills the dpkg run if
+            # it is missing. "Enabled: no" keeps apt from ever using it, and
+            # the Signed-By line is what the postinst checks for.
+            cat <<EOF > "$srcfile"
+X-Repolib-Name: Pop_OS ${name}
+Enabled: no
+Types: deb
+URIs: ${POP_APT_URL}/${name}
+Suites: ${TARGET_UBUNTU_VERSION}
+Components: main
+Signed-By: ${keyring}
+EOF
         fi
     done
     if [[ "$added_any" -eq 0 ]]; then
