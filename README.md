@@ -333,6 +333,7 @@ For advanced configurations, environment variables can be used instead of CLI fl
 ### Config & Interactive Variables
 - `INTERACTIVE` - Set to `0` to disable interactive prompts (equivalent to `--no-interactive`; advanced mode only).
 - `NO_CONFIRM` - Set to `1` to skip the pre-build confirmation prompt.
+- `NO_COLOR` - Set (to any value) to disable colored terminal output; colors are also disabled automatically when stdout is not a TTY or `TERM=dumb`.
 
 ### Advanced Mode Variables
 - `ADVANCED_MODE` - Set to `1` to preserve workspace on failure/interrupt and enable package cache.

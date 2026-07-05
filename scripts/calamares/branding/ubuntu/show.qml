@@ -65,7 +65,7 @@ Presentation
 
     Slide
     {
-        centeredText: qsTr( "Flatpak with Flathub is installed. Vendor APT sources for Brave (release and beta), Librewolf, and Mozilla Firefox are always configured; which of those browsers are preinstalled depends on how this ISO was built. Pacstall is installed via the upstream official script. Browsers present on the live system are kept after installation." )
+        centeredText: qsTr( "Flatpak with Flathub is installed. Vendor APT sources for Brave, Librewolf, and Mozilla Firefox are always configured; which of those browsers are preinstalled depends on how this ISO was built. Pacstall is included via the upstream official script when enabled at build time (the default). Browsers present on the live system are kept after installation." )
     }
 
     Slide
@@ -75,7 +75,7 @@ Presentation
 
     Slide
     {
-        centeredText: qsTr( "Calamares now offers Full or Minimal install. Minimal keeps a core base with networking tools only and removes full desktop environments, while Full preserves the complete live-image desktop stack." )
+        centeredText: qsTr( "After copying the system, the installer removes live-session-only packages (Calamares itself, Casper, and other live tooling), so the installed system stays clean." )
     }
 
     Slide

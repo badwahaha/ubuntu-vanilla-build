@@ -39,11 +39,12 @@ Supported commands:
 
 ## Customizing the Live Installer
 
-The Calamares installer configuration files are stored inside the `calamares/` subdirectory. During the `run_chroot` stage, the builder copies all files under `scripts/calamares/` to `/etc/calamares/` inside the target system:
+The Calamares installer configuration files are stored inside the `calamares/` subdirectory. During the `run_chroot` stage, the builder installs `settings.conf`, `modules/`, and `branding/` into `/etc/calamares/` inside the live system, and the curated `i18n/SUPPORTED` locale list into `/usr/share/i18n/` (the stock file is backed up first):
 
-- **settings.conf**: Defines the order of Calamares modules (welcome, partition, users, summary, install, finished) and controls branding properties.
+- **settings.conf**: Defines the order of Calamares modules (welcome, locale, keyboard, partition, users, summary, then the exec phase, and finished) and selects the branding component.
 - **modules/**: Contains configuration YAML files for individual installer steps (such as `partition.conf`, `packages.conf`, `locale.conf`, etc.). Modify these files to change installer workflows or pre-configure default options.
-- **branding/**: Holds installer assets, stylesheets, welcome slides, and titles.
+- **branding/**: Holds installer branding (`branding.desc`, rendered with the release version at build time), the logo/icon images, and the install slideshow (`show.qml`).
+- **i18n/SUPPORTED**: Curated locale list that keeps the installer's language step responsive.
 
 ---
 

@@ -2,8 +2,9 @@
 # ========================================================
 #
 # NOTE: Config files are an ADVANCED MODE feature. You must use --advanced
-# for config files to be loaded. In beginner mode (default), the build uses
-# interactive prompts and sensible defaults instead.
+# (or pick Advanced at the startup mode prompt) for config files to be loaded.
+# In basic mode (default), the build uses interactive prompts and sensible
+# defaults instead.
 #
 # Copy this file to "build.cfg" (in the scripts/ directory) for automatic loading
 # in advanced mode, or use --advanced --config=/path/to/your-config.cfg.
@@ -12,7 +13,8 @@
 #   ./build.sh --generate-config
 #
 # CLI arguments always override values from this file.
-# Lines starting with # are comments. Inline comments (after values) are also supported.
+# Lines starting with # are comments. Inline comments are supported when the
+# "#" is preceded by whitespace (values themselves may contain "#").
 #
 # Usage:
 #   cp build.cfg.example build.cfg
