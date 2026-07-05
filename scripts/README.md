@@ -30,7 +30,7 @@ Advanced users can execute individual segments of the build pipeline instead of 
 - **Stage range**: Run from `start_cmd` through `end_cmd`. For example, `./build.sh setup_host - run_chroot` runs host preparation, debootstrap, and chroot customization, but stops before compressing the final ISO.
 
 Supported commands:
-- `setup_host`: Installs required host build tools (`debootstrap`, `squashfs-tools`, `xorriso`, `grub-pc-bin`, `grub-efi-amd64-bin`, etc.) and sets up workspace permissions.
+- `setup_host`: Installs the required host build tools (`debootstrap`, `squashfs-tools`, `xorriso`) and prepares the workspace directory. GRUB packages are installed inside the chroot, not on the host.
 - `debootstrap`: Pulls the minimal Ubuntu base structure from the mirror into the chroot directory.
 - `run_chroot`: Enters the rootfs to disable snapd, set up security policies, and install the chosen desktop profile, browsers, and packages.
 - `build_iso`: Compresses the chroot workspace using SquashFS, copies the Casper kernel/initrd boot files, and builds the final hybrid UEFI/BIOS bootable ISO image with GRUB.
@@ -39,18 +39,21 @@ Supported commands:
 
 ## Customizing the Live Installer
 
-The Calamares installer configuration files are stored inside the `calamares/` subdirectory. During the `run_chroot` stage, the builder copies all files under `scripts/calamares/` to `/etc/calamares/` inside the target system:
+The Calamares installer configuration files are stored inside the `calamares/` subdirectory. During the `run_chroot` stage, the builder installs `settings.conf`, `modules/`, and `branding/` into `/etc/calamares/` inside the live system, and the curated `i18n/SUPPORTED` locale list into `/usr/share/i18n/` (the stock file is backed up first):
 
-- **settings.conf**: Defines the order of Calamares modules (welcome, partition, users, summary, install, finished) and controls branding properties.
+- **settings.conf**: Defines the order of Calamares modules (welcome, locale, keyboard, partition, users, summary, then the exec phase, and finished) and selects the branding component.
 - **modules/**: Contains configuration YAML files for individual installer steps (such as `partition.conf`, `packages.conf`, `locale.conf`, etc.). Modify these files to change installer workflows or pre-configure default options.
-- **branding/**: Holds installer assets, stylesheets, welcome slides, and titles.
+- **branding/**: Holds installer branding (`branding.desc`, rendered with the release version at build time), the logo/icon images, and the install slideshow (`show.qml`).
+- **i18n/SUPPORTED**: Curated locale list that keeps the installer's language step responsive.
 
 ---
 
 ## Workspace Lifecycle and Cleanups
 
-During execution, the builder creates a `workspace/` directory inside the `scripts/` directory to store temporary assets:
-- **scripts/workspace/chroot/**: Contains the live system rootfs during build.
-- **scripts/workspace/image/**: Stores bootloader files, kernels, and metadata files destined for the ISO filesystem.
+During execution, the builder creates a `workspace/` directory at the repository root (not inside `scripts/`) to store temporary assets:
+- **workspace/chroot/**: Contains the live system rootfs during build.
+- **workspace/image/**: Stores bootloader files, kernels, and metadata files destined for the ISO filesystem.
 
-On successful compilation, the script automatically deletes the `workspace/` directory to reclaim disk space. If a build fails, you should inspect the chroot directories for logs and then clean up the directory manually using `rm -rf workspace/` or by running `./build.sh -` again (which resets workspace states).
+On WSL Windows mounts (`/mnt/...`) the workspace is relocated automatically to a Linux-native cache path, and `UBUNTU_VANILLA_WORKSPACE=/some/path` overrides the parent directory explicitly.
+
+On successful compilation, the script automatically deletes the `workspace/` directory to reclaim disk space. In basic mode, a failed or interrupted build also unmounts the chroot bind mounts and removes the workspace automatically. In advanced mode (`--advanced`), the workspace is preserved on failure so you can inspect it or resume from a specific stage (e.g. `./build.sh --advanced run_chroot`).

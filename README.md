@@ -11,18 +11,17 @@ This project is designed for:
 ## What's New
 
 Recent improvements include:
+- **Startup Mode Selection**: When run on a terminal without an explicit mode, `build.sh` first asks whether to build in **Basic** (default, guided prompts) or **Advanced** mode — an alternative to passing `--advanced`.
 - **Build Hooks (Modloader)**: Drop `.sh` scripts into `scripts/hooks/pre-chroot/` and `scripts/hooks/chroot/` to customize the build — scripts run in sorted filename order, like a game modloader.
 - **Advanced Mode**: `--advanced` flag preserves workspace on failure/Ctrl+C for faster re-runs and enables a persistent APT package cache to save bandwidth.
-- **Config File Support** *(advanced mode)*: Load build options from a `build.cfg` file for repeatable builds (`--advanced --config=FILE`), or generate one with `--generate-config`. Beginner mode uses interactive prompts.
+- **Config File Support** *(advanced mode)*: Load build options from a `build.cfg` file for repeatable builds (`--advanced --config=FILE`), or generate one with `--generate-config`. Basic mode uses interactive prompts.
 - **Non-Interactive / Unattended Mode** *(advanced mode)*: `--advanced --no-interactive` disables all prompts; combined with `--locale` and `--keyboard-layout` for fully unattended builds.
-- **Date+Time in ISO Name**: Generated ISOs now include a UTC timestamp (e.g. `ubuntu-24.04-gnome-amd64-260703-041500.iso`) so old builds aren't overwritten.
-- **Optional Pacstall**: Pacstall installation is now configurable (`--pacstall` / `--no-pacstall`).
-- **Security Hardening**: Enhanced build pipeline against supply-chain and network attacks with verified package installations.
-- **Improved Error Handling**: Better error reporting and failure detection—no more silently swallowed failures.
-- **Code Refactoring**: Extracted shared utilities to eliminate duplicated code patterns for better maintainability.
-- **Full/Minimal Installation Options**: Calamares installer now offers both Full and Minimal installation types.
-- **Enhanced Desktop Support**: Added support for KDE Plasma, Cinnamon, Budgie, and improved LXDE with automatic repair.
-- **Browser Flexibility**: Multiple browser options (Brave, LibreWolf, Firefox) with configurable pre-installation.
+- **Date+Time in ISO Name**: Generated ISOs include a UTC timestamp (e.g. `ubuntu-24.04-gnome-amd64-260703-041500.iso`) so old builds aren't overwritten.
+- **Optional Pacstall**: Pacstall installation is configurable (`--pacstall` / `--no-pacstall`; installed by default).
+- **Security Hardening**: Strict snapd blocking via APT pinning, signed keyrings for all third-party repositories, and optional package sets validated for installability before install.
+- **Improved Error Handling**: Better error reporting and failure detection — no more silently swallowed failures, and invalid command ranges are rejected with a clear error.
+- **Enhanced Desktop Support**: KDE Plasma, Cinnamon, Budgie, and LXDE with an automatic repair step in the installer.
+- **Browser Flexibility**: Multiple browser options (Brave, LibreWolf, Firefox, Firefox ESR, Thunderbird) with configurable pre-installation.
 - **Ubuntu Studio Integration**: Optional Ubuntu Studio package set for creative workloads.
 
 ---
@@ -43,17 +42,17 @@ Recent improvements include:
   - `calamares` (default, all supported releases)
   - `ubiquity` (jammy only)
 - **Browser repositories configured for**:
-  - Brave (stable + Origin beta)
+  - Brave (stable + Brave Origin, a minimalist privacy-focused build)
   - LibreWolf
   - Mozilla Firefox (`packages.mozilla.org` with pinning)
 - **Optional pre-installs**: Brave channel, LibreWolf, Firefox, Firefox ESR, Thunderbird, and Ubuntu Studio package set.
 - **Package Management Utilities**:
   - Pacstall installed by default through the official installer: [pacstall.dev](https://pacstall.dev) (disable with `--no-pacstall`).
   - Pre-configured Flatpak support with the Flathub repository (including the GNOME Software Flatpak plugin on GNOME desktop).
-- **Outputs**:
-  - `${TARGET_NAME:-ubuntu-<yy>.04-<desktop>-amd64}.iso`
-  - `${TARGET_NAME:-ubuntu-<yy>.04-<desktop>-amd64}.iso.sha1`
-  - `${TARGET_NAME:-ubuntu-<yy>.04-<desktop>-amd64}.iso.sha256`
+- **Outputs** (default name includes a UTC timestamp):
+  - `${TARGET_NAME:-ubuntu-<version>-<desktop>-amd64-<yymmdd-hhmmss>}.iso`
+  - `${TARGET_NAME:-ubuntu-<version>-<desktop>-amd64-<yymmdd-hhmmss>}.iso.sha1`
+  - `${TARGET_NAME:-ubuntu-<version>-<desktop>-amd64-<yymmdd-hhmmss>}.iso.sha256`
 
 ---
 
@@ -102,9 +101,9 @@ graph TD
 
 ### Security Features
 - **Snapd Blocking**: APT pinning prevents snapd installation (Pin-Priority: -1) to block snap installations system-wide.
-- **Verified Package Installation**: Packages are checked for installability and snapd dependencies before installation.
-- **Supply Chain Protection**: The Pacstall installer uses checksum verification when enabled.
-- **Network Security**: All package downloads use HTTPS with verified repositories.
+- **Package Availability Checks**: Optional package sets (e.g. Ubuntu Studio) are checked for installability and hidden snapd dependencies before installation.
+- **Signed Repositories**: Third-party APT sources (Brave, LibreWolf, Mozilla) are configured with their vendor signing keyrings; Memtest86+ is downloaded with a pinned SHA-256 checksum.
+- **Network Security**: Package and installer downloads use HTTPS.
 
 ---
 
@@ -146,7 +145,7 @@ The script supports building on:
    ```
 
 3. **Follow the interactive wizard**:
-   The script will detect it is running in a terminal (TTY) and prompt you step-by-step for the configuration.
+   On a terminal (TTY), the script first asks which mode to use — press **Enter for Basic** — then prompts you step-by-step for the configuration.
 
 ---
 
@@ -154,6 +153,7 @@ The script supports building on:
 
 The script is interactive by default on a TTY when required values are missing. The prompt wizard guides you through choosing:
 
+- **Build mode**: Basic (default) or Advanced — asked first, unless `--advanced` or `ADVANCED_MODE` was given
 - **Release**: `jammy`, `noble`, or `resolute`
 - **Installer**: `calamares` or `ubiquity` (Ubiquity is validated for jammy only)
 - **Kernel flavor**: `generic` or `lowlatency`
@@ -161,10 +161,14 @@ The script is interactive by default on a TTY when required values are missing. 
 - **KDE package tier** (when desktop is `kde-plasma`): `kde-standard`, `kde-plasma-desktop`, or `kde-full`
 - **MATE metapackage** (when desktop is `mate`): `mate-desktop-environment` or `mate-desktop-environment-core`, plus optional MATE extras
 - **GNOME recommends toggle** (GNOME only): Enable/disable recommends for GNOME
-- **Brave channel**: `release`, `origin`, or `none`
+- **Brave channel**: `release` (default), `origin`, or `none`
 - **LibreWolf pre-install toggle**
-- **Firefox pre-install toggle**
+- **Firefox**: release, ESR, or skip (default: skip)
+- **Thunderbird pre-install toggle**
 - **Ubuntu Studio package set toggle**
+- **Pacstall toggle** (default: install)
+
+Prompt defaults match the non-interactive fallbacks below, so pressing Enter everywhere yields the same ISO as an unattended run.
 
 ### Default Settings
 If values are not explicitly set and interactive prompts are skipped, the default fallback settings are:
@@ -172,9 +176,11 @@ If values are not explicitly set and interactive prompts are skipped, the defaul
 - **Desktop**: `gnome`
 - **Brave channel**: `release`
 - **LibreWolf**: Disabled
-- **Firefox**: Disabled
+- **Firefox / Firefox ESR**: Disabled
+- **Thunderbird**: Disabled
 - **Ubuntu Studio**: Disabled
 - **GNOME Recommends**: Disabled
+- **Pacstall**: Enabled
 
 ---
 
@@ -200,7 +206,7 @@ If values are not explicitly set and interactive prompts are skipped, the defaul
 ### Browser Options
 - `--brave=none|release|origin` - Brave browser channel.
   - `release`: Stable Brave browser (default).
-  - `origin`: Brave Origin (Beta/Nightly channel).
+  - `origin`: Brave Origin — a minimalist, privacy-focused Brave build without the extra integrated features.
   - `none`: Skip Brave pre-installation (repo is still configured).
 - `--librewolf` / `--no-librewolf` - Pre-install LibreWolf browser.
 - `--firefox` / `--no-firefox` - Pre-install Firefox from Mozilla APT.
@@ -257,7 +263,7 @@ See `scripts/hooks/README.md` for detailed documentation and examples.
 
 `--advanced` (or `ADVANCED_MODE=1` as an environment variable) unlocks features for power users:
 
-1. **Config file support**: Auto-loads `scripts/build.cfg` if present, or use `--config=FILE` for a custom path. Generate one interactively with `--generate-config`. In beginner mode (default), the build relies on interactive prompts instead.
+1. **Config file support**: Auto-loads `scripts/build.cfg` if present, or use `--config=FILE` for a custom path. Generate one interactively with `--generate-config`. In basic mode (default), the build relies on interactive prompts instead.
 2. **Workspace preservation**: On Ctrl+C or build failure, only bind mounts are unmounted — the workspace tree is kept intact. This lets you inspect or resume from a specific build stage (e.g. `./build.sh --advanced run_chroot`) without re-running debootstrap.
 3. **Package cache**: A persistent APT cache directory (`~/.cache/ubuntu-vanilla-build/apt-cache/`) is bind-mounted into the chroot. Downloaded `.deb` files survive across builds, saving bandwidth on repeated builds.
 4. **Workspace reuse**: `setup_host` reuses an existing workspace directory instead of cleaning it, allowing faster iteration.
@@ -327,6 +333,7 @@ For advanced configurations, environment variables can be used instead of CLI fl
 ### Config & Interactive Variables
 - `INTERACTIVE` - Set to `0` to disable interactive prompts (equivalent to `--no-interactive`; advanced mode only).
 - `NO_CONFIRM` - Set to `1` to skip the pre-build confirmation prompt.
+- `NO_COLOR` - Set (to any value) to disable colored terminal output; colors are also disabled automatically when stdout is not a TTY or `TERM=dumb`.
 
 ### Advanced Mode Variables
 - `ADVANCED_MODE` - Set to `1` to preserve workspace on failure/interrupt and enable package cache.
@@ -428,15 +435,14 @@ The build process uses a workspace directory to store temporary files:
 - **Default location**: `<repo>/workspace/` (contains `chroot/` and `image/` subdirectories during build).
 - **WSL auto-detection**: On WSL DrvFs paths (`/mnt/...`), the workspace is automatically moved to a Linux-native cache path to avoid debootstrap unpack issues.
 - **Custom location**: Set `UBUNTU_VANILLA_WORKSPACE=/some/path` to use a custom parent directory (actual workspace becomes `/some/path/workspace`).
-- **Automatic cleanup**: On successful build, the workspace is automatically removed to save disk space.
-- **Manual cleanup**: If a build fails, you may need to manually remove the workspace directory.
-- **Advanced mode preservation**: With `--advanced`, the workspace is preserved on failure or Ctrl+C (only bind mounts are unmounted). This enables faster re-runs since you can skip debootstrap and jump straight to the failed stage.
+- **Automatic cleanup**: On successful build, the workspace is automatically removed to save disk space. In basic mode, a failed or interrupted (Ctrl+C) build also unmounts the chroot bind mounts and removes the workspace automatically — no manual cleanup needed.
+- **Advanced mode preservation**: With `--advanced`, the workspace is preserved on failure or Ctrl+C (only bind mounts are unmounted). This enables faster re-runs: debootstrap is skipped automatically when the chroot already exists, so you can jump straight to the failed stage.
 
 ### Output Files
-After a successful build, the following files are created in the `scripts/` directory:
-- `${TARGET_NAME:-ubuntu-<yy>.04-<desktop>-amd64}.iso` - The bootable ISO image.
-- `${TARGET_NAME:-ubuntu-<yy>.04-<desktop>-amd64}.iso.sha1` - SHA-1 checksum for verification.
-- `${TARGET_NAME:-ubuntu-<yy>.04-<desktop>-amd64}.iso.sha256` - SHA-256 checksum for verification.
+After a successful build, the following files are created in the `scripts/` directory (the default name carries a UTC timestamp so repeat builds never overwrite each other):
+- `${TARGET_NAME:-ubuntu-<version>-<desktop>-amd64-<yymmdd-hhmmss>}.iso` - The bootable ISO image.
+- `${TARGET_NAME:-ubuntu-<version>-<desktop>-amd64-<yymmdd-hhmmss>}.iso.sha1` - SHA-1 checksum for verification.
+- `${TARGET_NAME:-ubuntu-<version>-<desktop>-amd64-<yymmdd-hhmmss>}.iso.sha256` - SHA-256 checksum for verification.
 
 ---
 
@@ -444,7 +450,7 @@ After a successful build, the following files are created in the `scripts/` dire
 
 ### Core Policies
 - **No Snap Policy**: `snapd` is blocked via APT pinning (`Pin-Priority: -1`) to ensure a snap-free Ubuntu experience.
-- **Package Verification**: All packages are checked for installability and snapd dependencies before installation.
+- **Package Availability Checks**: Optional package sets (e.g. Ubuntu Studio) are checked for availability, installability, and hidden snapd dependencies before installation; unavailable ones are skipped with a log message.
 - **Browser Repositories**: Brave, LibreWolf, and Firefox repositories are always configured (even if browsers aren't pre-installed).
 
 ### Calamares Installer Configuration
@@ -462,7 +468,7 @@ Each desktop environment has a carefully curated package set:
 - **KDE Plasma**: Selectable tier (`kde-plasma-desktop`, `kde-standard`, or `kde-full`).
 
 ### Special Features
-- **Pacstall**: Always installed via official script from [pacstall.dev](https://pacstall.dev).
+- **Pacstall**: Installed by default via the official script from [pacstall.dev](https://pacstall.dev); disable with `--no-pacstall` or `TARGET_PACSTALL=0`.
 - **Flatpak**: Pre-configured with Flathub repository; GNOME Software plugin included for GNOME desktop.
 - **Ubuntu Studio**: Optional creative package set (audio, graphics, photography, publishing, video); unavailable dependencies are automatically skipped with logging.
 - **Kernel Management**: HWE metapackages automatically selected based on release and kernel flavor (unless overridden with `TARGET_KERNEL_PACKAGE`).
@@ -478,24 +484,24 @@ For LXDE builds, Calamares includes an automatic repair step:
 
 ## Verifying Build Artifacts
 
-After building, verify the integrity of your ISO using the provided checksum files:
+After building, verify the integrity of your ISO using the provided checksum files (replace the name with your actual timestamped ISO):
 ```bash
 cd scripts/
-sha256sum -c ubuntu-24.04-gnome-amd64.iso.sha256
-sha1sum -c ubuntu-24.04-gnome-amd64.iso.sha1
+sha256sum -c ubuntu-24.04-gnome-amd64-<yymmdd-hhmmss>.iso.sha256
+sha1sum -c ubuntu-24.04-gnome-amd64-<yymmdd-hhmmss>.iso.sha1
 ```
 
 ### Testing the ISO
 Before deploying, test your ISO in a virtual machine:
 - **VirtualBox**: Create a new VM, attach the ISO as optical drive, boot and test live session and installation.
-- **QEMU/KVM**: Use `qemu-system-x86_64 -cdrom ubuntu-24.04-gnome-amd64.iso -m 4096 -enable-kvm`
+- **QEMU/KVM**: Use `qemu-system-x86_64 -cdrom <your-iso-file>.iso -m 4096 -enable-kvm`
 - **VMware**: Create a new VM, attach ISO, and test the installation process.
 
 ### Creating Bootable USB
 Use a tool like `dd`, `balenaEtcher`, or `Rufus` (Windows) to create a bootable USB:
 ```bash
 # Using dd (Linux/macOS)
-sudo dd if=ubuntu-24.04-gnome-amd64.iso of=/dev/sdX bs=4M status=progress sync
+sudo dd if=<your-iso-file>.iso of=/dev/sdX bs=4M status=progress conv=fsync
 ```
 > [!WARNING]
 > Replace `/dev/sdX` with your actual USB device (use `lsblk` to identify). Writing to the wrong device will result in data loss.
