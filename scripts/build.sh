@@ -194,6 +194,37 @@ function host_priv() {
 }
 
 # ---------------------------------------------------------------------------
+# Sudo keep-alive: long builds can outlast the default sudo timeout, which
+# makes apt/chroot steps stall waiting for a password mid-build. Validate
+# credentials once up front, then refresh them in the background. Skipped
+# when running as root or when launched via start-here.sh (which already
+# maintains its own keep-alive loop).
+# ---------------------------------------------------------------------------
+SUDO_KEEPALIVE_PID=""
+
+function setup_sudo_keepalive() {
+    if [[ "${LAUNCHED_FROM_START_HERE:-0}" -eq 1 ]] || [[ "$(id -u)" -eq 0 ]]; then
+        return 0
+    fi
+    echo "=====> Requesting sudo credentials (will be kept alive for the entire build) ..."
+    if ! sudo -v; then
+        >&2 echo "ERROR: Failed to obtain sudo credentials. The build requires sudo access."
+        exit 1
+    fi
+    # Background loop: refresh the sudo timestamp every 60 seconds.
+    (while sudo -v -n 2>/dev/null; do sleep 60; done) &
+    SUDO_KEEPALIVE_PID=$!
+}
+
+function cleanup_sudo_keepalive() {
+    if [[ -n "$SUDO_KEEPALIVE_PID" ]] && kill -0 "$SUDO_KEEPALIVE_PID" 2>/dev/null; then
+        kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
+        wait "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
+    fi
+    SUDO_KEEPALIVE_PID=""
+}
+
+# ---------------------------------------------------------------------------
 # Hook loader: discover and execute *.sh scripts from a hooks subdirectory,
 # sorted by filename (like a game modloader's load order). Non-executable
 # files and files not ending in .sh are skipped.
@@ -974,6 +1005,7 @@ function host_abort_cleanup() {
 
 function host_build_exit_trap() {
     local _st=$?
+    cleanup_sudo_keepalive || true
     if [[ "$_st" -ne 0 ]] && [[ "${HOST_ABORT_CLEANUP_DONE:-0}" -eq 0 ]]; then
         host_abort_cleanup
     fi
@@ -2435,6 +2467,8 @@ function host_main() {
     trap host_build_exit_trap EXIT
     trap 'host_build_signal_trap 130' INT
     trap 'host_build_signal_trap 143' TERM
+
+    setup_sudo_keepalive
 
     if [[ -n "$cli_release" ]]; then
         export TARGET_UBUNTU_VERSION="$cli_release"

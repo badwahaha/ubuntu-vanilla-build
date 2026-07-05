@@ -11,6 +11,7 @@ This project is designed for:
 ## What's New
 
 Recent improvements include:
+- **Pop!_OS ISO Variant**: `scripts/build-popos.sh` builds a Pop!_OS ISO from the official Pop!_OS APT repositories (staging excluded) — see [Building Pop!_OS ISOs](#building-popos-isos). `start-here.sh` now asks which distro to build (Ubuntu or Pop!_OS).
 - **Startup Mode Selection**: When run on a terminal without an explicit mode, `build.sh` first asks whether to build in **Basic** (default, guided prompts) or **Advanced** mode — an alternative to passing `--advanced`.
 - **Build Hooks (Modloader)**: Drop `.sh` scripts into `scripts/hooks/pre-chroot/` and `scripts/hooks/chroot/` to customize the build — scripts run in sorted filename order, like a game modloader.
 - **Advanced Mode**: `--advanced` flag preserves workspace on failure/Ctrl+C for faster re-runs and enables a persistent APT package cache to save bandwidth.
@@ -70,6 +71,36 @@ Only these target releases are supported:
 
 ---
 
+## Building Pop!_OS ISOs
+
+`scripts/build-popos.sh` is a Pop!_OS variant of `build.sh` with the same commands, options, and hooks. You can start it directly, or via `./start-here.sh --distro=popos` (without `--distro`, `start-here.sh` asks interactively).
+
+### How it differs from the Ubuntu builder
+
+- **Repositories**: debootstrap and the base system use the Pop!_OS Ubuntu mirror (`https://apt.pop-os.org/ubuntu`), and the chroot additionally configures `release` and `proprietary` from `apt.pop-os.org` plus `release-ubuntu` from `apt-origin.pop-os.org` — all signed with the Pop!_OS archive keyring and pinned (`o=pop-os-release`, priority 1001) so Pop!_OS packages win over the Ubuntu archive. **Staging repositories are deliberately excluded.**
+- **Releases**: same three LTS targets — `jammy` (22.04), `noble` (24.04), and `resolute` (26.04, released early July 2026).
+- **Kernel choice**: `--kernel=system76|generic|lowlatency`. The default `system76` installs `linux-system76` from the Pop!_OS repos (tracks the stable Linux branch); `generic`/`lowlatency` keep the stock Ubuntu HWE kernels.
+- **Bootloader**: official Pop!_OS media use systemd-boot, which expects a large (>= 1 GiB) EFI System Partition. This builder keeps **GRUB** (hybrid BIOS + UEFI), so no oversized ESP is required.
+- **Calamares config**: comes from `scripts/calamares-popos/` (Pop!_OS branding); the module set matches `scripts/calamares/`.
+- **Separate workspace/cache/config**: uses `workspace-popos/`, its own APT cache, and `scripts/build-popos.cfg`, so Ubuntu and Pop!_OS builds never collide.
+
+### Desktop note: no pop-desktop / COSMIC option
+
+The desktop choices are the same as the Ubuntu builder (GNOME default, XFCE, KDE Plasma, MATE, Cinnamon, Budgie, LXDE, LXQt). Pop's own desktops — `pop-desktop` and COSMIC — are **intentionally not offered**, because COSMIC still has too many bugs when installed through Calamares.
+
+### Installing COSMIC after installation (noble / resolute)
+
+The installed system already has the Pop!_OS repositories configured, so users who installed from this ISO can add COSMIC themselves:
+
+```bash
+sudo apt update
+sudo apt install cosmic-session
+```
+
+Then log out and pick the **COSMIC** session from the session menu on the login screen. For the full Pop!_OS desktop stack instead, install `pop-desktop`. (The build also prints this note at the end of every noble/resolute Pop!_OS build.)
+
+---
+
 ## Build Concepts
 
 Understanding the build pipeline helps with troubleshooting and customization:
@@ -114,7 +145,7 @@ graph TD
 - **Internet Access**: Required for downloading packages from Ubuntu and third-party repositories.
 - **Disk Space**: Minimum 15-20 GB free space for debootstrap, squashfs, and ISO generation.
 - **RAM**: 4 GB minimum (8 GB recommended for smoother builds).
-- **Permissions**: `sudo` access (script only elevates privileges when necessary).
+- **Permissions**: `sudo` access. Both build scripts (and `start-here.sh`) validate sudo once up front and keep the credentials alive in the background, so you are not re-prompted for a password mid-build.
 
 ### Host OS Compatibility
 The script supports building on:
@@ -137,11 +168,13 @@ The script supports building on:
 2. **Run the build script**:
    ```bash
    # Method 1: Using the convenience script from repository root
+   # (asks whether to build Ubuntu or Pop!_OS; or pass --distro=ubuntu|popos)
    ./start-here.sh -
 
    # Method 2: Directly from scripts directory
    cd scripts/
-   ./build.sh -
+   ./build.sh -          # Ubuntu ISO
+   ./build-popos.sh -    # Pop!_OS ISO
    ```
 
 3. **Follow the interactive wizard**:
