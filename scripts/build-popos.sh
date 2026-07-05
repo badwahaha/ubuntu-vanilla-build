@@ -2,9 +2,13 @@
 
 # build-popos.sh — Pop!_OS variant of build.sh.
 #
-# Repositories: everything comes from https://apt-origin.pop-os.org/ — the
-# ubuntu mirror plus the release, proprietary, and release-ubuntu suites
-# (staging suites are intentionally excluded).
+# Repositories: everything comes from the CDN-backed https://apt.pop-os.org/
+# — the ubuntu mirror plus the release, proprietary, and release-ubuntu
+# suites (staging suites are intentionally excluded). The origin server
+# (apt-origin.pop-os.org) is only used as a per-suite fallback when the CDN
+# does not publish a suite: fetching bulk package traffic straight from the
+# origin makes it drop TLS connections mid-transfer (OpenSSL "unexpected
+# eof while reading"), aborting the chroot phase.
 # Calamares configuration comes from scripts/calamares-popos.
 # Supported releases: jammy (22.04), noble (24.04), resolute (26.04) — LTS only.
 #
@@ -25,10 +29,14 @@ set -o pipefail
 set -u
 
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
-# Pop!_OS APT archive (apt-origin.pop-os.org, used for all suites). Suites:
-# ubuntu (mirror, via TARGET_UBUNTU_MIRROR), release, proprietary, and
-# release-ubuntu. Staging suites are excluded.
-POP_APT_URL="https://apt-origin.pop-os.org"
+# Pop!_OS APT archive. Suites: ubuntu (mirror, via TARGET_UBUNTU_MIRROR),
+# release, proprietary, and release-ubuntu. Staging suites are excluded.
+# POP_APT_URL is the CDN endpoint packages must be fetched from;
+# POP_APT_ORIGIN_URL is the origin server, used only as a per-suite fallback
+# — bulk downloads from the origin get their TLS connections cut
+# mid-transfer ("SSL routines::unexpected eof while reading").
+POP_APT_URL="https://apt.pop-os.org"
+POP_APT_ORIGIN_URL="https://apt-origin.pop-os.org"
 # Pop!_OS archive signing key (pop-keyring).
 POP_KEY_FINGERPRINT="63C46DF0140D738961429F4E204DD8AEC33A7AFF"
 # Set in resolve_workspace_paths() during host_main (WSL: avoid /mnt/c for debootstrap).
@@ -347,7 +355,7 @@ function default_target_package_remove() {
 
 function set_defaults() {
     export TARGET_UBUNTU_VERSION="${TARGET_UBUNTU_VERSION:-}"
-    export TARGET_UBUNTU_MIRROR="${TARGET_UBUNTU_MIRROR:-https://apt-origin.pop-os.org/ubuntu}"
+    export TARGET_UBUNTU_MIRROR="${TARGET_UBUNTU_MIRROR:-https://apt.pop-os.org/ubuntu}"
     export TARGET_KERNEL_FLAVOR="${TARGET_KERNEL_FLAVOR:-}"
     export TARGET_KERNEL_PACKAGE="${TARGET_KERNEL_PACKAGE:-}"
     export TARGET_DESKTOP="${TARGET_DESKTOP:-}"
@@ -862,7 +870,7 @@ function check_settings() {
 # shellcheck disable=SC2120  # called indirectly with an error message via parse_cmd_range/cmd_find_index
 function host_help() {
     if [ -z "${1+x}" ]; then
-        echo "This script builds a bootable Pop!_OS ISO image (repos from https://apt-origin.pop-os.org/, staging excluded)."
+        echo "This script builds a bootable Pop!_OS ISO image (repos from https://apt.pop-os.org/, staging excluded)."
         echo
     else
         echo "$1"
@@ -2203,8 +2211,8 @@ function generate_config_wizard() {
     _installer="${_installer:-calamares}"
 
     # Mirror
-    read -r -p "  Mirror [https://apt-origin.pop-os.org/ubuntu]: " _mirror
-    _mirror="${_mirror:-https://apt-origin.pop-os.org/ubuntu}"
+    read -r -p "  Mirror [https://apt.pop-os.org/ubuntu]: " _mirror
+    _mirror="${_mirror:-https://apt.pop-os.org/ubuntu}"
 
     # Brave
     echo "  Brave browser channel: none, release, origin"
@@ -2830,8 +2838,9 @@ function check_chroot_root() {
 }
 
 # Configure the Pop!_OS repositories inside the chroot: the release,
-# proprietary, and release-ubuntu suites, all from apt-origin.pop-os.org
-# (staging suites are intentionally excluded). The archive signing key is
+# proprietary, and release-ubuntu suites, from the apt.pop-os.org CDN with
+# apt-origin.pop-os.org as per-suite fallback (staging suites are
+# intentionally excluded). The archive signing key is
 # fetched from the Ubuntu keyserver; once the repos are reachable, the
 # pop-keyring package takes over key maintenance. All three LTS targets are
 # published, including resolute (26.04 LTS, released early July 2026); a
@@ -2852,21 +2861,29 @@ function setup_pop_apt_repos() {
     gpg --homedir "$tmp_gpg_home" --batch --export "$POP_KEY_FINGERPRINT" > "$keyring"
     rm -rf "$tmp_gpg_home"
 
-    # name|base-URL pairs; staging suites are deliberately absent from this list.
-    local entry name url added_any=0
-    for entry in \
-        "release|${POP_APT_URL}/release" \
-        "proprietary|${POP_APT_URL}/proprietary" \
-        "release-ubuntu|${POP_APT_URL}/release-ubuntu"; do
-        name="${entry%%|*}"
-        url="${entry#*|}"
-        if curl -fsIL "${url}/dists/${TARGET_UBUNTU_VERSION}/Release" >/dev/null 2>&1; then
+    # Suite names; staging suites are deliberately absent from this list.
+    # Each suite is taken from the CDN (POP_APT_URL) when it publishes the
+    # target release, falling back to the origin server only when it does
+    # not — bulk fetches straight from apt-origin get their TLS connections
+    # dropped mid-transfer ("unexpected eof while reading").
+    local name base url added_any=0
+    for name in release proprietary release-ubuntu; do
+        url=""
+        for base in "$POP_APT_URL" "$POP_APT_ORIGIN_URL"; do
+            if curl -fsIL "${base}/${name}/dists/${TARGET_UBUNTU_VERSION}/Release" >/dev/null 2>&1; then
+                url="${base}/${name}"
+                break
+            fi
+        done
+        if [[ -n "$url" ]]; then
             echo "deb [signed-by=${keyring}] ${url} ${TARGET_UBUNTU_VERSION} main" \
                 > "/etc/apt/sources.list.d/pop-os-${name}.list"
             echo "=====> Pop!_OS APT: added ${url} ${TARGET_UBUNTU_VERSION} main"
+            [[ "$url" == "${POP_APT_ORIGIN_URL}/"* ]] && \
+                echo "  WARN  ${name}: using the origin server (CDN does not publish '${TARGET_UBUNTU_VERSION}'); downloads may be less reliable." >&2
             added_any=1
         else
-            echo "  WARN  ${url} '${TARGET_UBUNTU_VERSION}' is unreachable — skipping this suite." >&2
+            echo "  WARN  ${name} '${TARGET_UBUNTU_VERSION}' is unreachable on both ${POP_APT_URL} and ${POP_APT_ORIGIN_URL} — skipping this suite." >&2
         fi
     done
     if [[ "$added_any" -eq 0 ]]; then
