@@ -35,6 +35,10 @@ POP_KEY_FINGERPRINT="63C46DF0140D738961429F4E204DD8AEC33A7AFF"
 WORKSPACE_DIR=""
 WORKSPACE_CHROOT=""
 WORKSPACE_IMAGE=""
+# Where the finished ISO + checksums land. Set in resolve_workspace_paths().
+OUTPUT_DIR=""
+# Basic-mode workspace parent: root-owned system path regular users cannot touch.
+UVB_SYSTEM_WORKSPACE_PARENT="/var/cache/ubuntu-vanilla-build"
 # Prevents duplicate teardown when both a signal handler and EXIT run.
 HOST_ABORT_CLEANUP_DONE=0
 DATE="$(TZ="UTC" date +"%y%m%d-%H%M%S")"
@@ -870,7 +874,9 @@ function host_help() {
     echo "Options:"
     echo "  --release=jammy|noble|resolute          Target Pop!_OS release / Ubuntu base codename (omit to be prompted on a TTY)"
     echo "  --mirror=URL                            Ubuntu package mirror"
-    echo "  UBUNTU_VANILLA_WORKSPACE=DIR             Parent directory for build workspace (optional; auto on WSL /mnt/c)"
+    echo "  UBUNTU_VANILLA_WORKSPACE=DIR             Parent directory for build workspace (optional; overrides mode defaults:"
+    echo "                                           basic = /var/cache/ubuntu-vanilla-build, advanced = ~/uvb-workspace)"
+    echo "  UVB_OUTPUT_DIR=DIR                       Directory for the finished ISO + checksums (optional; default: your home directory)"
     echo "  TARGET_INSTALLER=calamares|ubiquity       Live installer (optional; default calamares)"
     echo "  TARGET_DESKTOP=<desktop>                  Desktop variant slug (optional; default gnome)"
     echo "  TARGET_KDE_PACKAGE=kde-full|kde-standard|kde-plasma-desktop  KDE package when desktop is kde-plasma (optional; default kde-standard)"
@@ -1180,16 +1186,37 @@ function run_chroot() {
 }
 
 function write_iso_hashes() {
-    local iso_path="$SCRIPT_DIR/$TARGET_NAME.iso"
-    local sha1_path="$iso_path.sha1"
-    local sha256_path="$iso_path.sha256"
-
     echo "=====> writing SHA-1 and SHA-256 ..."
     (
-        cd "$SCRIPT_DIR"
-        sha1sum "$TARGET_NAME.iso" > "$(basename "$sha1_path")"
-        sha256sum "$TARGET_NAME.iso" > "$(basename "$sha256_path")"
+        cd "$OUTPUT_DIR"
+        # tee via host_priv: the output directory may be root-owned.
+        sha1sum "$TARGET_NAME.iso" | host_priv tee "$TARGET_NAME.iso.sha1" >/dev/null
+        sha256sum "$TARGET_NAME.iso" | host_priv tee "$TARGET_NAME.iso.sha256" >/dev/null
     )
+}
+
+# The ISO and checksums are produced by privileged commands, so they come out
+# root-owned. Hand them back to the human who launched the build.
+function fix_output_ownership() {
+    local owner=""
+    if [[ "$(id -u)" -eq 0 ]]; then
+        [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]] && owner="$SUDO_USER"
+    else
+        owner="$(id -un)"
+    fi
+    [[ -z "$owner" ]] && return 0
+    local f
+    for f in "$OUTPUT_DIR/$TARGET_NAME.iso" \
+             "$OUTPUT_DIR/$TARGET_NAME.iso.sha1" \
+             "$OUTPUT_DIR/$TARGET_NAME.iso.sha256"; do
+        [[ -e "$f" ]] && host_priv chown "$owner" "$f" 2>/dev/null || true
+    done
+}
+
+function ensure_output_dir() {
+    if ! mkdir -p "$OUTPUT_DIR" 2>/dev/null; then
+        host_priv mkdir -p "$OUTPUT_DIR"
+    fi
 }
 
 function build_iso() {
@@ -1242,6 +1269,8 @@ function build_iso() {
         | tr -c 'A-Z0-9_' '_' \
         | cut -c1-32)"
 
+    ensure_output_dir
+
     pushd "$WORKSPACE_IMAGE" >/dev/null
 
     # Hybrid BIOS + UEFI El Torito layout (matches what Ubuntu/Debian ship today):
@@ -1270,7 +1299,7 @@ function build_iso() {
         -l \
         -iso-level 3 \
         -full-iso9660-filenames \
-        -o "$SCRIPT_DIR/$TARGET_NAME.iso" \
+        -o "$OUTPUT_DIR/$TARGET_NAME.iso" \
         \
         --grub2-mbr "$boot_hybrid_img" \
         -partition_offset 16 \
@@ -1294,6 +1323,7 @@ function build_iso() {
     popd >/dev/null
 
     write_iso_hashes
+    fix_output_ownership
     clean_workspace
 }
 
@@ -1309,8 +1339,10 @@ function interactive_mode_pick() {
 
     ui_heading "Build mode"
     echo "    1) Basic     Guided build with sensible defaults  [default]"
+    echo "                 (workspace in a system directory, ISO saved to your home)"
     echo "    2) Advanced  Adds config file loading (build-popos.cfg / --config),"
     echo "                 workspace preservation on failure, package caching,"
+    echo "                 custom workspace/output paths (asked interactively),"
     echo "                 and the --interactive / --no-interactive overrides"
 
     local choice
@@ -1943,28 +1975,96 @@ function resolve_installer_choice() {
     export TARGET_INSTALLER=calamares
 }
 
-# debootstrap extracts .deb archives with tar; DrvFs/9p under WSL (/mnt/c, etc.) breaks that. Use ext4 (e.g. ~/.cache/...) instead.
-function resolve_workspace_paths() {
-    local repo_root
-    repo_root="$(cd "$(dirname "$SCRIPT_DIR")" && pwd)"
-    local fs_type ft_lower
-    fs_type="$(df -T "$repo_root" 2>/dev/null | awk 'NR==2 {print $2}')"
-    ft_lower="$(printf '%s' "$fs_type" | tr '[:upper:]' '[:lower:]')"
-
-    if [[ -n "${UBUNTU_VANILLA_WORKSPACE:-}" ]]; then
-        WORKSPACE_DIR="${UBUNTU_VANILLA_WORKSPACE%/}/workspace-popos"
-        echo "=====> Workspace (UBUNTU_VANILLA_WORKSPACE): $WORKSPACE_DIR" >&2
-    elif [[ "$repo_root" == /mnt/* ]] || [[ "$repo_root" == /media/* ]] || \
-         [[ "$fs_type" == 9p ]] || [[ "$ft_lower" == drvfs ]]; then
-        local _cache="${XDG_CACHE_HOME:-${HOME:-/root}/.cache}"
-        WORKSPACE_DIR="$_cache/popos-vanilla-build/workspace-popos"
-        echo "=====> Windows/WSL filesystem (${fs_type:-unknown}) at $repo_root — debootstrap cannot unpack reliably there." >&2
-        echo "=====> Using Linux-native workspace: $WORKSPACE_DIR" >&2
-    else
-        WORKSPACE_DIR="$repo_root/workspace-popos"
+# Home directory of the human who launched the build (even under sudo).
+function invoking_user_home() {
+    if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+        local h
+        h="$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)"
+        if [[ -n "$h" ]]; then
+            echo "$h"
+            return 0
+        fi
     fi
+    echo "${HOME:-/root}"
+}
+
+# debootstrap extracts .deb archives with tar; DrvFs/9p under WSL (/mnt/c, etc.)
+# breaks that. Returns success when PATH lives on a Windows-backed mount.
+function path_on_windows_mount() {
+    local path="$1" probe="$1" fs_type
+    while [[ -n "$probe" && "$probe" != "/" && ! -e "$probe" ]]; do
+        probe="$(dirname "$probe")"
+    done
+    [[ -z "$probe" ]] && probe="/"
+    fs_type="$(df -T "$probe" 2>/dev/null | awk 'NR==2 {print tolower($2)}')"
+    [[ "$path" == /mnt/* ]] || [[ "$path" == /media/* ]] || \
+        [[ "$fs_type" == "9p" ]] || [[ "$fs_type" == "drvfs" ]]
+}
+
+# Workspace and output locations:
+#   * Basic mode: the workspace lives in a root-owned system directory
+#     ($UVB_SYSTEM_WORKSPACE_PARENT) that regular users cannot touch — the
+#     same idea as the old WSL relocation — and the finished ISO lands in
+#     the invoking user's home directory.
+#   * Advanced mode: prompts for both paths (workspace default:
+#     ~/uvb-workspace, output default: ~); non-interactive runs use those
+#     defaults silently.
+#   * UBUNTU_VANILLA_WORKSPACE / UVB_OUTPUT_DIR override either path and
+#     skip the prompts (any mode).
+function resolve_workspace_paths() {
+    local user_home
+    user_home="$(invoking_user_home)"
+
+    local interactive_advanced=0
+    if [[ "${ADVANCED_MODE:-0}" == "1" ]] && prompts_enabled; then
+        interactive_advanced=1
+    fi
+
+    # ── Workspace parent directory ──────────────────────────────────
+    local ws_parent=""
+    if [[ -n "${UBUNTU_VANILLA_WORKSPACE:-}" ]]; then
+        ws_parent="${UBUNTU_VANILLA_WORKSPACE%/}"
+        echo "=====> Workspace parent (UBUNTU_VANILLA_WORKSPACE): $ws_parent" >&2
+    elif [[ "${ADVANCED_MODE:-0}" == "1" ]]; then
+        local ws_default="$user_home/uvb-workspace"
+        if [[ "$interactive_advanced" -eq 1 ]]; then
+            local _ws
+            read -r -p "  Workspace directory [${ws_default}]: " _ws
+            ws_parent="${_ws:-$ws_default}"
+        else
+            ws_parent="$ws_default"
+        fi
+        ws_parent="${ws_parent%/}"
+    else
+        # Basic mode: root-owned system path, out of the user's reach (and
+        # always on a Linux-native filesystem, so WSL /mnt/c is a non-issue).
+        ws_parent="$UVB_SYSTEM_WORKSPACE_PARENT"
+    fi
+    [[ -z "$ws_parent" ]] && ws_parent="/"
+
+    if path_on_windows_mount "$ws_parent"; then
+        echo "=====> $ws_parent is on a Windows/WSL mount — debootstrap cannot unpack reliably there." >&2
+        ws_parent="$UVB_SYSTEM_WORKSPACE_PARENT"
+        echo "=====> Using Linux-native workspace parent instead: $ws_parent" >&2
+    fi
+
+    WORKSPACE_DIR="${ws_parent%/}/workspace-popos"
     WORKSPACE_CHROOT="$WORKSPACE_DIR/chroot"
     WORKSPACE_IMAGE="$WORKSPACE_DIR/image"
+
+    # ── Output directory (final ISO + checksums) ────────────────────
+    if [[ -n "${UVB_OUTPUT_DIR:-}" ]]; then
+        OUTPUT_DIR="${UVB_OUTPUT_DIR%/}"
+        echo "=====> Output directory (UVB_OUTPUT_DIR): $OUTPUT_DIR" >&2
+    elif [[ "$interactive_advanced" -eq 1 ]]; then
+        local _out
+        read -r -p "  Output directory for the ISO [${user_home}]: " _out
+        OUTPUT_DIR="${_out:-$user_home}"
+        OUTPUT_DIR="${OUTPUT_DIR%/}"
+    else
+        OUTPUT_DIR="$user_home"
+    fi
+    [[ -z "$OUTPUT_DIR" ]] && OUTPUT_DIR="/"
 
     if [[ "${TMPDIR:-}" == /mnt/* ]] || [[ "${TMPDIR:-}" == /media/* ]]; then
         echo "=====> TMPDIR is on a Windows mount (${TMPDIR:-}); using /tmp for extraction." >&2
@@ -2009,12 +2109,12 @@ function print_build_summary() {
     ui_kv "Target name"     "${TARGET_NAME:-?}"
     ui_kv "Mirror"          "${TARGET_UBUNTU_MIRROR:-?}"
     ui_kv "Workspace"       "${WORKSPACE_DIR:-?}"
-    ui_kv "Output ISO"      "${SCRIPT_DIR}/${TARGET_NAME:-popos}.iso"
+    ui_kv "Output ISO"      "${OUTPUT_DIR:-?}/${TARGET_NAME:-popos}.iso"
     echo
 }
 
 function print_build_result() {
-    local iso_path="${SCRIPT_DIR}/${TARGET_NAME:-popos}.iso"
+    local iso_path="${OUTPUT_DIR:-?}/${TARGET_NAME:-popos}.iso"
     if [[ ! -f "$iso_path" ]]; then
         ui_heading "Build finished"
         ui_info "No ISO produced at $iso_path (this is expected for partial runs)."
@@ -2082,7 +2182,7 @@ function generate_config_wizard() {
     local _release _kernel _desktop _installer _mirror
     local _brave _librewolf _firefox _firefox_esr _thunderbird
     local _pacstall _ubuntu_studio _system76_driver _locale _keyboard_layout _keyboard_variant
-    local _advanced _name
+    local _advanced _name _workspace _output
 
     # Release
     echo "  Supported releases (Pop!_OS LTS): jammy (22.04), noble (24.04), resolute (26.04)"
@@ -2156,6 +2256,15 @@ function generate_config_wizard() {
     read -r -p "  Enable advanced mode? (0/1) [0]: " _advanced
     _advanced="${_advanced:-0}"
 
+    # Workspace / output paths (advanced only; blank keeps the runtime defaults:
+    # workspace ~/uvb-workspace, output = your home directory)
+    _workspace=""
+    _output=""
+    if [[ "$_advanced" == "1" ]]; then
+        read -r -p "  Workspace directory (blank for ~/uvb-workspace): " _workspace
+        read -r -p "  Output directory for the ISO (blank for your home directory): " _output
+    fi
+
     # Custom name
     read -r -p "  Custom ISO name (blank for auto): " _name
 
@@ -2201,6 +2310,8 @@ WIZARD_EOF
             echo ""
             echo "# --- Advanced ---"
             echo "ADVANCED_MODE=1"
+            [[ -n "$_workspace" ]] && echo "UBUNTU_VANILLA_WORKSPACE=${_workspace}"
+            [[ -n "$_output" ]] && echo "UVB_OUTPUT_DIR=${_output}"
         fi
 
         if [[ -n "$_name" ]]; then
@@ -2250,7 +2361,7 @@ function load_config_file() {
                 TARGET_PACSTALL|TARGET_SYSTEM76_DRIVER|TARGET_GNOME_INSTALL_RECOMMENDS|TARGET_NAME|\
                 TARGET_LOCALE|TARGET_KEYBOARD_LAYOUT|TARGET_KEYBOARD_VARIANT|\
                 TARGET_INSTALLER|TARGET_PACKAGE_REMOVE|\
-                GRUB_LIVEBOOT_LABEL|UBUNTU_VANILLA_WORKSPACE|NO_CONFIRM|\
+                GRUB_LIVEBOOT_LABEL|UBUNTU_VANILLA_WORKSPACE|UVB_OUTPUT_DIR|NO_CONFIRM|\
                 INTERACTIVE|ADVANCED_MODE|HOOKS_DIR)
                     export "$key=$val"
                     ;;
@@ -2562,6 +2673,7 @@ function host_main() {
     ui_banner "Pop!_OS Vanilla ISO Builder"
     ui_kv "Script"     "$0"
     ui_kv "Workspace"  "$WORKSPACE_DIR"
+    ui_kv "Output dir" "$OUTPUT_DIR"
     ui_kv "Started at" "$(date '+%Y-%m-%d %H:%M:%S %Z')"
 
     HOST_ABORT_CLEANUP_DONE=0

@@ -35,8 +35,8 @@ By default, the script installs Hardware Enablement (HWE) kernels (`linux-generi
 - **System76 hardware driver (optional)**: `--system76-driver` / `TARGET_SYSTEM76_DRIVER=1` pre-installs `system76-driver` (off by default; only useful on System76 machines — it can always be installed later since the repos stay configured).
 - **Bootloader**: GRUB (hybrid BIOS + UEFI) is kept instead of Pop!_OS's systemd-boot, so no >= 1 GiB EFI System Partition is required.
 - **Desktops**: same list as `build.sh` (GNOME default). `pop-desktop` and COSMIC are intentionally **not** offered — COSMIC is still too buggy through Calamares. On noble/resolute targets, the end-of-build output explains how users can install COSMIC on the installed system (`sudo apt update && sudo apt install cosmic-session`, then pick the COSMIC session at the login screen).
-- **Separate state**: workspace `workspace-popos/`, its own APT package cache, and config file `build-popos.cfg`, so Ubuntu and Pop!_OS builds never collide.
-- **Output naming**: ISOs are named `popos-<version>-<desktop>-amd64-<timestamp>.iso`.
+- **Separate state**: a `workspace-popos/` subdirectory (under the same workspace parent as Ubuntu builds), its own APT package cache, and config file `build-popos.cfg`, so Ubuntu and Pop!_OS builds never collide.
+- **Output naming**: ISOs are named `popos-<version>-<desktop>-amd64-<timestamp>.iso` and land in the same output directory as Ubuntu builds (your home directory by default).
 
 ### Syntax and Modular Execution
 Advanced users can execute individual segments of the build pipeline instead of building the entire ISO in one run:
@@ -70,10 +70,15 @@ The Calamares installer configuration files are stored inside the `calamares/` s
 
 ## Workspace Lifecycle and Cleanups
 
-During execution, the builder creates a `workspace/` directory (`workspace-popos/` for Pop!_OS builds) at the repository root (not inside `scripts/`) to store temporary assets:
+During execution, the builder creates a `workspace/` directory (`workspace-popos/` for Pop!_OS builds) to store temporary assets:
 - **workspace/chroot/**: Contains the live system rootfs during build.
 - **workspace/image/**: Stores bootloader files, kernels, and metadata files destined for the ISO filesystem.
 
-On WSL Windows mounts (`/mnt/...`) the workspace is relocated automatically to a Linux-native cache path, and `UBUNTU_VANILLA_WORKSPACE=/some/path` overrides the parent directory explicitly.
+Where the workspace lives depends on the build mode:
+- **Basic mode**: `/var/cache/ubuntu-vanilla-build/` — a root-owned system directory regular users cannot touch, always on a Linux-native filesystem (so WSL `/mnt/c` unpack issues can't occur).
+- **Advanced mode**: you are asked interactively for the workspace directory (default: `~/uvb-workspace`); non-interactive runs use the default silently.
+- **Override (any mode)**: `UBUNTU_VANILLA_WORKSPACE=/some/path` sets the parent directory explicitly and skips the prompt. Paths on Windows-backed mounts (`/mnt/...`, `/media/...`, 9p/DrvFs) are relocated automatically to the system directory.
 
-On successful compilation, the script automatically deletes the `workspace/` directory to reclaim disk space. In basic mode, a failed or interrupted build also unmounts the chroot bind mounts and removes the workspace automatically. In advanced mode (`--advanced`), the workspace is preserved on failure so you can inspect it or resume from a specific stage (e.g. `./build.sh --advanced run_chroot`).
+The finished ISO and its `.sha1`/`.sha256` checksums are written to your home directory (`/home/$USER`) by default. In advanced mode you are asked for the output directory (default: your home directory), and `UVB_OUTPUT_DIR=/some/path` overrides it in any mode.
+
+On successful compilation, the script automatically deletes the workspace directory to reclaim disk space. In basic mode, a failed or interrupted build also unmounts the chroot bind mounts and removes the workspace automatically. In advanced mode (`--advanced`), the workspace is preserved on failure so you can inspect it or resume from a specific stage (e.g. `./build.sh --advanced run_chroot`).

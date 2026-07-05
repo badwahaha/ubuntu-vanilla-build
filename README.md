@@ -14,7 +14,8 @@ Recent improvements include:
 - **Pop!_OS ISO Variant**: `scripts/build-popos.sh` builds a Pop!_OS ISO from the official Pop!_OS APT repositories (staging excluded) — see [Building Pop!_OS ISOs](#building-popos-isos). `start-here.sh` now asks which distro to build (Ubuntu or Pop!_OS).
 - **Startup Mode Selection**: When run on a terminal without an explicit mode, `build.sh` first asks whether to build in **Basic** (default, guided prompts) or **Advanced** mode — an alternative to passing `--advanced`.
 - **Build Hooks (Modloader)**: Drop `.sh` scripts into `scripts/hooks/pre-chroot/` and `scripts/hooks/chroot/` to customize the build — scripts run in sorted filename order, like a game modloader.
-- **Advanced Mode**: `--advanced` flag preserves workspace on failure/Ctrl+C for faster re-runs and enables a persistent APT package cache to save bandwidth.
+- **Advanced Mode**: `--advanced` flag preserves workspace on failure/Ctrl+C for faster re-runs, enables a persistent APT package cache to save bandwidth, and asks where to put the workspace (default `~/uvb-workspace`) and the finished ISO (default your home directory).
+- **Tidy Paths**: In basic mode the workspace lives in a root-owned system directory (`/var/cache/ubuntu-vanilla-build/`) that stays out of your way — the same approach used on WSL — and the finished ISO is saved to your home directory (`/home/$USER`).
 - **Config File Support** *(advanced mode)*: Load build options from a `build.cfg` file for repeatable builds (`--advanced --config=FILE`), or generate one with `--generate-config`. Basic mode uses interactive prompts.
 - **Non-Interactive / Unattended Mode** *(advanced mode)*: `--advanced --no-interactive` disables all prompts; combined with `--locale` and `--keyboard-layout` for fully unattended builds.
 - **Date+Time in ISO Name**: Generated ISOs include a UTC timestamp (e.g. `ubuntu-24.04-gnome-amd64-260703-041500.iso`) so old builds aren't overwritten.
@@ -50,7 +51,7 @@ Recent improvements include:
 - **Package Management Utilities**:
   - Pacstall installed by default through the official installer: [pacstall.dev](https://pacstall.dev) (disable with `--no-pacstall`).
   - Pre-configured Flatpak support with the Flathub repository (including the GNOME Software Flatpak plugin on GNOME desktop).
-- **Outputs** (default name includes a UTC timestamp):
+- **Outputs** (saved to your home directory by default — `UVB_OUTPUT_DIR` or the advanced-mode prompt picks another location; default name includes a UTC timestamp):
   - `${TARGET_NAME:-ubuntu-<version>-<desktop>-amd64-<yymmdd-hhmmss>}.iso`
   - `${TARGET_NAME:-ubuntu-<version>-<desktop>-amd64-<yymmdd-hhmmss>}.iso.sha1`
   - `${TARGET_NAME:-ubuntu-<version>-<desktop>-amd64-<yymmdd-hhmmss>}.iso.sha256`
@@ -83,7 +84,7 @@ Only these target releases are supported:
 - **Bootloader**: official Pop!_OS media use systemd-boot, which expects a large (>= 1 GiB) EFI System Partition. This builder keeps **GRUB** (hybrid BIOS + UEFI), so no oversized ESP is required.
 - **System76 hardware driver (optional)**: `--system76-driver` (or `TARGET_SYSTEM76_DRIVER=1`) pre-installs `system76-driver` from the Pop!_OS repos for System76 machines (fan/keyboard/suspend support). Default is off — the repos stay configured, so it can always be installed later with `sudo apt install system76-driver`.
 - **Calamares config**: comes from `scripts/calamares-popos/` (Pop!_OS branding); the module set matches `scripts/calamares/`.
-- **Separate workspace/cache/config**: uses `workspace-popos/`, its own APT cache, and `scripts/build-popos.cfg`, so Ubuntu and Pop!_OS builds never collide.
+- **Separate workspace/cache/config**: uses a `workspace-popos/` subdirectory (under the same workspace parent as Ubuntu builds), its own APT cache, and `scripts/build-popos.cfg`, so Ubuntu and Pop!_OS builds never collide.
 
 ### Desktop note: no pop-desktop / COSMIC option
 
@@ -261,7 +262,7 @@ If values are not explicitly set and interactive prompts are skipped, the defaul
 
 ### Config File & Interactive Mode
 - `--config=FILE` - Load build options from a config file (KEY=VALUE format; **requires `--advanced`**). If not specified, `scripts/build.cfg` is loaded automatically when present in advanced mode.
-- `--generate-config` - Launch an interactive wizard to generate a `build.cfg` file (advanced mode).
+- `--generate-config` - Launch an interactive wizard to generate a `build.cfg` file (advanced mode). Also available from the repository root as `./start-here.sh --create-config` (or `--generate-config`), which first asks which builder (Ubuntu or Pop!_OS) to generate the config for, then forwards `--generate-config` to it — no sudo or host dependencies needed for this shortcut.
 - `--interactive` - Force interactive prompts even when stdin is not a TTY (**requires `--advanced`**).
 - `--no-interactive` - Disable all interactive prompts; missing required values use defaults or cause an error (**requires `--advanced`**).
 
@@ -357,7 +358,8 @@ For advanced configurations, environment variables can be used instead of CLI fl
 - `TARGET_PACKAGE_REMOVE` - Space-separated list of packages to remove from target system.
 - `TARGET_NAME` - Custom output ISO base name (includes UTC timestamp by default).
 - `GRUB_LIVEBOOT_LABEL` - Custom boot menu entry label.
-- `UBUNTU_VANILLA_WORKSPACE` - Custom workspace parent directory.
+- `UBUNTU_VANILLA_WORKSPACE` - Custom workspace parent directory (overrides the mode defaults: `/var/cache/ubuntu-vanilla-build` in basic mode, `~/uvb-workspace` in advanced mode).
+- `UVB_OUTPUT_DIR` - Directory where the finished ISO and checksums are placed (default: your home directory).
 
 ### Locale & Keyboard Variables
 - `TARGET_LOCALE` - System locale for unattended builds (e.g. `en_US.UTF-8`).
@@ -452,6 +454,8 @@ TARGET_GNOME_INSTALL_RECOMMENDS=1 ./build.sh --release=resolute --kernel=generic
 
 # Advanced mode: generate a config file with the wizard
 ./build.sh --generate-config
+# ...or from the repository root (asks Ubuntu or Pop!_OS first):
+# ./start-here.sh --create-config
 
 # Advanced mode: build using a config file
 ./build.sh --advanced --config=build.cfg -
@@ -466,14 +470,15 @@ TARGET_GNOME_INSTALL_RECOMMENDS=1 ./build.sh --release=resolute --kernel=generic
 
 ### Workspace Directory
 The build process uses a workspace directory to store temporary files:
-- **Default location**: `<repo>/workspace/` (contains `chroot/` and `image/` subdirectories during build).
-- **WSL auto-detection**: On WSL DrvFs paths (`/mnt/...`), the workspace is automatically moved to a Linux-native cache path to avoid debootstrap unpack issues.
-- **Custom location**: Set `UBUNTU_VANILLA_WORKSPACE=/some/path` to use a custom parent directory (actual workspace becomes `/some/path/workspace`).
+- **Basic mode location**: `/var/cache/ubuntu-vanilla-build/workspace/` — a root-owned system directory kept out of the user's way (contains `chroot/` and `image/` subdirectories during build). Because it always lives on a Linux-native filesystem, WSL `/mnt/c` unpack issues can't occur.
+- **Advanced mode location**: you are asked interactively where to put the workspace (default: `~/uvb-workspace`; the actual workspace becomes `<answer>/workspace`). Non-interactive advanced runs use the default silently.
+- **Custom location (any mode)**: Set `UBUNTU_VANILLA_WORKSPACE=/some/path` to use a custom parent directory (actual workspace becomes `/some/path/workspace`) and skip the prompt.
+- **WSL guard**: If the chosen workspace path lands on a Windows-backed mount (`/mnt/...`, `/media/...`, 9p/DrvFs), it is automatically relocated to the system directory above, because debootstrap cannot unpack reliably there.
 - **Automatic cleanup**: On successful build, the workspace is automatically removed to save disk space. In basic mode, a failed or interrupted (Ctrl+C) build also unmounts the chroot bind mounts and removes the workspace automatically — no manual cleanup needed.
 - **Advanced mode preservation**: With `--advanced`, the workspace is preserved on failure or Ctrl+C (only bind mounts are unmounted). This enables faster re-runs: debootstrap is skipped automatically when the chroot already exists, so you can jump straight to the failed stage.
 
 ### Output Files
-After a successful build, the following files are created in the `scripts/` directory (the default name carries a UTC timestamp so repeat builds never overwrite each other):
+After a successful build, the following files are placed in your home directory (`/home/$USER`) by default. In advanced mode you are asked interactively where to put them (default: your home directory), and `UVB_OUTPUT_DIR=/some/path` overrides the location in any mode. Files are chowned back to the invoking user, and the default name carries a UTC timestamp so repeat builds never overwrite each other:
 - `${TARGET_NAME:-ubuntu-<version>-<desktop>-amd64-<yymmdd-hhmmss>}.iso` - The bootable ISO image.
 - `${TARGET_NAME:-ubuntu-<version>-<desktop>-amd64-<yymmdd-hhmmss>}.iso.sha1` - SHA-1 checksum for verification.
 - `${TARGET_NAME:-ubuntu-<version>-<desktop>-amd64-<yymmdd-hhmmss>}.iso.sha256` - SHA-256 checksum for verification.
@@ -548,7 +553,7 @@ sudo dd if=<your-iso-file>.iso of=/dev/sdX bs=4M status=progress conv=fsync
 - **No interactive prompts in CI/non-TTY environments**: Provide all required options explicitly (`--release`, `--kernel`, and any toggles).
 - **Ubiquity installer rejected**: Use `--installer=ubiquity` only with `--release=jammy` (22.04 LTS).
 - **Debian host keyring error**: Install `ubuntu-archive-keyring` package: `sudo apt install ubuntu-archive-keyring`
-- **Build fails on WSL Windows mount**: Keep repository on Linux filesystem or rely on automatic workspace relocation.
+- **Build fails on WSL Windows mount**: The workspace always defaults to a Linux-native path now; if you point `UBUNTU_VANILLA_WORKSPACE` (or the advanced-mode prompt) at `/mnt/...`, it is relocated automatically to `/var/cache/ubuntu-vanilla-build`.
 - **Missing package in chosen release**: Script logs and skips unavailable/uninstallable packages with warnings.
 - **LXDE installed system shows only Openbox**: Connect to internet during Calamares installation so the LXDE repair step can reach mirrors, or manually fix after boot (see below).
 
