@@ -2739,6 +2739,21 @@ EOF
 
     echo "$TARGET_NAME" > /etc/hostname
 
+    # Build-time APT network resilience (removed again in finish_up so the
+    # shipped ISO keeps stock APT behavior). HTTPS mirrors/CDNs (Brave S3,
+    # Mozilla, Librewolf) sometimes close the TLS connection mid-transfer
+    # without close_notify; OpenSSL 3 reports that as
+    # "SSL routines::unexpected eof while reading" and a retry-less apt
+    # aborts the whole build. Retries make apt re-fetch instead of dying,
+    # and disabling HTTP pipelining avoids the mid-stream drops that some
+    # CDNs cause on pipelined requests.
+    cat <<'EOF' > /etc/apt/apt.conf.d/99-build-network-resilience
+Acquire::Retries "5";
+Acquire::http::Timeout "60";
+Acquire::https::Timeout "60";
+Acquire::http::Pipeline-Depth "0";
+EOF
+
     apt-get update
 
     block_snapd
@@ -3047,6 +3062,10 @@ function finish_up() {
     # already removed by a previous pass.
     rm -f /sbin/initctl
     dpkg-divert --rename --remove /sbin/initctl
+
+    # Drop the build-only APT resilience knobs from chroot_prepare; the
+    # installed system should run with stock APT settings.
+    rm -f /etc/apt/apt.conf.d/99-build-network-resilience
 
     rm -rf /tmp/* ~/.bash_history
 }
