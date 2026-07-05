@@ -1,19 +1,35 @@
 #!/bin/bash
 
 # build-popos.sh — Pop!_OS variant of build.sh.
-# Uses the Pop!_OS repositories from https://apt.pop-os.org/ (the Ubuntu
-# mirror plus the release and proprietary suites; staging is intentionally
-# excluded) and the Calamares configuration from scripts/calamares-popos.
+#
+# Repositories: the Ubuntu mirror plus the release and proprietary suites on
+# https://apt.pop-os.org/ and the release-ubuntu suite on
+# https://apt-origin.pop-os.org/ (staging suites are intentionally excluded).
+# Calamares configuration comes from scripts/calamares-popos.
 # Supported releases: jammy (22.04), noble (24.04), resolute (26.04) — LTS only.
+#
+# Deliberate differences from official Pop!_OS media:
+#   * Bootloader: official Pop!_OS ISOs use systemd-boot, which wants a large
+#     (>= 1 GiB) EFI System Partition. This build keeps GRUB (BIOS + UEFI
+#     hybrid) so no oversized ESP is required.
+#   * Desktop: Pop's own desktops (pop-desktop, and COSMIC on noble/resolute)
+#     are NOT offered — COSMIC still has too many bugs when installed through
+#     Calamares. Users can install COSMIC after installation; see the note
+#     printed at the end of the build (print_build_result).
+#   * Kernel: choose the System76 kernel (linux-system76, tracking the stable
+#     Linux branch, from the Pop!_OS repos) or stock Ubuntu HWE kernels
+#     (generic / lowlatency).
 
 set -e
 set -o pipefail
 set -u
 
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
-# Pop!_OS APT archive (https://apt.pop-os.org/). Suites used: ubuntu (mirror,
-# via TARGET_UBUNTU_MIRROR), release, proprietary. Staging suites are excluded.
+# Pop!_OS APT archives. Suites used: ubuntu (mirror, via TARGET_UBUNTU_MIRROR),
+# release and proprietary on apt.pop-os.org, and release-ubuntu on
+# apt-origin.pop-os.org. Staging suites are excluded.
 POP_APT_URL="https://apt.pop-os.org"
+POP_ORIGIN_APT_URL="https://apt-origin.pop-os.org"
 # Pop!_OS archive signing key (pop-keyring).
 POP_KEY_FINGERPRINT="63C46DF0140D738961429F4E204DD8AEC33A7AFF"
 # Set in resolve_workspace_paths() during host_main (WSL: avoid /mnt/c for debootstrap).
@@ -341,12 +357,12 @@ function release_version() {
 function default_target_name() {
     local version desktop
     version="$(release_version "${TARGET_UBUNTU_VERSION:-}")"
-    desktop="${TARGET_DESKTOP:-pop}"
+    desktop="${TARGET_DESKTOP:-gnome}"
     echo "popos-${version}-${desktop}-amd64-${DATE}"
 }
 
 function normalize_desktop_variant() {
-    local desktop="${TARGET_DESKTOP:-pop}"
+    local desktop="${TARGET_DESKTOP:-gnome}"
     desktop="${desktop,,}"
     case "$desktop" in
         kde)
@@ -354,7 +370,7 @@ function normalize_desktop_variant() {
             ;;
     esac
     if [[ ! "$desktop" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
-        >&2 echo "TARGET_DESKTOP must be a slug like pop, gnome, xfce, lxde, lxqt, mate, cinnamon, budgie, or kde-plasma (got: '${TARGET_DESKTOP:-}')."
+        >&2 echo "TARGET_DESKTOP must be a slug like gnome, xfce, lxde, lxqt, mate, cinnamon, budgie, or kde-plasma (got: '${TARGET_DESKTOP:-}')."
         exit 1
     fi
     export TARGET_DESKTOP="$desktop"
@@ -380,12 +396,19 @@ function set_target_kernel_package_from_flavor() {
     assert_supported_release || exit 1
 
     case "${TARGET_KERNEL_FLAVOR:-}" in
-        generic|lowlatency) ;;
+        system76|generic|lowlatency) ;;
         *)
-            >&2 echo "TARGET_KERNEL_FLAVOR must be generic or lowlatency (got: '${TARGET_KERNEL_FLAVOR:-}')."
+            >&2 echo "TARGET_KERNEL_FLAVOR must be system76, generic, or lowlatency (got: '${TARGET_KERNEL_FLAVOR:-}')."
             exit 1
             ;;
     esac
+
+    # System76 kernel: shipped in the Pop!_OS repos, tracks the stable Linux
+    # branch. No HWE suffix applies.
+    if [[ "$TARGET_KERNEL_FLAVOR" == "system76" ]]; then
+        export TARGET_KERNEL_PACKAGE="linux-system76"
+        return 0
+    fi
 
     local hv
     hv="$(release_version "$TARGET_UBUNTU_VERSION")"
@@ -470,11 +493,7 @@ function install_lightdm_desktop() {
 function customize_image() {
     block_snapd
 
-    case "${TARGET_DESKTOP:-pop}" in
-        pop)
-            echo "=====> desktop flavor: pop (pop-desktop from apt.pop-os.org)"
-            apt-get install -y pop-desktop
-            ;;
+    case "${TARGET_DESKTOP:-gnome}" in
         gnome)
             echo "=====> desktop flavor: gnome"
             if [[ "${TARGET_GNOME_INSTALL_RECOMMENDS:-0}" == "1" ]]; then
@@ -575,12 +594,7 @@ function customize_image() {
             exit 1
             ;;
     esac
-    if [[ "${TARGET_DESKTOP:-pop}" == "pop" ]]; then
-        # pop-desktop pulls the Pop!_OS Plymouth theme via its dependencies.
-        apt-get install -y plymouth plymouth-label
-    else
-        apt-get install -y plymouth plymouth-label plymouth-theme-ubuntu-text
-    fi
+    apt-get install -y plymouth plymouth-label plymouth-theme-ubuntu-text
 
     apt-get install -y curl wget apt-transport-https ca-certificates squashfs-tools gnupg
 
@@ -708,7 +722,7 @@ EOF
     flatpak remote-add --if-not-exists --system flathub \
         https://flathub.org/repo/flathub.flatpakrepo
 
-    if [[ "${TARGET_DESKTOP:-pop}" == "gnome" ]]; then
+    if [[ "${TARGET_DESKTOP:-gnome}" == "gnome" ]]; then
         apt-get install -y \
             gnome-software \
             gnome-software-plugin-flatpak
@@ -720,7 +734,7 @@ EOF
         aisleriot \
         hitori
 
-    if [[ "${TARGET_DESKTOP:-pop}" == "gnome" ]]; then
+    if [[ "${TARGET_DESKTOP:-gnome}" == "gnome" ]]; then
         apt-get purge -y --ignore-missing \
             gnome-mahjongg \
             gnome-mines \
@@ -818,7 +832,7 @@ function host_help() {
     echo "  --mirror=URL                            Ubuntu package mirror"
     echo "  UBUNTU_VANILLA_WORKSPACE=DIR             Parent directory for build workspace (optional; auto on WSL /mnt/c)"
     echo "  TARGET_INSTALLER=calamares|ubiquity       Live installer (optional; default calamares)"
-    echo "  TARGET_DESKTOP=<desktop>                  Desktop variant slug (optional; default pop)"
+    echo "  TARGET_DESKTOP=<desktop>                  Desktop variant slug (optional; default gnome)"
     echo "  TARGET_KDE_PACKAGE=kde-full|kde-standard|kde-plasma-desktop  KDE package when desktop is kde-plasma (optional; default kde-standard)"
     echo "  TARGET_MATE_PACKAGE=mate-desktop-environment|mate-desktop-environment-core  MATE metapackage when desktop is mate (optional; full|core aliases OK)"
     echo "  TARGET_MATE_EXTRAS=0|1            Also install mate-desktop-environment-extras when desktop is mate (optional; default 0)"
@@ -830,9 +844,9 @@ function host_help() {
     echo "  TARGET_THUNDERBIRD=0|1                   Pre-install Thunderbird from Mozilla PPA (optional; default 0; PPA always added)"
     echo "  TARGET_UBUNTU_STUDIO=0|1                 Ubuntu Studio metapackages (optional; default 0)"
     echo "  TARGET_GNOME_INSTALL_RECOMMENDS=0|1       GNOME install with recommends (optional; default 0)"
-    echo "  --kernel=generic|lowlatency             Kernel type to install"
+    echo "  --kernel=system76|generic|lowlatency    Kernel: System76 (stable branch, Pop!_OS repos) or Ubuntu HWE"
     echo "  --installer=calamares|ubiquity           Calamares (default), or Ubiquity (jammy/22.04 only)"
-    echo "  --desktop=<desktop>                      Desktop variant (pop, gnome, xfce, lxde, lxqt, mate, cinnamon, budgie, kde-plasma)"
+    echo "  --desktop=<desktop>                      Desktop variant (gnome, xfce, lxde, lxqt, mate, cinnamon, budgie, kde-plasma)"
     echo "  --kde=kde-full|kde-standard|kde-plasma-desktop  KDE package tier (used with --desktop=kde-plasma)"
     echo "  --mate=full|core|mate-desktop-environment|mate-desktop-environment-core  MATE tier (used with --desktop=mate; default full)"
     echo "  --mate-extras / --no-mate-extras        Pre-install mate-desktop-environment-extras (with --desktop=mate)"
@@ -1091,7 +1105,7 @@ function run_chroot() {
         TARGET_UBUNTU_MIRROR="${TARGET_UBUNTU_MIRROR}" \
         TARGET_KERNEL_FLAVOR="${TARGET_KERNEL_FLAVOR:-}" \
         TARGET_KERNEL_PACKAGE="${TARGET_KERNEL_PACKAGE:-}" \
-        TARGET_DESKTOP="${TARGET_DESKTOP:-pop}" \
+        TARGET_DESKTOP="${TARGET_DESKTOP:-gnome}" \
         TARGET_KDE_PACKAGE="${TARGET_KDE_PACKAGE:-kde-standard}" \
         TARGET_MATE_PACKAGE="${TARGET_MATE_PACKAGE:-mate-desktop-environment}" \
         TARGET_MATE_EXTRAS="${TARGET_MATE_EXTRAS:-0}" \
@@ -1310,27 +1324,29 @@ function resolve_release_choice() {
 
 function interactive_kernel_pick() {
     if ! prompts_enabled; then
-        ui_err "No terminal is available. Use --kernel=generic|lowlatency."
+        ui_err "No terminal is available. Use --kernel=system76|generic|lowlatency."
         exit 1
     fi
 
     local hv=""
     hv="$(release_version "${TARGET_UBUNTU_VERSION:-}")"
 
-    ui_heading "Kernel flavor${hv:+ (HWE stream for Ubuntu ${hv})}"
-    printf '    1) generic     Recommended for most systems%s\n' \
+    ui_heading "Kernel flavor"
+    echo "    1) system76    System76 kernel from the Pop!_OS repos (linux-system76,"
+    echo "                   tracks the stable Linux branch)  [default]"
+    printf '    2) generic     Ubuntu HWE kernel%s\n' \
         "${hv:+  (linux-generic-hwe-${hv})}"
-    printf '    2) lowlatency  Better for audio / low-latency workloads%s\n' \
+    printf '    3) lowlatency  Ubuntu HWE low-latency kernel, better for audio workloads%s\n' \
         "${hv:+  (linux-lowlatency-hwe-${hv})}"
 
     local choice
     while true; do
-        read -r -p "  Kernel [1/2]: " choice
+        read -r -p "  Kernel [1/2/3, Enter=1]: " choice
         case "${choice,,}" in
-            1|g|generic)    export TARGET_KERNEL_FLAVOR="generic";    break ;;
-            2|l|lowlatency) export TARGET_KERNEL_FLAVOR="lowlatency"; break ;;
-            "")  ui_warn "Please choose 1 or 2." ;;
-            *)   ui_warn "Invalid selection: '$choice'. Please choose 1 or 2." ;;
+            ""|1|s|system76) export TARGET_KERNEL_FLAVOR="system76";   break ;;
+            2|g|generic)     export TARGET_KERNEL_FLAVOR="generic";    break ;;
+            3|l|lowlatency)  export TARGET_KERNEL_FLAVOR="lowlatency"; break ;;
+            *)   ui_warn "Invalid selection: '$choice'. Please choose 1, 2, or 3." ;;
         esac
     done
     ui_ok "TARGET_KERNEL_FLAVOR=$TARGET_KERNEL_FLAVOR"
@@ -1346,19 +1362,19 @@ function resolve_kernel_choice() {
         return 0
     fi
 
-    >&2 echo "TARGET_KERNEL_FLAVOR is not set. Use --kernel=generic|lowlatency for non-interactive runs."
+    >&2 echo "TARGET_KERNEL_FLAVOR is not set. Use --kernel=system76|generic|lowlatency for non-interactive runs."
     exit 1
 }
 
 function interactive_desktop_pick() {
     if ! prompts_enabled; then
-        ui_err "No terminal is available. Use --desktop=<desktop> (e.g. pop, gnome, xfce, lxde, lxqt, mate, cinnamon, budgie, or kde-plasma)."
+        ui_err "No terminal is available. Use --desktop=<desktop> (e.g. gnome, xfce, lxde, lxqt, mate, cinnamon, budgie, or kde-plasma)."
         exit 1
     fi
 
     ui_heading "Desktop environment"
-    echo "    0) Pop            Pop!_OS desktop (pop-desktop: GNOME-based with Pop shell, theming, and tools).  [default]"
-    echo "    (Others, ordered A-Z by desktop name.)"
+    echo "    (Ordered A-Z by desktop name. Pop's own desktops — pop-desktop and COSMIC —"
+    echo "     are intentionally NOT offered here; see the COSMIC note at the end of the build.)"
     echo "    1) Budgie         Modern GTK desktop with Raven applets/sidebar. budgie-desktop-environment; lightdm + slick-greeter."
     echo "    2) Cinnamon       Familiar bottom panel and menu layout. cinnamon-desktop-environment; lightdm + slick-greeter."
     echo "    3) GNOME          Modern, full-featured desktop (similar to stock Ubuntu). Installs vanilla-gnome-desktop; next prompt offers optional extra apps (APT recommends)."
@@ -1370,10 +1386,9 @@ function interactive_desktop_pick() {
 
     local choice
     while true; do
-        read -r -p "  Desktop [0-8; Enter=Pop]: " choice
+        read -r -p "  Desktop [1-8, A-Z by name; Enter=GNOME]: " choice
         case "${choice,,}" in
-            ""|0|p|pop)                export TARGET_DESKTOP="pop";     break ;;
-            3|g|gnome)                 export TARGET_DESKTOP="gnome";   break ;;
+            ""|3|g|gnome)               export TARGET_DESKTOP="gnome";   break ;;
             1|b|budgie)                export TARGET_DESKTOP="budgie";   break ;;
             2|c|cinnamon)             export TARGET_DESKTOP="cinnamon"; break ;;
             4|k|kde|kde-plasma)        export TARGET_DESKTOP="kde-plasma"; break ;;
@@ -1397,7 +1412,7 @@ function resolve_desktop_choice() {
         return 0
     fi
 
-    export TARGET_DESKTOP=pop
+    export TARGET_DESKTOP=gnome
 }
 
 function interactive_kde_package_pick() {
@@ -1425,7 +1440,7 @@ function interactive_kde_package_pick() {
 }
 
 function resolve_kde_package_choice() {
-    if [[ "${TARGET_DESKTOP:-pop}" != "kde-plasma" ]]; then
+    if [[ "${TARGET_DESKTOP:-gnome}" != "kde-plasma" ]]; then
         export TARGET_KDE_PACKAGE="kde-standard"
         return 0
     fi
@@ -1443,7 +1458,7 @@ function resolve_kde_package_choice() {
 }
 
 function resolve_mate_choice() {
-    if [[ "${TARGET_DESKTOP:-pop}" != "mate" ]]; then
+    if [[ "${TARGET_DESKTOP:-gnome}" != "mate" ]]; then
         export TARGET_MATE_PACKAGE="${TARGET_MATE_PACKAGE:-mate-desktop-environment}"
         export TARGET_MATE_EXTRAS=0
         return 0
@@ -1531,7 +1546,7 @@ function interactive_gnome_recommends_pick() {
 }
 
 function resolve_gnome_recommends_choice() {
-    if [[ "${TARGET_DESKTOP:-pop}" != "gnome" ]]; then
+    if [[ "${TARGET_DESKTOP:-gnome}" != "gnome" ]]; then
         export TARGET_GNOME_INSTALL_RECOMMENDS=0
         return 0
     fi
@@ -1961,6 +1976,21 @@ function print_build_result() {
     echo "        qemu-system-x86_64 -m 4G -enable-kvm -cdrom \"$iso_path\" \\"
     echo "            -bios /usr/share/OVMF/OVMF_CODE.fd"
     echo
+    case "${TARGET_UBUNTU_VERSION:-}" in
+        noble|resolute)
+            ui_heading "COSMIC desktop (optional, after installation)"
+            echo "  COSMIC is not offered by this builder because it is still too buggy when"
+            echo "  installed through Calamares. On the installed system (noble/resolute),"
+            echo "  the Pop!_OS repositories are already configured, so you can add it with:"
+            echo
+            echo "      sudo apt update"
+            echo "      sudo apt install cosmic-session"
+            echo
+            echo "  Then log out and pick the COSMIC session on the login screen"
+            echo "  (gear/session menu), or install pop-desktop for the full Pop!_OS stack."
+            echo
+            ;;
+    esac
 }
 
 # generate_config_wizard — interactive wizard that generates a build-popos.cfg file.
@@ -1996,13 +2026,13 @@ function generate_config_wizard() {
     _release="${_release:-noble}"
 
     # Kernel
-    read -r -p "  Kernel flavor (generic / lowlatency) [generic]: " _kernel
-    _kernel="${_kernel:-generic}"
+    read -r -p "  Kernel flavor (system76 / generic / lowlatency) [system76]: " _kernel
+    _kernel="${_kernel:-system76}"
 
     # Desktop
-    echo "  Desktops: pop, gnome, xfce, lxde, lxqt, mate, cinnamon, budgie, kde-plasma"
-    read -r -p "  Desktop [pop]: " _desktop
-    _desktop="${_desktop:-pop}"
+    echo "  Desktops: gnome, xfce, lxde, lxqt, mate, cinnamon, budgie, kde-plasma"
+    read -r -p "  Desktop [gnome]: " _desktop
+    _desktop="${_desktop:-gnome}"
 
     # Installer
     read -r -p "  Installer (calamares / ubiquity) [calamares]: " _installer
@@ -2198,7 +2228,7 @@ function host_main() {
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --kernel=generic|--kernel=lowlatency)
+            --kernel=system76|--kernel=generic|--kernel=lowlatency)
                 cli_kernel="${1#--kernel=}"
                 shift
                 ;;
@@ -2600,12 +2630,14 @@ function check_chroot_root() {
     export LC_ALL=C
 }
 
-# Configure the Pop!_OS repositories from https://apt.pop-os.org/ inside the
-# chroot: the release and proprietary suites (staging is intentionally
-# excluded). The archive signing key is fetched from the Ubuntu keyserver;
-# once the repos are reachable, the pop-keyring package takes over key
-# maintenance. Suites missing for the target release are skipped with a
-# warning so newer bases (e.g. resolute pre-release) do not hard-fail.
+# Configure the Pop!_OS repositories inside the chroot: release and
+# proprietary on apt.pop-os.org plus release-ubuntu on apt-origin.pop-os.org
+# (staging suites are intentionally excluded). The archive signing key is
+# fetched from the Ubuntu keyserver; once the repos are reachable, the
+# pop-keyring package takes over key maintenance. All three LTS targets are
+# published, including resolute (26.04 LTS, released early July 2026); a
+# suite that is temporarily unreachable is skipped with a warning, but the
+# build aborts if none of the Pop!_OS suites can be added.
 function setup_pop_apt_repos() {
     echo "=====> configuring Pop!_OS APT repositories from ${POP_APT_URL} (staging excluded) ..."
 
@@ -2621,19 +2653,25 @@ function setup_pop_apt_repos() {
     gpg --homedir "$tmp_gpg_home" --batch --export "$POP_KEY_FINGERPRINT" > "$keyring"
     rm -rf "$tmp_gpg_home"
 
-    local suite added_any=0
-    for suite in release proprietary; do
-        if curl -fsIL "${POP_APT_URL}/${suite}/dists/${TARGET_UBUNTU_VERSION}/Release" >/dev/null 2>&1; then
-            echo "deb [signed-by=${keyring}] ${POP_APT_URL}/${suite} ${TARGET_UBUNTU_VERSION} main" \
-                > "/etc/apt/sources.list.d/pop-os-${suite}.list"
-            echo "=====> Pop!_OS APT: added ${POP_APT_URL}/${suite} ${TARGET_UBUNTU_VERSION} main"
+    # name|base-URL pairs; staging suites are deliberately absent from this list.
+    local entry name url added_any=0
+    for entry in \
+        "release|${POP_APT_URL}/release" \
+        "proprietary|${POP_APT_URL}/proprietary" \
+        "release-ubuntu|${POP_ORIGIN_APT_URL}/release-ubuntu"; do
+        name="${entry%%|*}"
+        url="${entry#*|}"
+        if curl -fsIL "${url}/dists/${TARGET_UBUNTU_VERSION}/Release" >/dev/null 2>&1; then
+            echo "deb [signed-by=${keyring}] ${url} ${TARGET_UBUNTU_VERSION} main" \
+                > "/etc/apt/sources.list.d/pop-os-${name}.list"
+            echo "=====> Pop!_OS APT: added ${url} ${TARGET_UBUNTU_VERSION} main"
             added_any=1
         else
-            echo "  WARN  ${POP_APT_URL}/${suite} does not publish '${TARGET_UBUNTU_VERSION}' yet — skipping this suite." >&2
+            echo "  WARN  ${url} '${TARGET_UBUNTU_VERSION}' is unreachable — skipping this suite." >&2
         fi
     done
     if [[ "$added_any" -eq 0 ]]; then
-        >&2 echo "ERROR: no Pop!_OS suite on ${POP_APT_URL} provides '${TARGET_UBUNTU_VERSION}'."
+        >&2 echo "ERROR: none of the Pop!_OS suites (release, proprietary, release-ubuntu) could be added for '${TARGET_UBUNTU_VERSION}'."
         >&2 echo "       Cannot build a Pop!_OS image for this release."
         exit 1
     fi
@@ -2987,7 +3025,7 @@ function chroot_main() {
     shift
     set_defaults
     set_installer_and_manifest_defaults
-    export TARGET_DESKTOP="${TARGET_DESKTOP:-pop}"
+    export TARGET_DESKTOP="${TARGET_DESKTOP:-gnome}"
     export TARGET_KDE_PACKAGE="${TARGET_KDE_PACKAGE:-kde-standard}"
     export TARGET_MATE_PACKAGE="${TARGET_MATE_PACKAGE:-mate-desktop-environment}"
     export TARGET_MATE_EXTRAS="${TARGET_MATE_EXTRAS:-0}"

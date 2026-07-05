@@ -55,7 +55,7 @@ Presentation
 
     Slide
     {
-        centeredText: qsTr( "The desktop on this ISO matches how it was built—the default is pop-desktop (Pop shell, theming, and tools); other builds install GNOME, XFCE, KDE Plasma, MATE, Cinnamon, Budgie, or LXDE/LXQt stacks as selected, without snapd." )
+        centeredText: qsTr( "The desktop on this ISO matches how it was built—GNOME by default, or XFCE, KDE Plasma, MATE, Cinnamon, Budgie, or LXDE/LXQt as selected, without snapd. COSMIC can be installed afterwards (sudo apt install cosmic-session) on 24.04/26.04 bases." )
     }
 
     Slide
@@ -70,7 +70,7 @@ Presentation
 
     Slide
     {
-        centeredText: qsTr( "The HWE kernel metapackage for this release is installed (generic or low-latency, per build) with recommended packages; the apt.pop-os.org release repository supplies Pop!_OS-patched packages where available." )
+        centeredText: qsTr( "The kernel matches the build choice: the System76 kernel (linux-system76, stable Linux branch, from the Pop!_OS repos) or an Ubuntu HWE kernel (generic / low-latency), with recommended packages." )
     }
 
     Slide
