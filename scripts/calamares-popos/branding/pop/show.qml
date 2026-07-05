@@ -25,7 +25,7 @@ Presentation
     {
         Image {
             id: hero
-            source: "slide.jpg"
+            source: "slide.png"
             anchors.horizontalCenter: parent.horizontalCenter
             anchors.verticalCenter: parent.verticalCenter
             anchors.verticalCenterOffset: -24
@@ -50,7 +50,7 @@ Presentation
 
     Slide
     {
-        centeredText: qsTr( "This is an unofficial Pop!_OS image built from the apt.pop-os.org repositories: snapd is blocked by APT policy, matching Pop!_OS defaults." )
+        centeredText: qsTr( "This is an unofficial Pop!_OS image built from the apt.pop-os.org repositories: snapd is blocked by APT policy, matching Pop!_OS defaults (except for the bootloader, it uses GRUB instead of systemd-boot)." )
     }
 
     Slide
