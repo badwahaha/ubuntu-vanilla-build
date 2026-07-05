@@ -2892,10 +2892,22 @@ function setup_pop_apt_repos() {
         exit 1
     fi
 
-    # Prefer Pop!_OS packages over the Ubuntu archive (same pin Pop!_OS ships
-    # in pop-default-settings).
+    # Prefer Pop!_OS packages over the Ubuntu archive — but only for the
+    # packages this build actually takes from Pop: OS identity (base-files),
+    # the keyring/defaults (pop-*), and the System76 kernel/driver stack.
+    #
+    # Deliberately NOT the blanket "Package: *" pin that stock Pop!_OS ships
+    # in pop-default-settings: this builder installs standard Ubuntu desktops
+    # (vanilla-gnome-desktop, kubuntu-desktop, ...), and a repo-wide 1001 pin
+    # forces Pop's release-ubuntu rebuilds (older GNOME libs, update-manager,
+    # libadwaita, GTK4, ...) as the only candidates, which makes the Ubuntu
+    # desktop metapackages' strictly versioned dependencies unsatisfiable
+    # ("Depends: ... but it is not going to be installed", conflicting
+    # assignments on update-manager-core). Pop-only packages (linux-system76's
+    # concrete kernel builds, system76-power, ...) need no pin at all — the
+    # Pop repos are their only source.
     cat <<'EOF' > /etc/apt/preferences.d/pop-os-release
-Package: *
+Package: base-files pop-* linux-system76* linux-image-system76* linux-headers-system76* system76-*
 Pin: release o=pop-os-release
 Pin-Priority: 1001
 EOF
