@@ -23,8 +23,16 @@ images:
 slideshow:               "show.qml"
 slideshowAPI:            1
 
+# Pop!_OS theme. Palette sampled from the official Pop!_OS wallpapers
+# (pop-os/wallpapers, the set distributed via system76.com/merch/desktop-wallpapers):
+#   #333136 charcoal   — background of kate-hazen-unleash-your-robot / Pop dark theme
+#   #FAA41A Pop orange — brand accent (logo, robot artwork highlights)
+#   #48B9C7 Pop teal   — secondary brand accent
+# Current step is shown as dark text on an orange chip, matching Pop's
+# orange-on-charcoal accent style.
 style:
-    SidebarBackground:    "#333136"
-    SidebarText:          "#FFFFFF"
-    SidebarTextCurrent:   "#FAA41A"
+    SidebarBackground:        "#333136"
+    SidebarText:              "#FFFFFF"
+    SidebarTextCurrent:       "#333136"
+    SidebarBackgroundCurrent: "#FAA41A"
 
