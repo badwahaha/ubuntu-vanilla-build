@@ -509,7 +509,7 @@ Each desktop environment has a carefully curated package set:
 - **MATE**: Full or core MATE desktop with `xorg`, `lightdm`, and `slick-greeter`; optional extras available.
 - **Cinnamon**: Full Cinnamon desktop with `xorg`, `lightdm`, and `slick-greeter`.
 - **Budgie**: Full Budgie desktop with `xorg`, `lightdm`, and `slick-greeter`.
-- **KDE Plasma**: Selectable tier (`kde-plasma-desktop`, `kde-standard`, or `kde-full`); SDDM uses Plasma's own Breeze theme, installed explicitly and pinned via `/etc/sddm.conf.d` so third-party themes cannot take over the login screen; Discover ships with the Flatpak backend (the Snap backend is blocked).
+- **KDE Plasma**: Selectable tier (`kde-plasma-desktop`, `kde-standard`, or `kde-full`); SDDM uses Plasma's own Breeze theme, installed explicitly and pinned via `/etc/sddm.conf.d`; Slick SDDM packages (any name combining `slick` and `sddm`) are excluded with an APT pin (`Pin-Priority: -1`), and any non-Breeze `sddm-theme-*` package pulled in by a metapackage is purged, so third-party themes cannot take over the login screen; Discover ships with the Flatpak backend (the Snap backend is blocked).
 
 ### Special Features
 - **Pacstall**: Installed by default via the official script from [pacstall.dev](https://pacstall.dev); disable with `--no-pacstall` or `TARGET_PACSTALL=0`.

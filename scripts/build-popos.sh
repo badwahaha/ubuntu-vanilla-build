@@ -720,6 +720,26 @@ function customize_image() {
 [Theme]
 Current=breeze
 EOF
+            # Exclude Slick SDDM (and friends) outright: pin every package
+            # whose name combines "slick" with "sddm" so nothing can install
+            # a third-party SDDM re-theme, during the build or afterwards.
+            cat <<'EOF' > /etc/apt/preferences.d/no-slick-sddm.pref
+# The login screen stays on Plasma's stock Breeze theme.
+Package: *slick*sddm* *sddm*slick*
+Pin: release *
+Pin-Priority: -1
+EOF
+            # Safety net: purge any non-Breeze sddm-theme-* package that a
+            # desktop metapackage may have pulled in (e.g. the resolver's
+            # default sddm-theme-debian-maui). sddm-theme-breeze satisfies
+            # sddm's theme dependency, so removing the others is safe.
+            local _extra_sddm_themes
+            _extra_sddm_themes="$(dpkg-query -W -f='${Package}\n' 'sddm-theme-*' 2>/dev/null | grep -vx 'sddm-theme-breeze' || true)"
+            if [[ -n "$_extra_sddm_themes" ]]; then
+                echo "=====> SDDM: removing non-Breeze theme packages: ${_extra_sddm_themes//$'\n'/ }"
+                # shellcheck disable=SC2086
+                apt-get purge -y $_extra_sddm_themes
+            fi
             # Discover app store: Flatpak backend in, Snap backend pinned out
             # (see block_snapd). kde-plasma-desktop does not always pull
             # plasma-discover itself, so install it explicitly.
