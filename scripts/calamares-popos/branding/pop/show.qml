@@ -3,16 +3,19 @@
  *
  * Styled after the Pop!_OS dark theme. The accent colors are sampled from
  * the official Pop!_OS wallpapers (pop-os/wallpapers — the same set that
- * system76.com/merch/desktop-wallpapers distributes):
+ * system76.com/merch/desktop-wallpapers distributes). slide.png on the hero
+ * slide is itself one of them: kate-hazen-mort1mer (the Mort1mer robot
+ * skyline), whose palette (#63ADA6 / #96C295 / #DDD793 / #4D4D4D) anchors
+ * the accent rotation below.
  *   #333136 charcoal    kate-hazen-unleash-your-robot background / Pop dark
  *   #FAA41A Pop orange  brand accent
  *   #48B9C7 Pop teal    brand accent
+ *   #63ADA6 sky teal    kate-hazen-mort1mer (slide.png)
+ *   #96C295 sage        kate-hazen-mort1mer (slide.png)
+ *   #DDD793 sand        kate-hazen-mort1mer (slide.png)
  *   #589AC7 ice blue    nick-nazzaro-ice-cave
  *   #87C1DA ice light   nick-nazzaro-ice-cave
  *   #877DAC lavender    nick-nazzaro-space-blue
- *   #96C295 sage        kate-hazen-mort1mer
- *   #DDD793 sand        kate-hazen-mort1mer
- *   #587288 slate       kate-hazen-pop-m3lvin
  */
 
 import QtQuick 2.0;
@@ -242,7 +245,7 @@ Presentation
         }
         Rectangle {
             width: 56; height: 4; radius: 2
-            color: "#587288"
+            color: "#63ADA6"
             anchors.horizontalCenter: parent.horizontalCenter
             anchors.bottom: body9.top
             anchors.bottomMargin: 18
