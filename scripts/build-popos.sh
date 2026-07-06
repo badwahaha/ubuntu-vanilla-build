@@ -759,6 +759,22 @@ EOF
     if [[ "${TARGET_SYSTEM76_DRIVER:-0}" == "1" ]]; then
         echo "=====> System76 hardware driver: system76-driver (from the Pop!_OS repos)"
         apt-get install -y system76-driver
+        # system76-driver depends on pop-default-settings, which ships a
+        # blanket "Package: *" pin at priority 1001 in
+        # /etc/apt/preferences.d/pop-default-settings. That pin forces Pop's
+        # release-ubuntu rebuilds as the only candidates and breaks the
+        # Ubuntu desktop metapackages this builder installs (see the scoped
+        # pin in setup_pop_apt_repos). Replace it with a comment; the scoped
+        # pin in /etc/apt/preferences.d/pop-os-release already covers every
+        # package this build takes from Pop.
+        if [[ -f /etc/apt/preferences.d/pop-default-settings ]]; then
+            cat <<'EOF' > /etc/apt/preferences.d/pop-default-settings
+# Blanket "Package: *" pin removed by build-popos.sh: this image installs
+# standard Ubuntu desktops, and a repo-wide 1001 pin on o=pop-os-release
+# makes their strictly versioned dependencies unsatisfiable. The scoped
+# replacement lives in /etc/apt/preferences.d/pop-os-release.
+EOF
+        fi
     else
         echo "=====> System76 driver: skipped (repos remain configured; apt install system76-driver on System76 hardware)"
     fi
@@ -2866,8 +2882,24 @@ function setup_pop_apt_repos() {
     # target release, falling back to the origin server only when it does
     # not — bulk fetches straight from apt-origin get their TLS connections
     # dropped mid-transfer ("unexpected eof while reading").
-    local name base url added_any=0
+    #
+    # The sources are written in deb822 format under the filenames stock
+    # Pop!_OS uses (pop-os-release.sources, pop-os-apps.sources): the
+    # pop-default-settings postinst (pulled in by system76-driver) runs
+    # grep/sed directly against /etc/apt/sources.list.d/pop-os-release.sources
+    # and aborts the whole dpkg run with exit status 2 when that file does
+    # not exist. It only checks that a Signed-By line is present, so pointing
+    # Signed-By at our keyring is fine.
+    local name base url srcfile added_any=0
+    # Old one-line names written by earlier versions of this script; remove
+    # them so advanced-mode re-runs don't end up with duplicate sources.
+    rm -f /etc/apt/sources.list.d/pop-os-{release,proprietary,release-ubuntu}.list
     for name in release proprietary release-ubuntu; do
+        case "$name" in
+            release)        srcfile=/etc/apt/sources.list.d/pop-os-release.sources ;;
+            proprietary)    srcfile=/etc/apt/sources.list.d/pop-os-apps.sources ;;
+            release-ubuntu) srcfile=/etc/apt/sources.list.d/pop-os-release-ubuntu.sources ;;
+        esac
         url=""
         for base in "$POP_APT_URL" "$POP_APT_ORIGIN_URL"; do
             if curl -fsIL "${base}/${name}/dists/${TARGET_UBUNTU_VERSION}/Release" >/dev/null 2>&1; then
@@ -2876,14 +2908,34 @@ function setup_pop_apt_repos() {
             fi
         done
         if [[ -n "$url" ]]; then
-            echo "deb [signed-by=${keyring}] ${url} ${TARGET_UBUNTU_VERSION} main" \
-                > "/etc/apt/sources.list.d/pop-os-${name}.list"
-            echo "=====> Pop!_OS APT: added ${url} ${TARGET_UBUNTU_VERSION} main"
+            cat <<EOF > "$srcfile"
+X-Repolib-Name: Pop_OS ${name}
+Enabled: yes
+Types: deb
+URIs: ${url}
+Suites: ${TARGET_UBUNTU_VERSION}
+Components: main
+Signed-By: ${keyring}
+EOF
+            echo "=====> Pop!_OS APT: added ${url} ${TARGET_UBUNTU_VERSION} main (${srcfile##*/})"
             [[ "$url" == "${POP_APT_ORIGIN_URL}/"* ]] && \
                 echo "  WARN  ${name}: using the origin server (CDN does not publish '${TARGET_UBUNTU_VERSION}'); downloads may be less reliable." >&2
             added_any=1
         else
             echo "  WARN  ${name} '${TARGET_UBUNTU_VERSION}' is unreachable on both ${POP_APT_URL} and ${POP_APT_ORIGIN_URL} — skipping this suite." >&2
+            # Write a disabled stub anyway: the pop-default-settings postinst
+            # greps this exact file unconditionally and kills the dpkg run if
+            # it is missing. "Enabled: no" keeps apt from ever using it, and
+            # the Signed-By line is what the postinst checks for.
+            cat <<EOF > "$srcfile"
+X-Repolib-Name: Pop_OS ${name}
+Enabled: no
+Types: deb
+URIs: ${POP_APT_URL}/${name}
+Suites: ${TARGET_UBUNTU_VERSION}
+Components: main
+Signed-By: ${keyring}
+EOF
         fi
     done
     if [[ "$added_any" -eq 0 ]]; then
