@@ -670,7 +670,11 @@ EOF
     fi
 
     if [[ "${TARGET_FIREFOX:-0}" == "1" ]]; then
-        apt-get install -y firefox
+        # The desktop metapackage may already have pulled in Ubuntu's
+        # epoch-versioned firefox stub (1:1snapX...) before the Mozilla pin
+        # existed; moving to Mozilla's epoch-less build is then a downgrade,
+        # and -y without --allow-downgrades aborts the build.
+        apt-get install -y --allow-downgrades firefox
     else
         echo "=====> Firefox: not pre-installed (Mozilla repo + pin above remain; apt install firefox when ready)"
     fi

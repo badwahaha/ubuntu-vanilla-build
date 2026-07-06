@@ -349,6 +349,7 @@ For advanced configurations, environment variables can be used instead of CLI fl
 - `TARGET_LIBREWOLF` - Set to `1` to pre-install LibreWolf.
 - `TARGET_FIREFOX` - Set to `1` to pre-install Firefox.
 - `TARGET_FIREFOX_ESR` - Set to `1` to pre-install Firefox ESR.
+- `TARGET_FIREFOX_POPOS` - Set to `1` to pre-install Firefox from the Pop!_OS repository (`build-popos.sh` only). This is the native deb System76 builds from Mozilla source ([pop-os/packaging-firefox](https://github.com/pop-os/packaging-firefox)) — a real browser, not Ubuntu's snap-transition stub; the build verifies the candidate comes from the Pop!_OS repos, is larger than 10 MB, and has no snapd dependency before installing. Mutually exclusive with `TARGET_FIREFOX`.
 - `TARGET_THUNDERBIRD` - Set to `1` to pre-install Thunderbird.
 
 ### Feature & Customization Variables
