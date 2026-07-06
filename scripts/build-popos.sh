@@ -363,7 +363,7 @@ function set_defaults() {
     export TARGET_MATE_PACKAGE="${TARGET_MATE_PACKAGE:-}"
     export TARGET_BROWSER="${TARGET_BROWSER:-}"
     export TARGET_BRAVE_CHANNEL="${TARGET_BRAVE_CHANNEL:-}"
-    # TARGET_LIBREWOLF, TARGET_FIREFOX, TARGET_FIREFOX_ESR, TARGET_THUNDERBIRD, TARGET_UBUNTU_STUDIO,
+    # TARGET_LIBREWOLF, TARGET_FIREFOX, TARGET_FIREFOX_ESR, TARGET_FIREFOX_POPOS, TARGET_THUNDERBIRD, TARGET_UBUNTU_STUDIO,
     # TARGET_PACSTALL: intentionally left unset here so that resolve_browser_selection(),
     # resolve_ubuntu_studio_choice(), and resolve_pacstall_choice() can distinguish
     # "user never specified" (unset) from "user explicitly set to 0/1" via ${VAR+x}.
@@ -530,6 +530,57 @@ function apt_install_available() {
 }
 
 # install_lightdm_desktop PKG...  — install desktop packages with xorg + lightdm + slick-greeter.
+# Pop!_OS publishes firefox as a real native deb built from Mozilla source
+# (github.com/pop-os/packaging-firefox, versions like 1:152.0.4), unlike
+# Ubuntu's archive "firefox", which is a ~70 kB transitional stub that only
+# installs the snap. Trust but verify before installing: the candidate must
+# download from the Pop!_OS repos, must not depend on snapd, and its .deb
+# must be larger than 10 MB.
+function install_firefox_from_popos() {
+    echo "=====> Firefox: installing the native build from the Pop!_OS repository"
+
+    # The always-on Mozilla APT pin (origin packages.mozilla.org, 1000) would
+    # otherwise make Mozilla's build the candidate. Pop's native build also
+    # carries an epoch (1:...), so it must stay the candidate on later
+    # upgrades too, or apt would treat a move back to Mozilla's epoch-less
+    # version as the upgrade path.
+    cat <<'EOF' > /etc/apt/preferences.d/firefox-popos
+Package: firefox firefox-locale-*
+Pin: release o=pop-os-release
+Pin-Priority: 1001
+EOF
+
+    local candidate uri size depends
+    candidate="$(apt-cache policy firefox | awk '/Candidate:/ {print $2; exit}')"
+    if [[ -z "$candidate" || "$candidate" == "(none)" ]]; then
+        >&2 echo "ERROR: the Pop!_OS repositories provide no firefox candidate for '${TARGET_UBUNTU_VERSION}'."
+        >&2 echo "       Re-run with TARGET_FIREFOX=1 to use Mozilla's APT build instead."
+        exit 1
+    fi
+    uri="$(apt-get install --reinstall --print-uris -y --allow-downgrades firefox 2>/dev/null \
+        | awk -F"'" '$2 ~ /\/firefox_/ {print $2; exit}')"
+    size="$(apt-cache show "firefox=${candidate}" 2>/dev/null | awk '/^Size:/ {print $2; exit}')"
+    depends="$(apt-cache show "firefox=${candidate}" 2>/dev/null | awk -F': ' '/^(Pre-)?Depends:/ {print $2}')"
+
+    if [[ "$uri" != "${POP_APT_URL}/"* && "$uri" != "${POP_APT_ORIGIN_URL}/"* ]]; then
+        >&2 echo "ERROR: firefox candidate '${candidate}' does not come from the Pop!_OS repos (URI: ${uri:-unknown})."
+        >&2 echo "       Refusing to install it as the Pop!_OS firefox."
+        exit 1
+    fi
+    if [[ "$depends" == *snap* ]]; then
+        >&2 echo "ERROR: firefox candidate '${candidate}' depends on snapd — a snap-transition stub, not the real browser."
+        exit 1
+    fi
+    if [[ ! "$size" =~ ^[0-9]+$ ]] || (( size <= 10485760 )); then
+        >&2 echo "ERROR: firefox candidate '${candidate}' .deb is ${size:-unknown} bytes (<= 10 MB) — too small to be the real browser."
+        exit 1
+    fi
+    echo "=====> Firefox ${candidate}: $(( size / 1024 / 1024 )) MB deb from ${uri%%/pool/*}, no snapd dependency — genuine native build."
+    # --allow-downgrades: harmless when firefox is absent or already Pop's,
+    # and required if something earlier pinned in a higher-versioned build.
+    apt-get install -y --allow-downgrades firefox
+}
+
 function install_lightdm_desktop() {
     apt-get install -y "$@" xorg lightdm slick-greeter
 }
@@ -712,8 +763,16 @@ EOF
         echo "=====> Librewolf: not pre-installed (Librewolf repo above remains; apt install librewolf when ready)"
     fi
 
-    if [[ "${TARGET_FIREFOX:-0}" == "1" ]]; then
-        apt-get install -y firefox
+    if [[ "${TARGET_FIREFOX_POPOS:-0}" == "1" ]]; then
+        install_firefox_from_popos
+    elif [[ "${TARGET_FIREFOX:-0}" == "1" ]]; then
+        # The desktop metapackage may already have pulled in Pop!_OS's native
+        # firefox (epoch 1:...), which versions higher than Mozilla's
+        # epoch-less APT build; switching to the pinned Mozilla origin is
+        # then a downgrade, and -y without --allow-downgrades aborts the
+        # build ("Packages were downgraded and -y was used without
+        # --allow-downgrades").
+        apt-get install -y --allow-downgrades firefox
     else
         echo "=====> Firefox: not pre-installed (Mozilla repo + pin above remain; apt install firefox when ready)"
     fi
@@ -858,6 +917,11 @@ function check_settings() {
     assert_bool_var TARGET_LIBREWOLF
     assert_bool_var TARGET_FIREFOX
     assert_bool_var TARGET_FIREFOX_ESR
+    assert_bool_var TARGET_FIREFOX_POPOS
+    if [[ "${TARGET_FIREFOX:-0}" == "1" && "${TARGET_FIREFOX_POPOS:-0}" == "1" ]]; then
+        >&2 echo "TARGET_FIREFOX and TARGET_FIREFOX_POPOS are both 1 — they install the same 'firefox' package from competing sources; pick one (Mozilla APT or Pop!_OS repo)."
+        exit 1
+    fi
     assert_bool_var TARGET_THUNDERBIRD
     assert_bool_var TARGET_UBUNTU_STUDIO
     assert_bool_var TARGET_PACSTALL 1
@@ -911,6 +975,7 @@ function host_help() {
     echo "  TARGET_LIBREWOLF=0|1                    Pre-install Librewolf (optional; default 0; repo always added)"
     echo "  TARGET_FIREFOX=0|1                       Pre-install Firefox from Mozilla APT (optional; default 0; repo always added)"
     echo "  TARGET_FIREFOX_ESR=0|1                   Pre-install Firefox ESR from Mozilla PPA (optional; default 0; PPA always added)"
+    echo "  TARGET_FIREFOX_POPOS=0|1                 Pre-install Firefox as Pop!_OS's native deb (optional; default 0; verified real browser, not a snap stub)"
     echo "  TARGET_THUNDERBIRD=0|1                   Pre-install Thunderbird from Mozilla PPA (optional; default 0; PPA always added)"
     echo "  TARGET_UBUNTU_STUDIO=0|1                 Ubuntu Studio metapackages (optional; default 0)"
     echo "  TARGET_SYSTEM76_DRIVER=0|1               Pre-install system76-driver for System76 hardware (optional; default 0)"
@@ -926,6 +991,7 @@ function host_help() {
     echo "  --librewolf / --no-librewolf             Pre-install Librewolf (APT repo always configured)"
     echo "  --firefox / --no-firefox               Pre-install Firefox (Mozilla APT always configured)"
     echo "  --firefox-esr / --no-firefox-esr       Pre-install Firefox ESR (Mozilla PPA always configured)"
+    echo "  --firefox-popos / --no-firefox-popos   Pre-install Firefox from the Pop!_OS repository (native deb, not a snap stub)"
     echo "  --thunderbird / --no-thunderbird       Pre-install Thunderbird (Mozilla PPA always configured)"
     echo "  --ubuntu-studio / --no-ubuntu-studio     Ubuntu Studio metapackage set (heavy)"
     echo "  --pacstall / --no-pacstall               Install Pacstall package manager (default: yes)"
@@ -1187,6 +1253,7 @@ function run_chroot() {
         TARGET_LIBREWOLF="${TARGET_LIBREWOLF:-0}" \
         TARGET_FIREFOX="${TARGET_FIREFOX:-0}" \
         TARGET_FIREFOX_ESR="${TARGET_FIREFOX_ESR:-0}" \
+        TARGET_FIREFOX_POPOS="${TARGET_FIREFOX_POPOS:-0}" \
         TARGET_THUNDERBIRD="${TARGET_THUNDERBIRD:-0}" \
         TARGET_UBUNTU_STUDIO="${TARGET_UBUNTU_STUDIO:-0}" \
         TARGET_PACSTALL="${TARGET_PACSTALL:-1}" \
@@ -1753,12 +1820,12 @@ function interactive_librewolf_pick() {
 
 function interactive_firefox_pick() {
     if ! prompts_enabled; then
-        ui_err "No terminal is available. Set TARGET_FIREFOX=0|1 and TARGET_FIREFOX_ESR=0|1."
+        ui_err "No terminal is available. Set TARGET_FIREFOX=0|1, TARGET_FIREFOX_ESR=0|1 and TARGET_FIREFOX_POPOS=0|1."
         exit 1
     fi
 
     ui_heading "Firefox Browser"
-    echo "    1) Firefox Release"
+    echo "    1) Firefox Release (Mozilla APT)"
     echo "       Official release from Mozilla's repository (firefox package)"
     echo "       This is the standard Firefox browser with the latest features"
     echo "       Includes the newest web standards, performance improvements, and UI updates"
@@ -1773,34 +1840,50 @@ function interactive_firefox_pick() {
     echo "       Ideal for users who prefer stability and consistency over new features"
     echo "       Recommended for organizations that need standardized browser environments"
     echo ""
-    echo "    3) Skip Firefox [default]"
+    echo "    3) Firefox from the Pop!_OS repository"
+    echo "       The native deb System76 builds from Mozilla source (pop-os/packaging-firefox)"
+    echo "       Same firefox package stock Pop!_OS ships — a real browser, NOT Ubuntu's"
+    echo "       snap-transition stub; verified at install time (deb > 10 MB, no snapd dependency)"
+    echo "       Updates arrive through the Pop!_OS release repository together with the system"
+    echo "       Ideal if you want the browser exactly as Pop!_OS ships it"
+    echo ""
+    echo "    4) Skip Firefox [default]"
     echo "       Do not install Firefox browser"
     echo "       Choose this if you prefer another browser or don't need Firefox"
     echo ""
 
     local choice
     while true; do
-        read -r -p "  Firefox [1/2/3, Enter=3]: " choice
+        read -r -p "  Firefox [1/2/3/4, Enter=4]: " choice
         case "${choice,,}" in
             1|r|release)
                 export TARGET_FIREFOX="1"
                 export TARGET_FIREFOX_ESR="0"
+                export TARGET_FIREFOX_POPOS="0"
                 break
                 ;;
             2|e|esr)
                 export TARGET_FIREFOX="0"
                 export TARGET_FIREFOX_ESR="1"
+                export TARGET_FIREFOX_POPOS="0"
                 break
                 ;;
-            ""|3|n|none|skip)
+            3|p|pop|popos|pop-os)
                 export TARGET_FIREFOX="0"
                 export TARGET_FIREFOX_ESR="0"
+                export TARGET_FIREFOX_POPOS="1"
+                break
+                ;;
+            ""|4|n|none|skip)
+                export TARGET_FIREFOX="0"
+                export TARGET_FIREFOX_ESR="0"
+                export TARGET_FIREFOX_POPOS="0"
                 break
                 ;;
             *) ui_warn "Invalid selection: '$choice'." ;;
         esac
     done
-    ui_ok "TARGET_FIREFOX=$TARGET_FIREFOX  TARGET_FIREFOX_ESR=$TARGET_FIREFOX_ESR"
+    ui_ok "TARGET_FIREFOX=$TARGET_FIREFOX  TARGET_FIREFOX_ESR=$TARGET_FIREFOX_ESR  TARGET_FIREFOX_POPOS=$TARGET_FIREFOX_POPOS"
 }
 
 function interactive_thunderbird_pick() {
@@ -1832,12 +1915,9 @@ function resolve_browser_selection() {
         fi
     fi
 
-    if [[ -z "${TARGET_FIREFOX+x}" || -z "${TARGET_FIREFOX_ESR+x}" ]]; then
+    if [[ -z "${TARGET_FIREFOX+x}" && -z "${TARGET_FIREFOX_ESR+x}" && -z "${TARGET_FIREFOX_POPOS+x}" ]]; then
         if prompts_enabled; then
             interactive_firefox_pick
-        else
-            export TARGET_FIREFOX="${TARGET_FIREFOX:-0}"
-            export TARGET_FIREFOX_ESR="${TARGET_FIREFOX_ESR:-0}"
         fi
     fi
 
@@ -1852,6 +1932,7 @@ function resolve_browser_selection() {
     export TARGET_LIBREWOLF="${TARGET_LIBREWOLF:-0}"
     export TARGET_FIREFOX="${TARGET_FIREFOX:-0}"
     export TARGET_FIREFOX_ESR="${TARGET_FIREFOX_ESR:-0}"
+    export TARGET_FIREFOX_POPOS="${TARGET_FIREFOX_POPOS:-0}"
     export TARGET_THUNDERBIRD="${TARGET_THUNDERBIRD:-0}"
 }
 
@@ -2122,6 +2203,7 @@ function print_build_summary() {
     [[ "${TARGET_LIBREWOLF:-0}" == "1" ]] && _bs="${_bs:+${_bs}; }Librewolf"
     [[ "${TARGET_FIREFOX:-0}" == "1" ]] && _bs="${_bs:+${_bs}; }Firefox"
     [[ "${TARGET_FIREFOX_ESR:-0}" == "1" ]] && _bs="${_bs:+${_bs}; }Firefox ESR"
+    [[ "${TARGET_FIREFOX_POPOS:-0}" == "1" ]] && _bs="${_bs:+${_bs}; }Firefox (Pop!_OS repo)"
     [[ "${TARGET_THUNDERBIRD:-0}" == "1" ]] && _bs="${_bs:+${_bs}; }Thunderbird"
     ui_kv "Browsers"       "${_bs}"
     ui_kv "Ubuntu Studio"  "${TARGET_UBUNTU_STUDIO:-0}"
@@ -2247,6 +2329,10 @@ function generate_config_wizard() {
     read -r -p "  Pre-install Firefox ESR? (0/1) [0]: " _firefox_esr
     _firefox_esr="${_firefox_esr:-0}"
 
+    # Firefox from the Pop!_OS repository (native deb)
+    read -r -p "  Pre-install Firefox from the Pop!_OS repo (native deb, not a snap stub)? (0/1) [0]: " _firefox_popos
+    _firefox_popos="${_firefox_popos:-0}"
+
     # Thunderbird
     read -r -p "  Pre-install Thunderbird? (0/1) [0]: " _thunderbird
     _thunderbird="${_thunderbird:-0}"
@@ -2309,6 +2395,7 @@ TARGET_BRAVE_CHANNEL=${_brave}
 TARGET_LIBREWOLF=${_librewolf}
 TARGET_FIREFOX=${_firefox}
 TARGET_FIREFOX_ESR=${_firefox_esr}
+TARGET_FIREFOX_POPOS=${_firefox_popos}
 TARGET_THUNDERBIRD=${_thunderbird}
 
 # --- Package Managers ---
@@ -2381,7 +2468,7 @@ function load_config_file() {
                 TARGET_KERNEL_PACKAGE|TARGET_DESKTOP|TARGET_KDE_PACKAGE|\
                 TARGET_MATE_PACKAGE|TARGET_MATE_EXTRAS|TARGET_BROWSER|\
                 TARGET_BRAVE_CHANNEL|TARGET_LIBREWOLF|TARGET_FIREFOX|\
-                TARGET_FIREFOX_ESR|TARGET_THUNDERBIRD|TARGET_UBUNTU_STUDIO|\
+                TARGET_FIREFOX_ESR|TARGET_FIREFOX_POPOS|TARGET_THUNDERBIRD|TARGET_UBUNTU_STUDIO|\
                 TARGET_PACSTALL|TARGET_SYSTEM76_DRIVER|TARGET_GNOME_INSTALL_RECOMMENDS|TARGET_NAME|\
                 TARGET_LOCALE|TARGET_KEYBOARD_LAYOUT|TARGET_KEYBOARD_VARIANT|\
                 TARGET_INSTALLER|TARGET_PACKAGE_REMOVE|\
@@ -2415,6 +2502,8 @@ function host_main() {
     local cli_firefox=0
     local cli_firefox_esr_set=0
     local cli_firefox_esr=0
+    local cli_firefox_popos_set=0
+    local cli_firefox_popos=0
     local cli_thunderbird_set=0
     local cli_thunderbird=0
     local cli_ubuntustudio_set=0
@@ -2544,6 +2633,16 @@ function host_main() {
             --no-firefox-esr)
                 cli_firefox_esr_set=1
                 cli_firefox_esr=0
+                shift
+                ;;
+            --firefox-popos)
+                cli_firefox_popos_set=1
+                cli_firefox_popos=1
+                shift
+                ;;
+            --no-firefox-popos)
+                cli_firefox_popos_set=1
+                cli_firefox_popos=0
                 shift
                 ;;
             --thunderbird)
@@ -2745,6 +2844,9 @@ function host_main() {
     fi
     if [[ "$cli_firefox_esr_set" -eq 1 ]]; then
         export TARGET_FIREFOX_ESR="$cli_firefox_esr"
+    fi
+    if [[ "$cli_firefox_popos_set" -eq 1 ]]; then
+        export TARGET_FIREFOX_POPOS="$cli_firefox_popos"
     fi
     if [[ "$cli_thunderbird_set" -eq 1 ]]; then
         export TARGET_THUNDERBIRD="$cli_thunderbird"
@@ -3332,6 +3434,7 @@ function chroot_main() {
     export TARGET_LIBREWOLF="${TARGET_LIBREWOLF:-0}"
     export TARGET_FIREFOX="${TARGET_FIREFOX:-0}"
     export TARGET_FIREFOX_ESR="${TARGET_FIREFOX_ESR:-0}"
+    export TARGET_FIREFOX_POPOS="${TARGET_FIREFOX_POPOS:-0}"
     export TARGET_THUNDERBIRD="${TARGET_THUNDERBIRD:-0}"
     export TARGET_UBUNTU_STUDIO="${TARGET_UBUNTU_STUDIO:-0}"
     export TARGET_SYSTEM76_DRIVER="${TARGET_SYSTEM76_DRIVER:-0}"
