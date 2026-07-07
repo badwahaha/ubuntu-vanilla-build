@@ -11,6 +11,7 @@ This project is designed for:
 ## What's New
 
 Recent improvements include:
+- **Cloud & VM Disk Images**: Four new builders produce ready-to-use disk images instead of a live-installer ISO — `scripts/build-img.sh` (Ubuntu cloud `.img`), `scripts/build-vm.sh` (Ubuntu VM image with QCOW2/VDI/VMDK/VHDX exports), and their Pop!_OS counterparts `scripts/build-popos-img.sh` / `scripts/build-popos-vm.sh`. Choose UEFI or legacy BIOS, disk size 32/64/128 GB or custom (fixed layout: 512 MB ESP + 4 GB swap + root gets the rest), a desktop-ready or CLI/TTY-only profile, and whether to bake user credentials in at build time or create the user after deployment (cloud-init for cloud images, a first-boot console wizard for VM images). See [Building Cloud & VM Disk Images](#building-cloud--vm-disk-images). `start-here.sh` now also asks which output type to build (`--output=iso|img|vm`).
 - **Pop!_OS ISO Variant**: `scripts/build-popos.sh` builds a Pop!_OS ISO from the official Pop!_OS APT repositories (staging excluded) — see [Building Pop!_OS ISOs](#building-popos-isos). `start-here.sh` now asks which distro to build (Ubuntu or Pop!_OS).
 - **Startup Mode Selection**: When run on a terminal without an explicit mode, `build.sh` first asks whether to build in **Basic** (default, guided prompts) or **Advanced** mode — an alternative to passing `--advanced`.
 - **Build Hooks (Modloader)**: Drop `.sh` scripts into `scripts/hooks/pre-chroot/` and `scripts/hooks/chroot/` to customize the build — scripts run in sorted filename order, like a game modloader.
@@ -100,6 +101,51 @@ sudo apt install cosmic-session
 ```
 
 Then log out and pick the **COSMIC** session from the session menu on the login screen. For the full Pop!_OS desktop stack instead, install `pop-desktop`. (The build also prints this note at the end of every noble/resolute Pop!_OS build.)
+
+---
+
+## Building Cloud & VM Disk Images
+
+Besides the live-installer ISOs, four builders produce **ready-to-use disk images** — no installer involved; the image boots straight into a configured system:
+
+| Script | Distro | Output |
+| --- | --- | --- |
+| `scripts/build-img.sh` | Ubuntu | Cloud image: raw `.img` for deployment to cloud VMs |
+| `scripts/build-vm.sh` | Ubuntu | VM image: raw `.img` + QCOW2 / VDI / VMDK / VHDX exports |
+| `scripts/build-popos-img.sh` | Pop!_OS | Cloud image (Pop!_OS repos, staging excluded) |
+| `scripts/build-popos-vm.sh` | Pop!_OS | VM image (Pop!_OS repos, staging excluded) |
+
+They are copies of `build.sh` / `build-popos.sh`: same stages up to `run_chroot` (same desktops, browsers, Pacstall, hooks, basic/advanced modes, config files), but the final stage is `build_disk_image` instead of `build_iso`.
+
+### Image-specific choices (prompted interactively, or via flags)
+
+- **Firmware** — `--firmware=uefi|bios` (default `uefi`). UEFI uses GPT with a 512 MB EFI System Partition; BIOS uses GPT with a 1 MiB BIOS boot partition *plus* the same 512 MB ESP (so the disk can later be switched to UEFI).
+- **Disk size** — `--disk-size=32|64|128|<GB>` (default `32`, minimum 10). Fixed layout: **ESP 512 MB + swap 4 GB + root = all remaining space** (a 32 GB image leaves ~27.5 GB for root). The `.img` is written sparse, so it only occupies as much host disk as it actually contains.
+- **Profile** — `--profile=desktop|cli`. `desktop` is a desktop-ready image (you pick the desktop environment exactly like the ISO builders); `cli` is a CLI/TTY-only image with no desktop stack, GUI browsers, or Flatpak.
+- **User account** — `--user-mode=build|deploy`:
+  - `build` bakes a username + password into the image during the build (`--username`, `--password`, optional `--fullname` and `--hostname`; prompted on a TTY if omitted). On cloud images the baked account also becomes cloud-init's default user, so provider-injected SSH keys land on it.
+  - `deploy` (cloud default) leaves user creation to **cloud-init** at deploy time; on VM images it installs a **first-boot wizard** that asks for username/password/hostname on the VM console the first time it starts.
+- **VM export formats** (`build-vm.sh` / `build-popos-vm.sh` only) — `--formats=qcow2,vdi,vmdk,vhdx|all|none` (default `qcow2`; the raw `.img` is always kept). Conversion is done with `qemu-img` (`qemu-utils` is installed on the host automatically).
+
+Cloud images always include `cloud-init` + `cloud-guest-utils` (growpart), a `ttyS0` serial console on the GRUB command line, and default `openssh-server` to **yes**. Each image plus its exports get `.sha1`/`.sha256` checksum files, like the ISOs.
+
+### Examples
+
+```bash
+# Interactive (asks distro + output type):
+./start-here.sh                       # pick "Cloud image" or "VM image"
+./start-here.sh --distro=popos --output=vm
+
+# Unattended Ubuntu cloud image, CLI-only, 64 GB, UEFI, user created by cloud-init:
+cd scripts
+./build-img.sh --advanced --no-interactive --release=noble --kernel=generic \
+    --profile=cli --firmware=uefi --disk-size=64 -
+
+# Ubuntu VM image with a baked-in account, exported to QCOW2 + VirtualBox VDI:
+./build-vm.sh --release=noble --kernel=generic --profile=desktop --desktop=xfce \
+    --firmware=uefi --disk-size=32 --user-mode=build --username=alice \
+    --password='secret' --hostname=xfce-vm --formats=qcow2,vdi -
+```
 
 ---
 

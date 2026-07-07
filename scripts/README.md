@@ -1,11 +1,15 @@
 # Build Scripts Reference
 
-This directory contains the core compilation and configuration scripts used to assemble the custom bootable live ISOs:
+This directory contains the core compilation and configuration scripts used to assemble the custom bootable live ISOs and ready-to-use disk images:
 
 - **`build.sh`** — builds a vanilla **Ubuntu** ISO (Calamares config in `calamares/`).
 - **`build-popos.sh`** — builds a **Pop!_OS** ISO from the Pop!_OS repositories (Calamares config in `calamares-popos/`).
+- **`build-img.sh`** / **`build-popos-img.sh`** — build a ready-to-deploy **cloud disk image** (raw `.img` with cloud-init) for Ubuntu / Pop!_OS.
+- **`build-vm.sh`** / **`build-popos-vm.sh`** — build a ready-to-use **VM disk image** (raw `.img` plus QCOW2/VDI/VMDK/VHDX exports via `qemu-img`) for Ubuntu / Pop!_OS.
 
-Both share the same command syntax, stages, options, and hooks. The repository-root `start-here.sh` asks which one to run (or pass `--distro=ubuntu|popos`).
+All six share the same command syntax, stages, options, and hooks. The repository-root `start-here.sh` asks which one to run (or pass `--distro=ubuntu|popos` and `--output=iso|img|vm`).
+
+The image builders (`*-img.sh`, `*-vm.sh`) replace the ISO stage with a `build_disk_image` stage and add these choices: firmware `--firmware=uefi|bios` (UEFI: GPT + 512 MB ESP; BIOS: GPT + 1 MiB BIOS boot partition + the same ESP), size `--disk-size=32|64|128|<GB>` (fixed layout: ESP 512 MB + swap 4 GB + root = rest), profile `--profile=desktop|cli` (desktop-ready or CLI/TTY-only), and user account `--user-mode=build|deploy` (bake `--username`/`--password` in at build time, or create the user after deployment — cloud-init on cloud images, a first-boot console wizard on VM images). VM builders also take `--formats=qcow2,vdi,vmdk,vhdx|all|none`. Each script keeps its own workspace (`workspace-img/`, `workspace-vm/`, `workspace-popos-img/`, `workspace-popos-vm/`) and config file (`build-img.cfg`, `build-vm.cfg`, `build-popos-img.cfg`, `build-popos-vm.cfg`), so they never collide with the ISO builders. See the repository-root README section “Building Cloud & VM Disk Images” for details and examples.
 
 ---
 
