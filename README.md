@@ -355,7 +355,7 @@ For advanced configurations, environment variables can be used instead of CLI fl
 ### Feature & Customization Variables
 - `TARGET_UBUNTU_STUDIO` - Set to `1` to include Ubuntu Studio packages.
 - `TARGET_FWUPD` - Set to `1` to pre-install `fwupd` as the last build step (default: `0`). Either way, fwupd is banned via an APT pin for the whole build so nothing can pull it in; the pin is removed before the ISO is finalized, so `sudo apt install fwupd` always works on the installed system.
-- `TARGET_OPENSSH_SERVER` - Set to `1` to pre-install `openssh-server` (default: `0`).
+- `TARGET_OPENSSH_SERVER` - Set to `1` to pre-install `openssh-server` (default: `0`). SSH host keys are never shipped in the image: they are wiped at the end of the build and regenerated on first boot by a oneshot systemd unit (`ssh-keygen -A`), so every installation gets a unique host identity.
 - `TARGET_COCKPIT` - Set to `1` to pre-install [Cockpit](https://cockpit-project.org/) from the `${release}-backports` pocket for the latest version, as recommended upstream (default: `0`). The backports pocket is always configured, so it can also be installed later with `sudo apt install -t <release>-backports cockpit`.
 - `TARGET_GNOME_INSTALL_RECOMMENDS` - Set to `1` to install GNOME with recommends.
 - `TARGET_PACSTALL` - Set to `0` to skip Pacstall installation (default: `1`).
