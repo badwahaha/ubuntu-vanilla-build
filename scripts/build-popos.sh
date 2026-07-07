@@ -1137,6 +1137,53 @@ function host_help() {
     echo "  If end_cmd is omitted (with a start_cmd), stop after the selected start_cmd"
     echo "  Use '-' by itself to run all commands explicitly"
     echo
+    echo "Build stages (HOST_CMD — run in order; run one alone or a range with '-'):"
+    echo "  setup_host       Install host build tools (debootstrap, squashfs-tools,"
+    echo "                   xorriso) and prepare a fresh workspace directory."
+    echo "  debootstrap      Bootstrap the minimal base (--variant=minbase) from the"
+    echo "                   Ubuntu mirror into <workspace>/chroot. Advanced mode reuses"
+    echo "                   an existing chroot instead of re-bootstrapping."
+    echo "  run_chroot       Bind-mount /dev /run /proc /sys, copy this script + the"
+    echo "                   Calamares config into the chroot, and run the chroot phase"
+    echo "                   inside it (sub-stages below)."
+    echo "  build_iso        Compress the chroot into casper/filesystem.squashfs and build"
+    echo "                   the hybrid BIOS+UEFI ISO with xorriso; write SHA-1/SHA-256"
+    echo "                   checksums and clean the workspace."
+    echo
+    echo "Chroot phase sub-stages (CHROOT_CMD — run automatically inside run_chroot):"
+    echo "  chroot_prepare   Ubuntu APT sources + the Pop!_OS repos (release, proprietary,"
+    echo "                   release-ubuntu; staging excluded) with the Pop!_OS keyring and"
+    echo "                   scoped pin; switch to Pop!_OS base-files; snapd/fwupd pins."
+    echo "  install_pkg      Upgrade the base; install the kernel (System76 or Ubuntu HWE),"
+    echo "                   GRUB, the live installer (Calamares or Ubiquity), the chosen"
+    echo "                   desktop, browsers, optional System76 driver, locale/keyboard."
+    echo "  build_image      Assemble the live /image tree: kernel + initrd, GRUB configs,"
+    echo "                   signed EFI binaries, Memtest86+, package manifests, md5sums."
+    echo "  finish_up        Cleanup: remove SSH host keys, truncate machine-id, drop the"
+    echo "                   build-time fwupd pin, clear /tmp."
+    echo
+    echo "Configuration precedence (highest wins):"
+    echo "  CLI flags  >  config file (--config, advanced mode)  >  environment variables"
+    echo "  >  interactive prompts (on a TTY)  >  the built-in defaults shown above."
+    echo
+    echo "Hooks (modloader): executable *.sh files in scripts/hooks/pre-chroot/ run on the"
+    echo "  host before entering the chroot; scripts/hooks/chroot/ run inside the chroot."
+    echo "  Both run in sorted-filename order. Override the directory with --hooks-dir=PATH."
+    echo
+    echo "Output:  <output-dir>/<name>.iso  plus  <name>.iso.sha1  and  <name>.iso.sha256"
+    echo "  Default <name>: popos-<version>-<desktop>-amd64-<UTC-timestamp>."
+    echo "  Default output dir: your home directory (UVB_OUTPUT_DIR overrides)."
+    echo "  Workspace: <parent>/workspace-popos (basic parent /var/cache/ubuntu-vanilla-build,"
+    echo "  advanced ~/uvb-workspace); separate from Ubuntu builds so they never collide."
+    echo
+    echo "Examples:"
+    echo "  $0                                     Guided interactive build (all stages)"
+    echo "  $0 --release=noble --kernel=system76 --desktop=gnome -"
+    echo "  $0 --release=noble --kernel=generic --system76-driver --firefox-popos -"
+    echo "  $0 --advanced --config=build-popos.cfg --no-interactive -   Unattended config"
+    echo "  $0 --advanced run_chroot               Re-run only the chroot phase (advanced)"
+    echo "  $0 debootstrap - build_iso             Run debootstrap through the ISO build"
+    echo
     exit 0
 }
 

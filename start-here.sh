@@ -3,6 +3,67 @@
 # Exit immediately if a command exits with a non-zero status
 set -euo pipefail
 
+# ── Help ─────────────────────────────────────────────────────────────
+# start-here.sh is a thin dispatcher: it picks a distro (Ubuntu / Pop!_OS)
+# and an output type (ISO / cloud image / VM image), then runs the matching
+# builder in scripts/ with every other argument passed straight through.
+# --help is handled here (before any sudo/dependency work) and explains the
+# dispatcher; per-builder options are shown by each builder's own --help.
+show_start_help() {
+    local self="$0"
+    cat <<EOF
+start-here.sh — guided launcher for the Ubuntu / Pop!_OS image builders.
+
+It asks two things (or takes them as flags), then hands off to the matching
+script in scripts/ with all remaining arguments passed through unchanged.
+
+Usage:
+  ${self} [--distro=ubuntu|popos] [--output=iso|img|vm] [builder options...]
+  ${self} --create-config [--distro=...] [--output=...]
+  ${self} --help
+
+Dispatcher options:
+  --distro=ubuntu|popos     Which distribution to build (default: asked on a TTY,
+                            else ubuntu). Env: BUILD_DISTRO.
+  --output=iso|img|vm       What to produce (default: asked on a TTY, else iso).
+                            Env: BUILD_OUTPUT.
+                              iso  Live-installer ISO (USB / DVD / PXE / VM boot)
+                              img  Cloud disk image: raw .img for cloud VMs (cloud-init)
+                              vm   VM disk image: raw .img + QCOW2/VDI/VMDK/VHDX exports
+  --create-config           Only run the selected builder's config wizard
+    (--generate-config)     (no sudo, no host dependencies installed).
+  -h, --help                Show this help and exit.
+
+distro + output map to these builders (run one directly if you prefer):
+  ubuntu iso  ->  scripts/build.sh            popos iso  ->  scripts/build-popos.sh
+  ubuntu img  ->  scripts/build-img.sh        popos img  ->  scripts/build-popos-img.sh
+  ubuntu vm   ->  scripts/build-vm.sh         popos vm   ->  scripts/build-popos-vm.sh
+
+All other options (--release, --kernel, --desktop, browsers, and for images
+--firmware, --disk-size, --profile, --network, --alloc-tool, --user-mode,
+--formats, ...) belong to the builders and are forwarded verbatim. For the full,
+output-specific list run the matching builder's own help, e.g.:
+  scripts/build.sh --help          (ISO options + stages)
+  scripts/build-img.sh --help      (cloud image options + stages)
+  scripts/build-vm.sh --help       (VM image options + stages)
+
+Examples:
+  ${self}                                     Fully guided (asks distro + output)
+  ${self} --distro=popos --output=vm          Pop!_OS VM image, then guided prompts
+  ${self} --output=img --release=noble --profile=cli -
+  ${self} --create-config --distro=ubuntu --output=vm
+EOF
+}
+
+for arg in "$@"; do
+    case "$arg" in
+        -h|--help)
+            show_start_help
+            exit 0
+            ;;
+    esac
+done
+
 # Clear the terminal screen (if stdout is a TTY)
 if [[ -t 1 ]]; then
     clear || true
