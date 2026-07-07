@@ -7,14 +7,17 @@
 # installed, so provider metadata, SSH key injection, and root filesystem
 # growth work out of the box.
 #
-#   * Firmware: UEFI (GPT + 512 MB EFI System Partition) or legacy BIOS
-#     (GPT + 1 MiB BIOS boot partition + the same 512 MB ESP), chosen at
-#     build time.
+#   * Firmware: UEFI-only (GPT + 512 MB EFI System Partition) or Hybrid
+#     (BIOS + UEFI on one disk: 1 MiB BIOS boot partition + the same ESP,
+#     GRUB installed for both targets), chosen at build time.
 #   * Partition layout: ESP 512 MB, swap 4 GB, root = all remaining space
 #     (a 32 GB image leaves ~27.5 GB for root). Image size: 32 / 64 / 128 GB
 #     or a custom size.
 #   * Profile: desktop-ready (pick any desktop the ISO builder offers) or
-#     CLI/TTY-only (no desktop stack at all).
+#     CLI/TTY-only (no desktop stack at all; network stack selectable:
+#     netplan + systemd-networkd or NetworkManager).
+#   * Allocation: the raw .img is created with truncate (sparse,
+#     default), fallocate (preallocated), or dd (fully zero-written).
 #   * Credentials: bake a username + password into the image during the
 #     build, or leave user creation to cloud-init at deploy time (default).
 
@@ -364,6 +367,13 @@ function set_defaults() {
     export TARGET_USER_PASSWORD="${TARGET_USER_PASSWORD:-}"
     export TARGET_USER_FULLNAME="${TARGET_USER_FULLNAME:-}"
     export TARGET_HOSTNAME="${TARGET_HOSTNAME:-}"
+    # TARGET_NETWORK_STACK: network-manager or networkd (netplan backend).
+    # Desktop images always use NetworkManager; CLI images default to
+    # systemd-networkd but can opt into NetworkManager.
+    export TARGET_NETWORK_STACK="${TARGET_NETWORK_STACK:-}"
+    # TARGET_IMG_ALLOC: how the raw .img file is created — truncate (sparse),
+    # fallocate (preallocated), or dd (fully zero-written).
+    export TARGET_IMG_ALLOC="${TARGET_IMG_ALLOC:-}"
     export TARGET_VM_FORMATS="${TARGET_VM_FORMATS:-}"
 }
 
@@ -946,10 +956,26 @@ function check_settings() {
         assert_bool_var TARGET_MATE_EXTRAS
     fi
     case "${TARGET_FIRMWARE:-uefi}" in
-        uefi|bios)
+        uefi|hybrid)
             ;;
         *)
-            >&2 echo "TARGET_FIRMWARE must be uefi or bios (got: '${TARGET_FIRMWARE:-}')."
+            >&2 echo "TARGET_FIRMWARE must be uefi (UEFI-only) or hybrid (BIOS + UEFI; got: '${TARGET_FIRMWARE:-}')."
+            exit 1
+            ;;
+    esac
+    case "${TARGET_NETWORK_STACK:-networkd}" in
+        networkd|network-manager)
+            ;;
+        *)
+            >&2 echo "TARGET_NETWORK_STACK must be networkd or network-manager (got: '${TARGET_NETWORK_STACK:-}')."
+            exit 1
+            ;;
+    esac
+    case "${TARGET_IMG_ALLOC:-truncate}" in
+        truncate|fallocate|dd)
+            ;;
+        *)
+            >&2 echo "TARGET_IMG_ALLOC must be truncate, fallocate, or dd (got: '${TARGET_IMG_ALLOC:-}')."
             exit 1
             ;;
     esac
@@ -1029,7 +1055,9 @@ function host_help() {
     echo "  --fwupd / --no-fwupd                     Pre-install fwupd (default: no; blocked during the build either way)"
     echo "  --openssh-server / --no-openssh-server   Pre-install openssh-server (default: no)"
     echo "  --cockpit / --no-cockpit                 Pre-install Cockpit from backports (default: no)"
-    echo "  --firmware=uefi|bios                     Boot firmware for the image (default uefi)"
+    echo "  --firmware=uefi|hybrid                   uefi = UEFI-only; hybrid = BIOS + UEFI on one disk (default uefi)"
+    echo "  --network=networkd|network-manager       Network stack for CLI images (default networkd; desktop images always use NetworkManager)"
+    echo "  --alloc-tool=truncate|fallocate|dd       How the raw .img is created: sparse, preallocated, or dd zero-written (default truncate)"
     echo "  --disk-size=32|64|128|<GB>               Disk image size in GB (default 32; minimum 10)"
     echo "  --profile=desktop|cli                    Desktop-ready or CLI/TTY-only image (default desktop)"
     echo "  --user-mode=build|deploy                 build = bake credentials now; deploy = create the user after deployment"
@@ -1307,6 +1335,7 @@ function run_chroot() {
         TARGET_GNOME_INSTALL_RECOMMENDS="${TARGET_GNOME_INSTALL_RECOMMENDS:-0}" \
         TARGET_NAME="${TARGET_NAME}" \
         TARGET_IMAGE_PROFILE="${TARGET_IMAGE_PROFILE:-desktop}" \
+        TARGET_NETWORK_STACK="${TARGET_NETWORK_STACK:-}" \
         UVB_IMAGE_KIND="${UVB_IMAGE_KIND}" \
         /root/build.sh --chroot-internal -
 
@@ -1545,16 +1574,36 @@ function build_disk_image() {
 
     ensure_workspace_root
     host_priv rm -f "$img_path"
-    echo "=====> allocating ${size_gb} GB sparse image: $img_path"
-    host_priv truncate -s "${size_gb}G" "$img_path"
+    local alloc="${TARGET_IMG_ALLOC:-truncate}"
+    echo "=====> allocating ${size_gb} GB image (tool: ${alloc}): $img_path"
+    case "$alloc" in
+        truncate)
+            # Sparse file: instant, occupies only the data actually written.
+            host_priv truncate -s "${size_gb}G" "$img_path"
+            ;;
+        fallocate)
+            # Preallocated extents: the full size is reserved up front.
+            host_priv fallocate -l "${size_gb}G" "$img_path"
+            ;;
+        dd)
+            # Fully zero-written: slowest, maximum compatibility.
+            host_priv dd if=/dev/zero of="$img_path" bs=1M count="$((size_gb * 1024))" status=progress
+            ;;
+        *)
+            >&2 echo "Internal error: TARGET_IMG_ALLOC='${alloc}' (expected truncate, fallocate, or dd)."
+            exit 1
+            ;;
+    esac
 
     IMG_LOOP_DEV="$(host_priv losetup --show -f -P "$img_path")"
     echo "=====> loop device: $IMG_LOOP_DEV"
 
     # GPT partition table.
-    #   UEFI: 1 = ESP 512 MB, 2 = swap 4 GB, 3 = root (rest)
-    #   BIOS: 1 = BIOS boot 1 MiB (GRUB core.img), 2 = ESP 512 MB (kept so the
-    #         disk can later be switched to UEFI), 3 = swap 4 GB, 4 = root
+    #   UEFI-only: 1 = ESP 512 MB, 2 = swap 4 GB, 3 = root (rest)
+    #   Hybrid:    1 = BIOS boot 1 MiB (GRUB core.img), 2 = ESP 512 MB,
+    #              3 = swap 4 GB, 4 = root — GRUB is installed for BOTH the
+    #              i386-pc (BIOS) and x86_64-efi targets, so the same disk
+    #              boots on legacy BIOS and UEFI firmware alike
     local p_esp p_swap p_root
     if [[ "$firmware" == "uefi" ]]; then
         host_priv parted -s "$IMG_LOOP_DEV" \
@@ -1636,7 +1685,7 @@ EOF
     # deploy time. VM images: static netplan defaults baked in here.
     if [[ "$UVB_IMAGE_KIND" != "cloud" ]]; then
         host_priv mkdir -p "$IMG_MOUNT_DIR/etc/netplan"
-        if [[ "${TARGET_IMAGE_PROFILE:-desktop}" == "desktop" ]]; then
+        if [[ "${TARGET_NETWORK_STACK:-network-manager}" == "network-manager" ]]; then
             host_priv tee "$IMG_MOUNT_DIR/etc/netplan/01-network-manager-all.yaml" >/dev/null <<'EOF'
 network:
   version: 2
@@ -1666,9 +1715,22 @@ EOF
     host_priv mount -t sysfs sysfs "$IMG_MOUNT_DIR/sys"
     host_priv mount --bind /run "$IMG_MOUNT_DIR/run"
 
-    # CLI images run networkd behind netplan; desktop images use NetworkManager.
-    if [[ "${TARGET_IMAGE_PROFILE:-desktop}" == "cli" ]]; then
+    # netplan backend: enable systemd-networkd when it is the renderer.
+    if [[ "${TARGET_NETWORK_STACK:-networkd}" == "networkd" ]]; then
         in_target systemctl enable systemd-networkd.service || true
+    fi
+
+    # Cloud images with NetworkManager: tell cloud-init to render its network
+    # config for NetworkManager instead of the systemd-networkd default.
+    if [[ "$UVB_IMAGE_KIND" == "cloud" ]] && [[ "${TARGET_NETWORK_STACK:-networkd}" == "network-manager" ]]; then
+        host_priv mkdir -p "$IMG_MOUNT_DIR/etc/cloud/cloud.cfg.d"
+        host_priv tee "$IMG_MOUNT_DIR/etc/cloud/cloud.cfg.d/91-uvb-network-renderer.cfg" >/dev/null <<'EOF'
+# Written by the Ubuntu Vanilla image builder: this image uses NetworkManager.
+system_info:
+  network:
+    renderers: ['network-manager', 'netplan', 'networkd']
+    activators: ['network-manager', 'netplan', 'networkd']
+EOF
     fi
 
     # Serial console for cloud images: most providers expose the VM console
@@ -1688,18 +1750,19 @@ EOF
     host_priv mkdir -p "$IMG_MOUNT_DIR/etc/initramfs-tools/conf.d"
     echo "RESUME=none" | host_priv tee "$IMG_MOUNT_DIR/etc/initramfs-tools/conf.d/resume" >/dev/null
 
-    echo "=====> installing GRUB (${firmware^^}) ..."
-    if [[ "$firmware" == "uefi" ]]; then
-        # --no-nvram: NVRAM boot entries of the build machine do not travel
-        # with the image; --removable adds the EFI/BOOT/BOOTX64.EFI fallback
-        # path every firmware finds without NVRAM entries.
-        in_target grub-install --target=x86_64-efi --efi-directory=/boot/efi \
-            --bootloader-id=ubuntu --uefi-secure-boot --recheck --no-nvram
-        in_target grub-install --target=x86_64-efi --efi-directory=/boot/efi \
-            --bootloader-id=ubuntu --uefi-secure-boot --removable --recheck --no-nvram
-    else
+    echo "=====> installing GRUB (${firmware}) ..."
+    # UEFI: --no-nvram because NVRAM boot entries of the build machine do not
+    # travel with the image; --removable adds the EFI/BOOT/BOOTX64.EFI
+    # fallback path every firmware finds without NVRAM entries.
+    if [[ "$firmware" == "hybrid" ]]; then
+        # Hybrid: BIOS GRUB into the bios_grub partition, ...
         in_target grub-install --target=i386-pc --recheck "$IMG_LOOP_DEV"
     fi
+    # ... and UEFI GRUB onto the ESP (both firmware modes have one).
+    in_target grub-install --target=x86_64-efi --efi-directory=/boot/efi \
+        --bootloader-id=ubuntu --uefi-secure-boot --recheck --no-nvram
+    in_target grub-install --target=x86_64-efi --efi-directory=/boot/efi \
+        --bootloader-id=ubuntu --uefi-secure-boot --removable --recheck --no-nvram
     in_target update-initramfs -u
     in_target update-grub
 
@@ -2376,22 +2439,25 @@ function resolve_optional_service_choices() {
 
 function interactive_firmware_pick() {
     if ! prompts_enabled; then
-        ui_err "No terminal is available. Use --firmware=uefi|bios."
+        ui_err "No terminal is available. Use --firmware=uefi|hybrid."
         exit 1
     fi
 
     ui_heading "Firmware / boot mode"
-    echo "    1) UEFI   GPT with a 512 MB EFI System Partition  [default]"
-    echo "              (modern clouds and hypervisors: OVMF, Hyper-V Gen2, ...)"
-    echo "    2) BIOS   GPT with a 1 MiB BIOS boot partition + the same 512 MB ESP"
-    echo "              (legacy boot: SeaBIOS, Hyper-V Gen1, older clouds)"
+    echo "    1) UEFI-only  GPT with a 512 MB EFI System Partition; boots on UEFI"
+    echo "                  firmware only (modern clouds and hypervisors: OVMF,"
+    echo "                  Hyper-V Gen2, ...)  [default]"
+    echo "    2) Hybrid     BIOS + UEFI on one disk: GPT with a 1 MiB BIOS boot"
+    echo "                  partition plus the same 512 MB ESP; GRUB is installed"
+    echo "                  for both targets (SeaBIOS, Hyper-V Gen1, older clouds"
+    echo "                  — and still bootable on UEFI)"
 
     local choice
     while true; do
         read -r -p "  Firmware [1/2, Enter=1]: " choice
         case "${choice,,}" in
-            ""|1|u|uefi|efi) export TARGET_FIRMWARE="uefi"; break ;;
-            2|b|bios|legacy) export TARGET_FIRMWARE="bios"; break ;;
+            ""|1|u|uefi|efi|uefi-only) export TARGET_FIRMWARE="uefi";   break ;;
+            2|h|hybrid|b|bios|legacy)  export TARGET_FIRMWARE="hybrid"; break ;;
             *) ui_warn "Invalid selection: '$choice'." ;;
         esac
     done
@@ -2401,6 +2467,11 @@ function interactive_firmware_pick() {
 function resolve_firmware_choice() {
     if [[ -n "${TARGET_FIRMWARE:-}" ]]; then
         export TARGET_FIRMWARE="${TARGET_FIRMWARE,,}"
+        # Legacy aliases from before the hybrid rename.
+        case "$TARGET_FIRMWARE" in
+            bios|legacy) export TARGET_FIRMWARE="hybrid" ;;
+            uefi-only)   export TARGET_FIRMWARE="uefi" ;;
+        esac
         return 0
     fi
 
@@ -2410,6 +2481,108 @@ function resolve_firmware_choice() {
     fi
 
     export TARGET_FIRMWARE="uefi"
+}
+
+function interactive_network_stack_pick() {
+    if ! prompts_enabled; then
+        ui_err "No terminal is available. Use --network=networkd|network-manager."
+        exit 1
+    fi
+
+    ui_heading "Network stack (CLI/TTY-only profile)"
+    echo "    1) networkd         netplan + systemd-networkd — lean, server-style  [default]"
+    echo "    2) network-manager  NetworkManager — nmcli/nmtui, the same stack the"
+    echo "                        desktop images use"
+
+    local choice
+    while true; do
+        read -r -p "  Network stack [1/2, Enter=1]: " choice
+        case "${choice,,}" in
+            ""|1|networkd|systemd-networkd|netplan)   export TARGET_NETWORK_STACK="networkd";       break ;;
+            2|nm|networkmanager|network-manager)      export TARGET_NETWORK_STACK="network-manager"; break ;;
+            *) ui_warn "Invalid selection: '$choice'." ;;
+        esac
+    done
+    ui_ok "TARGET_NETWORK_STACK=$TARGET_NETWORK_STACK"
+}
+
+function resolve_network_stack_choice() {
+    # Normalize aliases first.
+    if [[ -n "${TARGET_NETWORK_STACK:-}" ]]; then
+        case "${TARGET_NETWORK_STACK,,}" in
+            networkd|systemd-networkd|netplan)   export TARGET_NETWORK_STACK="networkd" ;;
+            nm|networkmanager|network-manager)   export TARGET_NETWORK_STACK="network-manager" ;;
+            *)
+                >&2 echo "TARGET_NETWORK_STACK must be networkd or network-manager (got: '${TARGET_NETWORK_STACK}')."
+                exit 1
+                ;;
+        esac
+    fi
+
+    # Desktop images always use NetworkManager — the desktop stacks depend on it.
+    if [[ "${TARGET_IMAGE_PROFILE:-desktop}" != "cli" ]]; then
+        if [[ "${TARGET_NETWORK_STACK:-}" == "networkd" ]]; then
+            ui_warn "Desktop profile always uses NetworkManager — ignoring network stack 'networkd'."
+        fi
+        export TARGET_NETWORK_STACK="network-manager"
+        return 0
+    fi
+
+    if [[ -n "${TARGET_NETWORK_STACK:-}" ]]; then
+        return 0
+    fi
+
+    if prompts_enabled; then
+        interactive_network_stack_pick
+        return 0
+    fi
+
+    export TARGET_NETWORK_STACK="networkd"
+}
+
+function interactive_alloc_pick() {
+    if ! prompts_enabled; then
+        ui_err "No terminal is available. Use --alloc-tool=truncate|fallocate|dd."
+        exit 1
+    fi
+
+    ui_heading "Image allocation tool"
+    echo "    How the raw .img file is created on the build host:"
+    echo "    1) truncate   Sparse file — instant; occupies only the data actually"
+    echo "                  written (recommended)  [default]"
+    echo "    2) fallocate  Preallocated — reserves the full size up front, no holes"
+    echo "    3) dd         Fully zero-written with dd — slowest, uses the full size"
+    echo "                  on disk, maximum compatibility with picky tooling"
+
+    local choice
+    while true; do
+        read -r -p "  Allocation [1/2/3, Enter=1]: " choice
+        case "${choice,,}" in
+            ""|1|t|truncate|sparse)        export TARGET_IMG_ALLOC="truncate";  break ;;
+            2|f|fallocate|prealloc|preallocate) export TARGET_IMG_ALLOC="fallocate"; break ;;
+            3|d|dd)                        export TARGET_IMG_ALLOC="dd";        break ;;
+            *) ui_warn "Invalid selection: '$choice'." ;;
+        esac
+    done
+    ui_ok "TARGET_IMG_ALLOC=$TARGET_IMG_ALLOC"
+}
+
+function resolve_alloc_choice() {
+    if [[ -n "${TARGET_IMG_ALLOC:-}" ]]; then
+        export TARGET_IMG_ALLOC="${TARGET_IMG_ALLOC,,}"
+        case "$TARGET_IMG_ALLOC" in
+            sparse)                 export TARGET_IMG_ALLOC="truncate" ;;
+            prealloc|preallocate)   export TARGET_IMG_ALLOC="fallocate" ;;
+        esac
+        return 0
+    fi
+
+    if prompts_enabled; then
+        interactive_alloc_pick
+        return 0
+    fi
+
+    export TARGET_IMG_ALLOC="truncate"
 }
 
 function interactive_disk_size_pick() {
@@ -2778,7 +2951,12 @@ function print_build_summary() {
             ;;
     esac
     ui_kv "Profile"         "${TARGET_IMAGE_PROFILE:-desktop}"
-    ui_kv "Firmware"        "${TARGET_FIRMWARE:-uefi}"
+    local _fw="${TARGET_FIRMWARE:-uefi}"
+    [[ "$_fw" == "uefi" ]] && _fw="uefi  (UEFI-only)"
+    [[ "$_fw" == "hybrid" ]] && _fw="hybrid  (BIOS + UEFI)"
+    ui_kv "Firmware"        "$_fw"
+    ui_kv "Network stack"   "${TARGET_NETWORK_STACK:-network-manager}"
+    ui_kv "Image allocation" "${TARGET_IMG_ALLOC:-truncate}"
     ui_kv "Disk size"       "${TARGET_DISK_SIZE_GB:-32} GB  (ESP 512 MB + swap 4 GB + root = rest)"
     local _user_line=""
     if [[ "${TARGET_USER_MODE:-deploy}" == "build" ]]; then
@@ -2790,7 +2968,11 @@ function print_build_summary() {
     fi
     ui_kv "User account"    "$_user_line"
     if [[ "$UVB_IMAGE_KIND" == "vm" ]]; then
-        ui_kv "VM formats"      "raw + ${TARGET_VM_FORMATS:-qcow2}"
+        if [[ "${TARGET_VM_FORMATS:-qcow2}" == "none" ]]; then
+            ui_kv "VM formats"      "raw .img only"
+        else
+            ui_kv "VM formats"      "raw + ${TARGET_VM_FORMATS:-qcow2}"
+        fi
     fi
     local _bs=""
     case "${TARGET_BRAVE_CHANNEL:-release}" in
@@ -2863,8 +3045,11 @@ function print_build_result() {
     else
         echo "    Attach the exported disk to a new VM (QCOW2 for QEMU/KVM/Proxmox,"
         echo "    VDI for VirtualBox, VMDK for VMware, VHDX for Hyper-V) or use the"
-        echo "    raw .img directly. Create the VM with the matching firmware:"
-        echo "    ${TARGET_FIRMWARE:-uefi}."
+        if [[ "${TARGET_FIRMWARE:-uefi}" == "hybrid" ]]; then
+            echo "    raw .img directly. The hybrid image boots on both BIOS and UEFI VMs."
+        else
+            echo "    raw .img directly. Create the VM with UEFI firmware (UEFI-only image)."
+        fi
         if [[ "${TARGET_USER_MODE:-deploy}" == "build" ]]; then
             echo "    Log in with the account baked in at build time: ${TARGET_USERNAME:-?}."
         else
@@ -2897,7 +3082,7 @@ function generate_config_wizard() {
     fi
 
     local _release _kernel _desktop _mirror
-    local _firmware _disk_size _profile _user_mode _vm_formats
+    local _firmware _network _alloc _disk_size _profile _user_mode _vm_formats
     local _brave _librewolf _firefox _firefox_esr _thunderbird
     local _pacstall _ubuntu_studio _fwupd _openssh _cockpit
     local _locale _keyboard_layout _keyboard_variant
@@ -2917,9 +3102,17 @@ function generate_config_wizard() {
     read -r -p "  Desktop [gnome]: " _desktop
     _desktop="${_desktop:-gnome}"
 
-    # Firmware / boot mode
-    read -r -p "  Firmware (uefi / bios) [uefi]: " _firmware
+    # Firmware / boot mode (uefi = UEFI-only, hybrid = BIOS + UEFI)
+    read -r -p "  Firmware (uefi / hybrid) [uefi]: " _firmware
     _firmware="${_firmware:-uefi}"
+
+    # Network stack (CLI images; desktop images always use NetworkManager)
+    read -r -p "  Network stack (networkd / network-manager) [networkd]: " _network
+    _network="${_network:-networkd}"
+
+    # Image allocation tool
+    read -r -p "  Image allocation tool (truncate / fallocate / dd) [truncate]: " _alloc
+    _alloc="${_alloc:-truncate}"
 
     # Disk image size
     read -r -p "  Disk image size in GB (32 / 64 / 128 / any number >= 10) [32]: " _disk_size
@@ -3019,6 +3212,8 @@ TARGET_UBUNTU_VERSION=${_release}
 TARGET_KERNEL_FLAVOR=${_kernel}
 TARGET_DESKTOP=${_desktop}
 TARGET_FIRMWARE=${_firmware}
+TARGET_NETWORK_STACK=${_network}
+TARGET_IMG_ALLOC=${_alloc}
 TARGET_DISK_SIZE_GB=${_disk_size}
 TARGET_IMAGE_PROFILE=${_profile}
 TARGET_USER_MODE=${_user_mode}
@@ -3110,6 +3305,7 @@ function load_config_file() {
                 TARGET_GNOME_INSTALL_RECOMMENDS|TARGET_NAME|\
                 TARGET_LOCALE|TARGET_KEYBOARD_LAYOUT|TARGET_KEYBOARD_VARIANT|\
                 TARGET_FIRMWARE|TARGET_DISK_SIZE_GB|TARGET_IMAGE_PROFILE|\
+                TARGET_NETWORK_STACK|TARGET_IMG_ALLOC|\
                 TARGET_USER_MODE|TARGET_USERNAME|TARGET_USER_PASSWORD|\
                 TARGET_USER_FULLNAME|TARGET_HOSTNAME|TARGET_VM_FORMATS|\
                 UBUNTU_VANILLA_WORKSPACE|UVB_OUTPUT_DIR|NO_CONFIRM|\
@@ -3128,6 +3324,8 @@ function host_main() {
     local cli_kernel=""
     local cli_release=""
     local cli_mirror=""
+    local cli_network=""
+    local cli_alloc=""
     local cli_firmware=""
     local cli_disk_size=""
     local cli_profile=""
@@ -3195,6 +3393,22 @@ function host_main() {
                 ;;
             --mirror)
                 cli_mirror="$2"
+                shift 2
+                ;;
+            --network=*)
+                cli_network="${1#--network=}"
+                shift
+                ;;
+            --network)
+                cli_network="$2"
+                shift 2
+                ;;
+            --alloc-tool=*)
+                cli_alloc="${1#--alloc-tool=}"
+                shift
+                ;;
+            --alloc-tool)
+                cli_alloc="$2"
                 shift 2
                 ;;
             --firmware=*)
@@ -3531,6 +3745,12 @@ function host_main() {
     if [[ -n "$cli_kernel" ]]; then
         export TARGET_KERNEL_FLAVOR="$cli_kernel"
     fi
+    if [[ -n "$cli_network" ]]; then
+        export TARGET_NETWORK_STACK="$cli_network"
+    fi
+    if [[ -n "$cli_alloc" ]]; then
+        export TARGET_IMG_ALLOC="$cli_alloc"
+    fi
     if [[ -n "$cli_firmware" ]]; then
         export TARGET_FIRMWARE="$cli_firmware"
     fi
@@ -3615,8 +3835,10 @@ function host_main() {
     fi
 
     resolve_profile_choice
+    resolve_network_stack_choice
     resolve_firmware_choice
     resolve_disk_size_choice
+    resolve_alloc_choice
 
     if [[ -z "${TARGET_KERNEL_FLAVOR:-}" ]]; then
         resolve_kernel_choice
@@ -3752,10 +3974,11 @@ function install_pkg() {
         e2fsprogs \
         parted
 
-    if [[ "${TARGET_IMAGE_PROFILE:-desktop}" == "cli" ]]; then
-        echo "=====> networking: netplan + systemd-networkd (CLI/TTY-only profile — NetworkManager not installed)"
-    else
+    if [[ "${TARGET_NETWORK_STACK:-network-manager}" == "network-manager" ]]; then
+        echo "=====> networking: NetworkManager"
         apt-get install -y network-manager
+    else
+        echo "=====> networking: netplan + systemd-networkd (NetworkManager not installed)"
     fi
 
     echo "=====> installing kernel metapackage (with Recommends): $TARGET_KERNEL_PACKAGE"
@@ -3801,7 +4024,7 @@ function install_pkg() {
         dpkg-reconfigure --frontend=noninteractive console-setup
     fi
 
-    if [[ "${TARGET_IMAGE_PROFILE:-desktop}" != "cli" ]]; then
+    if [[ "${TARGET_NETWORK_STACK:-network-manager}" == "network-manager" ]]; then
         cat <<EOF > /etc/NetworkManager/NetworkManager.conf
 [main]
 rc-manager=none
@@ -3849,6 +4072,14 @@ function chroot_main() {
     export TARGET_FIRMWARE="${TARGET_FIRMWARE:-uefi}"
     export TARGET_DISK_SIZE_GB="${TARGET_DISK_SIZE_GB:-32}"
     export TARGET_USER_MODE="${TARGET_USER_MODE:-deploy}"
+    export TARGET_IMG_ALLOC="${TARGET_IMG_ALLOC:-truncate}"
+    if [[ -z "${TARGET_NETWORK_STACK:-}" ]]; then
+        if [[ "${TARGET_IMAGE_PROFILE:-desktop}" == "cli" ]]; then
+            export TARGET_NETWORK_STACK="networkd"
+        else
+            export TARGET_NETWORK_STACK="network-manager"
+        fi
+    fi
     export TARGET_DESKTOP="${TARGET_DESKTOP:-gnome}"
     export TARGET_KDE_PACKAGE="${TARGET_KDE_PACKAGE:-kde-standard}"
     export TARGET_MATE_PACKAGE="${TARGET_MATE_PACKAGE:-mate-desktop-environment}"

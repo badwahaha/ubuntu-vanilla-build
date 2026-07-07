@@ -11,7 +11,7 @@ This project is designed for:
 ## What's New
 
 Recent improvements include:
-- **Cloud & VM Disk Images**: Four new builders produce ready-to-use disk images instead of a live-installer ISO — `scripts/build-img.sh` (Ubuntu cloud `.img`), `scripts/build-vm.sh` (Ubuntu VM image with QCOW2/VDI/VMDK/VHDX exports), and their Pop!_OS counterparts `scripts/build-popos-img.sh` / `scripts/build-popos-vm.sh`. Choose UEFI or legacy BIOS, disk size 32/64/128 GB or custom (fixed layout: 512 MB ESP + 4 GB swap + root gets the rest), a desktop-ready or CLI/TTY-only profile, and whether to bake user credentials in at build time or create the user after deployment (cloud-init for cloud images, a first-boot console wizard for VM images). See [Building Cloud & VM Disk Images](#building-cloud--vm-disk-images). `start-here.sh` now also asks which output type to build (`--output=iso|img|vm`).
+- **Cloud & VM Disk Images**: Four new builders produce ready-to-use disk images instead of a live-installer ISO — `scripts/build-img.sh` (Ubuntu cloud `.img`), `scripts/build-vm.sh` (Ubuntu VM image with QCOW2/VDI/VMDK/VHDX exports), and their Pop!_OS counterparts `scripts/build-popos-img.sh` / `scripts/build-popos-vm.sh`. Choose UEFI-only or Hybrid (BIOS + UEFI) firmware, netplan/systemd-networkd or NetworkManager, the image allocation tool (sparse truncate, fallocate, or dd), disk size 32/64/128 GB or custom (fixed layout: 512 MB ESP + 4 GB swap + root gets the rest), a desktop-ready or CLI/TTY-only profile, and whether to bake user credentials in at build time or create the user after deployment (cloud-init for cloud images, a first-boot console wizard for VM images). See [Building Cloud & VM Disk Images](#building-cloud--vm-disk-images). `start-here.sh` now also asks which output type to build (`--output=iso|img|vm`).
 - **Pop!_OS ISO Variant**: `scripts/build-popos.sh` builds a Pop!_OS ISO from the official Pop!_OS APT repositories (staging excluded) — see [Building Pop!_OS ISOs](#building-popos-isos). `start-here.sh` now asks which distro to build (Ubuntu or Pop!_OS).
 - **Startup Mode Selection**: When run on a terminal without an explicit mode, `build.sh` first asks whether to build in **Basic** (default, guided prompts) or **Advanced** mode — an alternative to passing `--advanced`.
 - **Build Hooks (Modloader)**: Drop `.sh` scripts into `scripts/hooks/pre-chroot/` and `scripts/hooks/chroot/` to customize the build — scripts run in sorted filename order, like a game modloader.
@@ -119,9 +119,11 @@ They are copies of `build.sh` / `build-popos.sh`: same stages up to `run_chroot`
 
 ### Image-specific choices (prompted interactively, or via flags)
 
-- **Firmware** — `--firmware=uefi|bios` (default `uefi`). UEFI uses GPT with a 512 MB EFI System Partition; BIOS uses GPT with a 1 MiB BIOS boot partition *plus* the same 512 MB ESP (so the disk can later be switched to UEFI).
-- **Disk size** — `--disk-size=32|64|128|<GB>` (default `32`, minimum 10). Fixed layout: **ESP 512 MB + swap 4 GB + root = all remaining space** (a 32 GB image leaves ~27.5 GB for root). The `.img` is written sparse, so it only occupies as much host disk as it actually contains.
+- **Firmware** — `--firmware=uefi|hybrid` (default `uefi`). **UEFI-only** uses GPT with a 512 MB EFI System Partition. **Hybrid** boots on both BIOS *and* UEFI from the same disk: GPT with a 1 MiB BIOS boot partition plus the same 512 MB ESP, with GRUB installed for both the `i386-pc` and `x86_64-efi` targets. (`bios`/`legacy` are accepted as aliases for `hybrid`.)
+- **Disk size** — `--disk-size=32|64|128|<GB>` (default `32`, minimum 10). Fixed layout: **ESP 512 MB + swap 4 GB + root = all remaining space** (a 32 GB image leaves ~27.5 GB for root).
+- **Allocation tool** — `--alloc-tool=truncate|fallocate|dd` (default `truncate`). How the raw `.img` file is created on the build host: `truncate` makes a sparse file (instant; occupies only the data actually written), `fallocate` preallocates the full size up front, and `dd` fully zero-writes the file (slowest, maximum compatibility with picky tooling).
 - **Profile** — `--profile=desktop|cli`. `desktop` is a desktop-ready image (you pick the desktop environment exactly like the ISO builders); `cli` is a CLI/TTY-only image with no desktop stack, GUI browsers, or Flatpak.
+- **Network stack** — `--network=networkd|network-manager`. CLI images default to netplan + systemd-networkd but can use NetworkManager (nmcli/nmtui) instead; desktop images always use NetworkManager. On cloud images the choice is also wired into cloud-init's network renderer.
 - **User account** — `--user-mode=build|deploy`:
   - `build` bakes a username + password into the image during the build (`--username`, `--password`, optional `--fullname` and `--hostname`; prompted on a TTY if omitted). On cloud images the baked account also becomes cloud-init's default user, so provider-injected SSH keys land on it.
   - `deploy` (cloud default) leaves user creation to **cloud-init** at deploy time; on VM images it installs a **first-boot wizard** that asks for username/password/hostname on the VM console the first time it starts.
@@ -139,11 +141,11 @@ Cloud images always include `cloud-init` + `cloud-guest-utils` (growpart), a `tt
 # Unattended Ubuntu cloud image, CLI-only, 64 GB, UEFI, user created by cloud-init:
 cd scripts
 ./build-img.sh --advanced --no-interactive --release=noble --kernel=generic \
-    --profile=cli --firmware=uefi --disk-size=64 -
+    --profile=cli --network=networkd --firmware=uefi --disk-size=64 --alloc-tool=truncate -
 
 # Ubuntu VM image with a baked-in account, exported to QCOW2 + VirtualBox VDI:
 ./build-vm.sh --release=noble --kernel=generic --profile=desktop --desktop=xfce \
-    --firmware=uefi --disk-size=32 --user-mode=build --username=alice \
+    --firmware=hybrid --disk-size=32 --user-mode=build --username=alice \
     --password='secret' --hostname=xfce-vm --formats=qcow2,vdi -
 ```
 
