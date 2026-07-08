@@ -80,7 +80,12 @@ Presentation
 
     Slide
     {
-        centeredText: qsTr( "Full-disk encryption with LUKS2 is offered straight from the partitioning step; pick the encrypted layout and the boot partition stays separate so GRUB can still start." )
+        centeredText: qsTr( "Erase-disk installs use a GPT layout that boots both UEFI and legacy BIOS: a 1 MiB BIOS-boot partition, a 512 MiB EFI system partition, 4 GiB of swap, and the rest of the disk as your root filesystem." )
+    }
+
+    Slide
+    {
+        centeredText: qsTr( "Full-disk encryption with LUKS2 is offered straight from the partitioning step; pick the encrypted layout and root plus swap are encrypted while a separate unencrypted boot partition keeps GRUB able to start." )
     }
 
     Slide
