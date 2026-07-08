@@ -1,5 +1,27 @@
 #!/bin/bash
 
+# build-vm.sh — VM disk image variant of build.sh.
+#
+# Instead of a live-installer ISO, this script produces a ready-to-use VM
+# disk image: a raw .img, plus optional exports to QCOW2 (QEMU/KVM,
+# Proxmox), VDI (VirtualBox), VMDK (VMware), and VHDX (Hyper-V) via
+# qemu-img.
+#
+#   * Firmware: UEFI-only (GPT + 512 MB EFI System Partition) or Hybrid
+#     (BIOS + UEFI on one disk: 1 MiB BIOS boot partition + the same ESP,
+#     GRUB installed for both targets), chosen at build time.
+#   * Partition layout: ESP 512 MB, swap 4 GB, root = all remaining space
+#     (a 32 GB image leaves ~27.5 GB for root). Image size: 32 / 64 / 128 GB
+#     or a custom size.
+#   * Profile: desktop-ready (pick any desktop the ISO builder offers) or
+#     CLI/TTY-only (no desktop stack at all; network stack selectable:
+#     netplan + systemd-networkd or NetworkManager).
+#   * Allocation: the raw .img is created with truncate (sparse,
+#     default), fallocate (preallocated), or dd (fully zero-written).
+#   * Credentials: bake a username + password into the image during the
+#     build (default), or let a first-boot wizard on the VM console create
+#     the account when the VM starts for the first time.
+
 set -e
 set -o pipefail
 set -u
@@ -9,7 +31,7 @@ SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 WORKSPACE_DIR=""
 WORKSPACE_CHROOT=""
 WORKSPACE_IMAGE=""
-# Where the finished ISO + checksums land. Set in resolve_workspace_paths().
+# Where the finished image + checksums land. Set in resolve_workspace_paths().
 OUTPUT_DIR=""
 # Basic-mode workspace parent: root-owned system path regular users cannot touch.
 UVB_SYSTEM_WORKSPACE_PARENT="/var/cache/ubuntu-vanilla-build"
@@ -18,6 +40,19 @@ HOST_ABORT_CLEANUP_DONE=0
 DATE="$(TZ="UTC" date +"%y%m%d-%H%M%S")"
 # Default hooks directory; overridden by --hooks-dir=PATH.
 HOOKS_DIR=""
+# Script filename (used when copying ourselves into the chroot).
+SCRIPT_NAME="$(basename "$(readlink -f "$0")")"
+# Image kind baked into this script: "cloud" produces a raw .img ready to
+# deploy to a cloud VM; "vm" additionally exports the image to
+# QCOW2/VDI/VMDK/VHDX for desktop hypervisors.
+UVB_IMAGE_KIND="${UVB_IMAGE_KIND:-vm}"
+# Files produced by the build (image + checksums + exports); used to hand
+# ownership back to the invoking user.
+OUTPUT_FILES=()
+# Loop device + mountpoint used while assembling the disk image; globals so
+# the abort cleanup path can unwind them.
+IMG_LOOP_DEV=""
+IMG_MOUNT_DIR=""
 # Advanced mode: set to 1 via --advanced (or the startup mode prompt) to enable
 # config file loading, workspace preservation on failure/interrupt, package
 # caching, and the --interactive/--no-interactive overrides.
@@ -182,11 +217,11 @@ function parse_cmd_range() {
     fi
 }
 
-# Host (outside chroot): prepare tree, debootstrap, run chroot phase, squashfs + ISO
-HOST_CMD=(setup_host debootstrap run_chroot build_iso)
+# Host (outside chroot): prepare tree, debootstrap, run chroot phase, assemble the disk image
+HOST_CMD=(setup_host debootstrap run_chroot build_disk_image)
 
-# Chroot phase: APT setup, packages, /image layout, cleanup
-CHROOT_CMD=(chroot_prepare install_pkg build_image finish_up)
+# Chroot phase: APT setup, packages, cleanup
+CHROOT_CMD=(chroot_prepare install_pkg finish_up)
 
 # Run host commands as root: sudo when invoked as a normal user, direct exec when already root.
 function host_priv() {
@@ -304,21 +339,6 @@ function run_chroot_hooks() {
     done
 }
 
-function default_target_package_remove() {
-    case "${TARGET_INSTALLER:-calamares}" in
-        calamares)
-            echo "calamares casper discover laptop-detect os-prober ubiquity-slideshow-ubuntu"
-            ;;
-        ubiquity)
-            echo "ubiquity ubiquity-frontend-gtk ubiquity-ubuntu-artwork ubiquity-slideshow-ubuntu casper discover laptop-detect os-prober"
-            ;;
-        *)
-            >&2 echo "Internal error: default_target_package_remove with TARGET_INSTALLER='${TARGET_INSTALLER:-}'."
-            exit 1
-            ;;
-    esac
-}
-
 function set_defaults() {
     export TARGET_UBUNTU_VERSION="${TARGET_UBUNTU_VERSION:-}"
     export TARGET_UBUNTU_MIRROR="${TARGET_UBUNTU_MIRROR:-https://archive.ubuntu.com/ubuntu/}"
@@ -337,20 +357,25 @@ function set_defaults() {
     # (unset) from "user explicitly set to 0/1" via ${VAR+x}.
     # Only env/CLI paths should set these.
     export TARGET_NAME="${TARGET_NAME:-}"
-    export GRUB_LIVEBOOT_LABEL="${GRUB_LIVEBOOT_LABEL:-Try Ubuntu without installing}"
-}
-
-# TARGET_INSTALLER / TARGET_PACKAGE_REMOVE (after CLI and interactive resolution on the host).
-function set_installer_and_manifest_defaults() {
-    export TARGET_INSTALLER="${TARGET_INSTALLER:-calamares}"
-    case "${TARGET_INSTALLER}" in
-        calamares|ubiquity) ;;
-        *)
-            >&2 echo "TARGET_INSTALLER must be calamares or ubiquity (got: '${TARGET_INSTALLER}')."
-            exit 1
-            ;;
-    esac
-    export TARGET_PACKAGE_REMOVE="${TARGET_PACKAGE_REMOVE:-$(default_target_package_remove)}"
+    export TARGET_FIRMWARE="${TARGET_FIRMWARE:-}"
+    export TARGET_DISK_SIZE_GB="${TARGET_DISK_SIZE_GB:-}"
+    export TARGET_IMAGE_PROFILE="${TARGET_IMAGE_PROFILE:-}"
+    # TARGET_USER_MODE: "build" bakes TARGET_USERNAME/TARGET_USER_PASSWORD into
+    # the image; "deploy" defers user creation to cloud-init (cloud images) or
+    # the first-boot wizard (VM images).
+    export TARGET_USER_MODE="${TARGET_USER_MODE:-}"
+    export TARGET_USERNAME="${TARGET_USERNAME:-}"
+    export TARGET_USER_PASSWORD="${TARGET_USER_PASSWORD:-}"
+    export TARGET_USER_FULLNAME="${TARGET_USER_FULLNAME:-}"
+    export TARGET_HOSTNAME="${TARGET_HOSTNAME:-}"
+    # TARGET_NETWORK_STACK: network-manager or networkd (netplan backend).
+    # Desktop images always use NetworkManager; CLI images default to
+    # systemd-networkd but can opt into NetworkManager.
+    export TARGET_NETWORK_STACK="${TARGET_NETWORK_STACK:-}"
+    # TARGET_IMG_ALLOC: how the raw .img file is created — truncate (sparse),
+    # fallocate (preallocated), or dd (fully zero-written).
+    export TARGET_IMG_ALLOC="${TARGET_IMG_ALLOC:-}"
+    export TARGET_VM_FORMATS="${TARGET_VM_FORMATS:-}"
 }
 
 # Canonical release-codename-to-version map. Used for HWE suffix, ISO naming,
@@ -365,10 +390,14 @@ function release_version() {
 }
 
 function default_target_name() {
-    local version desktop
+    local version flavor
     version="$(release_version "${TARGET_UBUNTU_VERSION:-}")"
-    desktop="${TARGET_DESKTOP:-gnome}"
-    echo "ubuntu-${version}-${desktop}-amd64-${DATE}"
+    if [[ "${TARGET_IMAGE_PROFILE:-desktop}" == "cli" ]]; then
+        flavor="cli"
+    else
+        flavor="${TARGET_DESKTOP:-gnome}"
+    fi
+    echo "ubuntu-${version}-${flavor}-${UVB_IMAGE_KIND}-amd64-${DATE}"
 }
 
 function normalize_desktop_variant() {
@@ -520,6 +549,9 @@ function customize_image() {
     block_fwupd
 
     case "${TARGET_DESKTOP:-gnome}" in
+        cli)
+            echo "=====> profile: CLI/TTY-only — no desktop environment installed"
+            ;;
         gnome)
             echo "=====> desktop flavor: gnome"
             if [[ "${TARGET_GNOME_INSTALL_RECOMMENDS:-0}" == "1" ]]; then
@@ -657,9 +689,11 @@ EOF
             exit 1
             ;;
     esac
-    apt-get install -y plymouth plymouth-label plymouth-theme-ubuntu-text
+    if [[ "${TARGET_DESKTOP:-gnome}" != "cli" ]]; then
+        apt-get install -y plymouth plymouth-label plymouth-theme-ubuntu-text
+    fi
 
-    apt-get install -y curl wget apt-transport-https ca-certificates squashfs-tools gnupg
+    apt-get install -y curl wget apt-transport-https ca-certificates gnupg
 
     install -d /usr/share/keyrings /etc/apt/sources.list.d /etc/apt/preferences.d
 
@@ -836,9 +870,11 @@ EOF
         nano \
         less
 
-    apt-get install -y flatpak
-    flatpak remote-add --if-not-exists --system flathub \
-        https://flathub.org/repo/flathub.flatpakrepo
+    if [[ "${TARGET_DESKTOP:-gnome}" != "cli" ]]; then
+        apt-get install -y flatpak
+        flatpak remote-add --if-not-exists --system flathub \
+            https://flathub.org/repo/flathub.flatpakrepo
+    fi
 
     if [[ "${TARGET_DESKTOP:-gnome}" == "gnome" ]]; then
         apt-get install -y \
@@ -857,20 +893,6 @@ EOF
             gnome-mahjongg \
             gnome-mines \
             gnome-sudoku
-    fi
-
-    # These slideshow packages may not exist in the target release's repos at all
-    # (not just "not installed"). Filter to only packages dpkg knows about to avoid
-    # "Unable to locate package" errors that would obscure real failures.
-    local _purge_slideshow=()
-    local _pkg
-    for _pkg in ubiquity-slideshow-ubuntu calamares-slideshow-ubuntu; do
-        if dpkg -s "$_pkg" &>/dev/null; then
-            _purge_slideshow+=("$_pkg")
-        fi
-    done
-    if [[ ${#_purge_slideshow[@]} -gt 0 ]]; then
-        apt-get purge -y "${_purge_slideshow[@]}"
     fi
 }
 
@@ -934,12 +956,61 @@ function check_settings() {
         esac
         assert_bool_var TARGET_MATE_EXTRAS
     fi
+    case "${TARGET_FIRMWARE:-uefi}" in
+        uefi|hybrid)
+            ;;
+        *)
+            >&2 echo "TARGET_FIRMWARE must be uefi (UEFI-only) or hybrid (BIOS + UEFI; got: '${TARGET_FIRMWARE:-}')."
+            exit 1
+            ;;
+    esac
+    case "${TARGET_NETWORK_STACK:-networkd}" in
+        networkd|network-manager)
+            ;;
+        *)
+            >&2 echo "TARGET_NETWORK_STACK must be networkd or network-manager (got: '${TARGET_NETWORK_STACK:-}')."
+            exit 1
+            ;;
+    esac
+    case "${TARGET_IMG_ALLOC:-truncate}" in
+        truncate|fallocate|dd)
+            ;;
+        *)
+            >&2 echo "TARGET_IMG_ALLOC must be truncate, fallocate, or dd (got: '${TARGET_IMG_ALLOC:-}')."
+            exit 1
+            ;;
+    esac
+    if [[ ! "${TARGET_DISK_SIZE_GB:-32}" =~ ^[0-9]+$ ]] || [[ "${TARGET_DISK_SIZE_GB:-32}" -lt 10 ]]; then
+        >&2 echo "TARGET_DISK_SIZE_GB must be a whole number of GB, at least 10 (got: '${TARGET_DISK_SIZE_GB:-}')."
+        exit 1
+    fi
+    case "${TARGET_IMAGE_PROFILE:-desktop}" in
+        desktop|cli)
+            ;;
+        *)
+            >&2 echo "TARGET_IMAGE_PROFILE must be desktop or cli (got: '${TARGET_IMAGE_PROFILE:-}')."
+            exit 1
+            ;;
+    esac
+    case "${TARGET_USER_MODE:-deploy}" in
+        build|deploy)
+            ;;
+        *)
+            >&2 echo "TARGET_USER_MODE must be build or deploy (got: '${TARGET_USER_MODE:-}')."
+            exit 1
+            ;;
+    esac
+    if [[ "${TARGET_USER_MODE:-deploy}" == "build" ]] && [[ -n "${TARGET_USERNAME:-}" ]] && \
+       [[ ! "${TARGET_USERNAME}" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+        >&2 echo "TARGET_USERNAME must be a valid Linux username (got: '${TARGET_USERNAME}')."
+        exit 1
+    fi
 }
 
 # shellcheck disable=SC2120  # called indirectly with an error message via parse_cmd_range/cmd_find_index
 function host_help() {
     if [ -z "${1+x}" ]; then
-        echo "This script builds a bootable Ubuntu ISO image."
+        echo "This script builds a ready-to-use Ubuntu VM disk image (raw .img + QCOW2/VDI/VMDK/VHDX exports)."
         echo
     else
         echo "$1"
@@ -953,8 +1024,7 @@ function host_help() {
     echo "  --mirror=URL                            Ubuntu package mirror"
     echo "  UBUNTU_VANILLA_WORKSPACE=DIR             Parent directory for build workspace (optional; overrides mode defaults:"
     echo "                                           basic = /var/cache/ubuntu-vanilla-build, advanced = ~/uvb-workspace)"
-    echo "  UVB_OUTPUT_DIR=DIR                       Directory for the finished ISO + checksums (optional; default: your home directory)"
-    echo "  TARGET_INSTALLER=calamares|ubiquity       Live installer (optional; default calamares)"
+    echo "  UVB_OUTPUT_DIR=DIR                       Directory for the finished image + checksums (optional; default: your home directory)"
     echo "  TARGET_DESKTOP=<desktop>                  Desktop variant slug (optional; default gnome)"
     echo "  TARGET_KDE_PACKAGE=kde-full|kde-standard|kde-plasma-desktop  KDE package when desktop is kde-plasma (optional; default kde-standard)"
     echo "  TARGET_MATE_PACKAGE=mate-desktop-environment|mate-desktop-environment-core  MATE metapackage when desktop is mate (optional; full|core aliases OK)"
@@ -971,7 +1041,6 @@ function host_help() {
     echo "  TARGET_COCKPIT=0|1                       Pre-install Cockpit from the backports pocket (optional; default 0)"
     echo "  TARGET_GNOME_INSTALL_RECOMMENDS=0|1       GNOME install with recommends (optional; default 0)"
     echo "  --kernel=generic|lowlatency             Kernel type to install"
-    echo "  --installer=calamares|ubiquity           Calamares (default), or Ubiquity (jammy/22.04 only)"
     echo "  --desktop=<desktop>                      Desktop variant (gnome, xfce, lxde, lxqt, mate, cinnamon, budgie, kde-plasma)"
     echo "  --kde=kde-full|kde-standard|kde-plasma-desktop  KDE package tier (used with --desktop=kde-plasma)"
     echo "  --mate=full|core|mate-desktop-environment|mate-desktop-environment-core  MATE tier (used with --desktop=mate; default full)"
@@ -987,6 +1056,16 @@ function host_help() {
     echo "  --fwupd / --no-fwupd                     Pre-install fwupd (default: no; blocked during the build either way)"
     echo "  --openssh-server / --no-openssh-server   Pre-install openssh-server (default: no)"
     echo "  --cockpit / --no-cockpit                 Pre-install Cockpit from backports (default: no)"
+    echo "  --firmware=uefi|hybrid                   uefi = UEFI-only; hybrid = BIOS + UEFI on one disk (default uefi)"
+    echo "  --network=networkd|network-manager       Network stack for CLI images (default networkd; desktop images always use NetworkManager)"
+    echo "  --alloc-tool=truncate|fallocate|dd       How the raw .img is created: sparse, preallocated, or dd zero-written (default truncate)"
+    echo "  --disk-size=32|64|128|<GB>               Disk image size in GB (default 32; minimum 10)"
+    echo "  --profile=desktop|cli                    Desktop-ready or CLI/TTY-only image (default desktop)"
+    echo "  --user-mode=build|deploy                 build = bake credentials now; deploy = create the user after deployment"
+    echo "  --username=NAME / --password=PASS        Credentials for --user-mode=build (prompted on a TTY if omitted)"
+    echo "  --fullname=NAME                          Full name (GECOS) for the baked user (optional)"
+    echo "  --hostname=NAME                          Hostname baked into the image (optional)"
+    echo "  --formats=qcow2,vdi,vmdk,vhdx|all|none   VM export formats (default qcow2; the raw .img is always kept)"
     echo "  --locale=LOCALE                          System locale (e.g. en_US.UTF-8) for unattended builds"
     echo "  --keyboard-layout=LAYOUT                 Keyboard layout code (e.g. us, de, fr) for unattended builds"
     echo "  --keyboard-variant=VARIANT               Keyboard variant (e.g. intl, nodeadkeys; optional)"
@@ -996,7 +1075,7 @@ function host_help() {
     echo "  --interactive                            Force interactive prompts even if stdin is not a TTY (advanced only)"
     echo "  --no-interactive                         Disable all interactive prompts, use defaults or fail (advanced only)"
     echo "  --config=FILE                            Load build options from a .cfg file (KEY=VALUE format; advanced mode only)"
-    echo "  --generate-config                        Launch config wizard to generate a build.cfg file"
+    echo "  --generate-config                        Launch config wizard to generate a build-vm.cfg file"
     echo "  --hooks-dir=PATH                         Custom hooks directory (default: scripts/hooks/)"
     echo
     echo "Syntax: $0 [options] [start_cmd] [-] [end_cmd]"
@@ -1007,26 +1086,23 @@ function host_help() {
     echo "  Use '-' by itself to run all commands explicitly"
     echo
     echo "Build stages (HOST_CMD — run in order; run one alone or a range with '-'):"
-    echo "  setup_host       Install host build tools (debootstrap, squashfs-tools,"
-    echo "                   xorriso) and prepare a fresh workspace directory."
-    echo "  debootstrap      Bootstrap the minimal Ubuntu base (--variant=minbase) from"
-    echo "                   the mirror into <workspace>/chroot. Advanced mode reuses an"
-    echo "                   existing chroot instead of re-bootstrapping."
-    echo "  run_chroot       Bind-mount /dev /run /proc /sys, copy this script + the"
-    echo "                   Calamares config into the chroot, and run the chroot phase"
-    echo "                   inside it (sub-stages below)."
-    echo "  build_iso        Compress the chroot into casper/filesystem.squashfs and build"
-    echo "                   the hybrid BIOS+UEFI ISO with xorriso; write SHA-1/SHA-256"
-    echo "                   checksums and clean the workspace."
+    echo "  setup_host         Install host tools (debootstrap, parted, dosfstools,"
+    echo "                     e2fsprogs, rsync, qemu-utils) and prepare a fresh workspace."
+    echo "  debootstrap        Bootstrap the minimal Ubuntu base (--variant=minbase) from the"
+    echo "                     mirror into <workspace>/chroot. Advanced mode reuses it."
+    echo "  run_chroot         Bind-mount /dev /run /proc /sys, copy this script into the"
+    echo "                     chroot, and run the chroot phase inside it (sub-stages below)."
+    echo "  build_disk_image   Create the raw .img (truncate/fallocate/dd), partition it GPT,"
+    echo "                     make filesystems, rsync the chroot in, install GRUB for the"
+    echo "                     chosen firmware, then bake the user in or defer it,"
+    echo "                     and export the selected VM formats. Writes checksums."
     echo
     echo "Chroot phase sub-stages (CHROOT_CMD — run automatically inside run_chroot):"
     echo "  chroot_prepare   APT sources (release/-security/-updates/-backports), hostname,"
     echo "                   machine-id, snapd + build-time fwupd APT pins."
-    echo "  install_pkg      Upgrade the base; install kernel, GRUB, and the live installer"
-    echo "                   (Calamares or Ubiquity), the chosen desktop, browser repos and"
-    echo "                   packages, optional extras, and locale/keyboard settings."
-    echo "  build_image      Assemble the live /image tree: kernel + initrd, GRUB configs,"
-    echo "                   signed EFI binaries, Memtest86+, package manifests, md5sums."
+    echo "  install_pkg      Upgrade the base; install kernel + GRUB, the chosen"
+    echo "                   desktop unless --profile=cli, browsers, optional extras,"
+    echo "                   and locale/keyboard settings."
     echo "  finish_up        Cleanup: remove SSH host keys, truncate machine-id, drop the"
     echo "                   build-time fwupd pin, clear /tmp."
     echo
@@ -1034,22 +1110,35 @@ function host_help() {
     echo "  CLI flags  >  config file (--config, advanced mode)  >  environment variables"
     echo "  >  interactive prompts (on a TTY)  >  the built-in defaults shown above."
     echo
-    echo "Hooks (modloader): executable *.sh files in scripts/hooks/pre-chroot/ run on the"
-    echo "  host before entering the chroot; scripts/hooks/chroot/ run inside the chroot."
-    echo "  Both run in sorted-filename order. Override the directory with --hooks-dir=PATH."
+    echo "Disk image layout & options:"
+    echo "  Firmware  --firmware=uefi|hybrid. uefi = UEFI-only (GPT + 512 MB ESP). hybrid ="
+    echo "            BIOS + UEFI on one disk: adds a 1 MiB BIOS-boot partition and installs"
+    echo "            GRUB for both the i386-pc and x86_64-efi targets."
+    echo "  Size      --disk-size=32|64|128|<GB> (minimum 10). Fixed layout: ESP 512 MB +"
+    echo "            swap 4 GB + root = the rest (a 32 GB image leaves ~27.5 GB for root)."
+    echo "  Alloc     --alloc-tool=truncate|fallocate|dd. How the .img file is created:"
+    echo "            sparse (default), preallocated, or fully zero-written with dd."
+    echo "  Profile   --profile=desktop|cli. Desktop-ready, or CLI/TTY-only (no desktop)."
+    echo "  Network   --network=networkd|network-manager (CLI images; desktop always uses NM)."
+    echo "  User      --user-mode=build|deploy. build bakes --username/--password (and optional"
+    echo "            --fullname/--hostname) in now; deploy adds a first-boot console wizard."
+    echo "  Formats   --formats=qcow2,vdi,vmdk,vhdx|all|none. Extra exports; raw .img kept."
     echo
-    echo "Output:  <output-dir>/<name>.iso  plus  <name>.iso.sha1  and  <name>.iso.sha256"
-    echo "  Default <name>: ubuntu-<version>-<desktop>-amd64-<UTC-timestamp>."
-    echo "  Default output dir: your home directory (UVB_OUTPUT_DIR overrides)."
-    echo "  Workspace: basic mode /var/cache/ubuntu-vanilla-build, advanced ~/uvb-workspace."
+    echo "Output:  <output-dir>/<name>.img  plus the selected .qcow2/.vdi/.vmdk/.vhdx"
+    echo "  exports, each with .sha1 and .sha256 checksums."
+    echo "  Default <name>: ubuntu-<version>-<desktop|cli>-vm-amd64-<UTC-timestamp>."
+    echo "  Default output dir: your home directory (UVB_OUTPUT_DIR overrides). Workspace:"
+    echo "  <parent>/workspace-vm (basic parent /var/cache/ubuntu-vanilla-build,"
+    echo "  advanced ~/uvb-workspace) — separate from the other builders so nothing collides."
     echo
     echo "Examples:"
     echo "  $0                                     Guided interactive build (all stages)"
-    echo "  $0 --release=noble --kernel=generic --desktop=xfce -"
-    echo "  $0 --release=jammy --installer=ubiquity --brave=none --firefox -"
-    echo "  $0 --advanced --config=build.cfg --no-interactive -    Unattended from a config"
+    echo "  $0 --release=noble --kernel=generic --profile=cli --firmware=uefi -"
+    echo "  $0 --profile=desktop --desktop=gnome --disk-size=64 --alloc-tool=dd \\"
+    echo "       --user-mode=build --username=alice --password=secret --hostname=vm01 --formats=qcow2,vdi -"
+    echo "  $0 --advanced --config=build-vm.cfg --no-interactive -    Unattended from a config"
     echo "  $0 --advanced run_chroot               Re-run only the chroot phase (advanced)"
-    echo "  $0 debootstrap - build_iso             Run debootstrap through the ISO build"
+    echo "  $0 debootstrap - build_disk_image      Run debootstrap through image assembly"
     echo
     exit 0
 }
@@ -1167,6 +1256,7 @@ function host_abort_cleanup() {
         return 0
     fi
     HOST_ABORT_CLEANUP_DONE=1
+    detach_image_loop || true
     chroot_exit_teardown || true
     unmount_package_cache || true
     if [[ "${ADVANCED_MODE:-0}" == "1" ]]; then
@@ -1202,6 +1292,11 @@ function host_build_signal_trap() {
 function setup_host() {
     echo "=====> running setup_host ..."
 
+    local _host_deps=(debootstrap parted dosfstools e2fsprogs rsync)
+    if [[ "$UVB_IMAGE_KIND" == "vm" ]]; then
+        _host_deps+=(qemu-utils)
+    fi
+
     local skip_install=0
     if [[ "${LAUNCHED_FROM_START_HERE:-0}" -eq 1 ]]; then
         if command -v dpkg &>/dev/null && [[ -r /etc/os-release ]]; then
@@ -1210,7 +1305,7 @@ function setup_host() {
             . /etc/os-release
             if [[ "${ID:-}" == "ubuntu" ]] || [[ "${ID_LIKE:-}" == *ubuntu* ]] || \
                [[ "${ID:-}" == "debian" ]] || [[ "${ID_LIKE:-}" == *debian* ]]; then
-                if dpkg -s debootstrap squashfs-tools xorriso &>/dev/null; then
+                if dpkg -s "${_host_deps[@]}" &>/dev/null; then
                     skip_install=1
                     if { [[ "${ID:-}" == "debian" ]] || [[ "${ID_LIKE:-}" == *debian* ]]; } && \
                        { [[ "${ID:-}" != "ubuntu" ]] && [[ "${ID_LIKE:-}" != *ubuntu* ]]; }; then
@@ -1227,7 +1322,7 @@ function setup_host() {
         echo "=====> Host dependencies already installed. Skipping APT update and installation."
     else
         host_priv apt update
-        host_priv apt install -y debootstrap squashfs-tools xorriso
+        host_priv apt install -y "${_host_deps[@]}"
     fi
 
     if [[ "${ADVANCED_MODE:-0}" == "1" ]] && [[ -d "$WORKSPACE_CHROOT" ]]; then
@@ -1260,11 +1355,7 @@ function run_chroot() {
     chroot_enter_setup
     mount_package_cache
 
-    host_priv cp "$SCRIPT_DIR/build.sh" "$WORKSPACE_CHROOT/root/build.sh"
-    host_priv rm -rf "$WORKSPACE_CHROOT/root/calamares-config"
-    if [[ -d "$SCRIPT_DIR/calamares" ]]; then
-        host_priv cp -a "$SCRIPT_DIR/calamares" "$WORKSPACE_CHROOT/root/calamares-config"
-    fi
+    host_priv cp "$SCRIPT_DIR/$SCRIPT_NAME" "$WORKSPACE_CHROOT/root/build.sh"
 
     # Copy hooks into chroot so chroot-phase hooks can run inside.
     host_priv rm -rf "$WORKSPACE_CHROOT/root/hooks"
@@ -1300,31 +1391,32 @@ function run_chroot() {
         TARGET_KEYBOARD_VARIANT="${TARGET_KEYBOARD_VARIANT:-}" \
         TARGET_GNOME_INSTALL_RECOMMENDS="${TARGET_GNOME_INSTALL_RECOMMENDS:-0}" \
         TARGET_NAME="${TARGET_NAME}" \
-        GRUB_LIVEBOOT_LABEL="${GRUB_LIVEBOOT_LABEL}" \
-        TARGET_INSTALLER="${TARGET_INSTALLER:-calamares}" \
-        TARGET_PACKAGE_REMOVE="${TARGET_PACKAGE_REMOVE}" \
+        TARGET_IMAGE_PROFILE="${TARGET_IMAGE_PROFILE:-desktop}" \
+        TARGET_NETWORK_STACK="${TARGET_NETWORK_STACK:-}" \
+        UVB_IMAGE_KIND="${UVB_IMAGE_KIND}" \
         /root/build.sh --chroot-internal -
 
     host_priv rm -f "$WORKSPACE_CHROOT/root/build.sh"
-    host_priv rm -rf "$WORKSPACE_CHROOT/root/calamares-config"
     host_priv rm -rf "$WORKSPACE_CHROOT/root/hooks"
 
     unmount_package_cache
     chroot_exit_teardown
 }
 
-function write_iso_hashes() {
-    echo "=====> writing SHA-1 and SHA-256 ..."
+function write_output_hashes() {
+    local file="$1"
+    echo "=====> writing SHA-1 and SHA-256 for ${file##*/} ..."
     (
         cd "$OUTPUT_DIR"
         # tee via host_priv: the output directory may be root-owned.
-        sha1sum "$TARGET_NAME.iso" | host_priv tee "$TARGET_NAME.iso.sha1" >/dev/null
-        sha256sum "$TARGET_NAME.iso" | host_priv tee "$TARGET_NAME.iso.sha256" >/dev/null
+        sha1sum "${file##*/}" | host_priv tee "${file##*/}.sha1" >/dev/null
+        sha256sum "${file##*/}" | host_priv tee "${file##*/}.sha256" >/dev/null
     )
+    OUTPUT_FILES+=("$file" "$file.sha1" "$file.sha256")
 }
 
-# The ISO and checksums are produced by privileged commands, so they come out
-# root-owned. Hand them back to the human who launched the build.
+# The image and checksums are produced by privileged commands, so they come
+# out root-owned. Hand them back to the human who launched the build.
 function fix_output_ownership() {
     local owner=""
     if [[ "$(id -u)" -eq 0 ]]; then
@@ -1334,9 +1426,7 @@ function fix_output_ownership() {
     fi
     [[ -z "$owner" ]] && return 0
     local f
-    for f in "$OUTPUT_DIR/$TARGET_NAME.iso" \
-             "$OUTPUT_DIR/$TARGET_NAME.iso.sha1" \
-             "$OUTPUT_DIR/$TARGET_NAME.iso.sha256"; do
+    for f in "${OUTPUT_FILES[@]}"; do
         [[ -e "$f" ]] && host_priv chown "$owner" "$f" 2>/dev/null || true
     done
 }
@@ -1347,110 +1437,414 @@ function ensure_output_dir() {
     fi
 }
 
-function build_iso() {
-    echo "=====> running build_iso ..."
+# Unwind the disk image mounts and the loop device. Also called from the
+# abort path, so everything is best-effort and re-entrant.
+function detach_image_loop() {
+    if [[ -n "${IMG_MOUNT_DIR:-}" ]]; then
+        local _mp
+        for _mp in "$IMG_MOUNT_DIR/dev/pts" "$IMG_MOUNT_DIR/dev" "$IMG_MOUNT_DIR/proc" \
+                   "$IMG_MOUNT_DIR/sys" "$IMG_MOUNT_DIR/run" "$IMG_MOUNT_DIR/boot/efi" \
+                   "$IMG_MOUNT_DIR"; do
+            if mountpoint -q "$_mp" 2>/dev/null; then
+                host_priv umount -l "$_mp" 2>/dev/null || true
+            fi
+        done
+    fi
+    if [[ -n "${IMG_LOOP_DEV:-}" ]]; then
+        host_priv losetup -d "$IMG_LOOP_DEV" 2>/dev/null || true
+    fi
+    IMG_LOOP_DEV=""
+    IMG_MOUNT_DIR=""
+}
+
+# in_target CMD...  — run a command inside the mounted disk image.
+function in_target() {
+    host_priv chroot "$IMG_MOUNT_DIR" /usr/bin/env \
+        DEBIAN_FRONTEND=noninteractive LC_ALL=C HOME=/root "$@"
+}
+
+function create_baked_user() {
+    echo "=====> creating user '${TARGET_USERNAME}' inside the image (build-time credentials) ..."
+    in_target useradd -m -s /bin/bash -c "${TARGET_USER_FULLNAME:-$TARGET_USERNAME}" "$TARGET_USERNAME"
+    local grp
+    for grp in adm cdrom dip plugdev sudo lxd; do
+        if in_target getent group "$grp" >/dev/null 2>&1; then
+            in_target usermod -aG "$grp" "$TARGET_USERNAME"
+        fi
+    done
+    printf '%s:%s
+' "$TARGET_USERNAME" "$TARGET_USER_PASSWORD" | in_target chpasswd
+}
+
+# Cloud images with baked credentials: point cloud-init's default user at the
+# baked account so provider-injected SSH keys and user-data land there
+# (instead of a separate 'ubuntu' user), and allow password login.
+function configure_cloud_init_user() {
+    if [[ "$UVB_IMAGE_KIND" != "cloud" ]] || [[ "${TARGET_USER_MODE:-deploy}" != "build" ]]; then
+        return 0
+    fi
+    host_priv mkdir -p "$IMG_MOUNT_DIR/etc/cloud/cloud.cfg.d"
+    host_priv tee "$IMG_MOUNT_DIR/etc/cloud/cloud.cfg.d/90-uvb-default-user.cfg" >/dev/null <<EOF
+# Written by $SCRIPT_NAME: the default user is the account baked in at build time.
+system_info:
+  default_user:
+    name: ${TARGET_USERNAME}
+    lock_passwd: false
+    gecos: ${TARGET_USER_FULLNAME:-$TARGET_USERNAME}
+    groups: [adm, cdrom, dip, plugdev, sudo]
+    shell: /bin/bash
+ssh_pwauth: true
+EOF
+}
+
+# VM images without baked credentials: a first-boot wizard on the VM console
+# asks for username/password/hostname, creates the account, then disables
+# itself (flag file /var/lib/uvb-firstboot-pending).
+function install_firstboot_user_wizard() {
+    echo "=====> installing the first-boot user wizard (runs on the VM console at first boot) ..."
+    host_priv tee "$IMG_MOUNT_DIR/usr/local/sbin/uvb-firstboot-setup" >/dev/null <<'WIZARD_EOF'
+#!/bin/bash
+# First-boot account wizard: asks for a username/password/hostname on the
+# console, creates the account, then disables itself. Installed by the
+# Ubuntu Vanilla image builder.
+set -u
+echo
+echo "=================================================================="
+echo "  Welcome! Let's create your user account for this system."
+echo "=================================================================="
+echo
+username=""
+while true; do
+    read -r -p "Username: " username
+    if [[ ! "$username" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+        echo "Invalid username (lowercase letters, digits, '-' and '_')."
+        continue
+    fi
+    if id "$username" &>/dev/null; then
+        echo "User '$username' already exists — pick another name."
+        continue
+    fi
+    break
+done
+read -r -p "Full name (optional): " fullname
+while true; do
+    read -r -s -p "Password: " pw1; echo
+    read -r -s -p "Confirm password: " pw2; echo
+    [[ -n "$pw1" && "$pw1" == "$pw2" ]] && break
+    echo "Passwords are empty or do not match — try again."
+done
+read -r -p "Hostname [$(cat /etc/hostname)]: " newhost
+useradd -m -s /bin/bash -c "${fullname:-$username}" "$username"
+for grp in adm cdrom dip plugdev sudo lxd; do
+    getent group "$grp" >/dev/null && usermod -aG "$grp" "$username"
+done
+printf '%s:%s
+' "$username" "$pw1" | chpasswd
+if [[ -n "$newhost" ]]; then
+    echo "$newhost" > /etc/hostname
+    sed -i "s/^127\.0\.1\.1.*/127.0.1.1 ${newhost}/" /etc/hosts || true
+    hostname "$newhost" 2>/dev/null || true
+fi
+rm -f /var/lib/uvb-firstboot-pending
+echo
+echo "User '$username' created. Continuing boot ..."
+sleep 1
+exit 0
+WIZARD_EOF
+    host_priv chmod 0755 "$IMG_MOUNT_DIR/usr/local/sbin/uvb-firstboot-setup"
+
+    host_priv tee "$IMG_MOUNT_DIR/etc/systemd/system/uvb-firstboot-setup.service" >/dev/null <<'UNIT_EOF'
+[Unit]
+Description=First-boot user account wizard
+ConditionPathExists=/var/lib/uvb-firstboot-pending
+After=systemd-user-sessions.service
+Before=getty@tty1.service display-manager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+ExecStart=/usr/local/sbin/uvb-firstboot-setup
+
+[Install]
+WantedBy=multi-user.target
+UNIT_EOF
+    host_priv touch "$IMG_MOUNT_DIR/var/lib/uvb-firstboot-pending"
+    in_target systemctl enable uvb-firstboot-setup.service
+}
+
+# export_vm_images RAW_IMG — convert the raw image to the formats selected in
+# TARGET_VM_FORMATS with qemu-img (vm kind only).
+function export_vm_images() {
+    local raw="$1"
+    local formats="${TARGET_VM_FORMATS:-qcow2}"
+    if [[ "$formats" == "none" ]]; then
+        echo "=====> VM exports: none requested (raw .img only)"
+        return 0
+    fi
+    local fmt out
+    for fmt in ${formats//,/ }; do
+        case "$fmt" in
+            qcow2)
+                out="${raw%.img}.qcow2"
+                echo "=====> exporting QCOW2 (QEMU/KVM, Proxmox, virt-manager): ${out##*/}"
+                host_priv qemu-img convert -f raw -O qcow2 -c "$raw" "$out"
+                ;;
+            vdi)
+                out="${raw%.img}.vdi"
+                echo "=====> exporting VDI (VirtualBox): ${out##*/}"
+                host_priv qemu-img convert -f raw -O vdi "$raw" "$out"
+                ;;
+            vmdk)
+                out="${raw%.img}.vmdk"
+                echo "=====> exporting VMDK (VMware): ${out##*/}"
+                host_priv qemu-img convert -f raw -O vmdk "$raw" "$out"
+                ;;
+            vhdx)
+                out="${raw%.img}.vhdx"
+                echo "=====> exporting VHDX (Hyper-V): ${out##*/}"
+                host_priv qemu-img convert -f raw -O vhdx "$raw" "$out"
+                ;;
+            *)
+                ui_warn "Unknown VM export format '$fmt' — skipping."
+                continue
+                ;;
+        esac
+        write_output_hashes "$out"
+    done
+}
+
+function build_disk_image() {
+    echo "=====> running build_disk_image ..."
+
+    local size_gb="${TARGET_DISK_SIZE_GB:-32}"
+    local firmware="${TARGET_FIRMWARE:-uefi}"
+    local esp_mib=512
+    local swap_mib=4096
+    local img_path="$WORKSPACE_DIR/$TARGET_NAME.img"
+    IMG_MOUNT_DIR="$WORKSPACE_DIR/imgroot"
 
     ensure_workspace_root
-    host_priv rm -rf "$WORKSPACE_IMAGE"
-    host_priv mv "$WORKSPACE_CHROOT/image" "$WORKSPACE_IMAGE"
+    host_priv rm -f "$img_path"
+    local alloc="${TARGET_IMG_ALLOC:-truncate}"
+    echo "=====> allocating ${size_gb} GB image (tool: ${alloc}): $img_path"
+    case "$alloc" in
+        truncate)
+            # Sparse file: instant, occupies only the data actually written.
+            host_priv truncate -s "${size_gb}G" "$img_path"
+            ;;
+        fallocate)
+            # Preallocated extents: the full size is reserved up front.
+            host_priv fallocate -l "${size_gb}G" "$img_path"
+            ;;
+        dd)
+            # Fully zero-written: slowest, maximum compatibility.
+            host_priv dd if=/dev/zero of="$img_path" bs=1M count="$((size_gb * 1024))" status=progress
+            ;;
+        *)
+            >&2 echo "Internal error: TARGET_IMG_ALLOC='${alloc}' (expected truncate, fallocate, or dd)."
+            exit 1
+            ;;
+    esac
 
-    host_priv mksquashfs "$WORKSPACE_CHROOT" "$WORKSPACE_IMAGE/casper/filesystem.squashfs" \
-        -noappend -no-duplicates -no-recovery \
-        -wildcards \
-        -comp xz -b 1M -Xdict-size 100% \
-        -e "var/cache/apt/archives/*" \
-        -e "root/*" \
-        -e "root/.*" \
-        -e "tmp/*" \
-        -e "tmp/.*" \
-        -e "swapfile" \
-        -e "image"
+    IMG_LOOP_DEV="$(host_priv losetup --show -f -P "$img_path")"
+    echo "=====> loop device: $IMG_LOOP_DEV"
 
-    # Mirror the mksquashfs excludes above so the size casper reports matches
-    # what actually ships in the squashfs (instead of overcounting /root, /tmp,
-    # and the APT package cache).
-    printf "%s" "$(host_priv du -sx --block-size=1 \
-        --exclude="$WORKSPACE_CHROOT/root" \
-        --exclude="$WORKSPACE_CHROOT/tmp" \
-        --exclude="$WORKSPACE_CHROOT/var/cache/apt/archives" \
-        --exclude="$WORKSPACE_CHROOT/swapfile" \
-        "$WORKSPACE_CHROOT" | cut -f1)" | host_priv tee "$WORKSPACE_IMAGE/casper/filesystem.size" >/dev/null
-
-    local boot_hybrid_img="$WORKSPACE_CHROOT/usr/lib/grub/i386-pc/boot_hybrid.img"
-    if [[ ! -f "$boot_hybrid_img" ]]; then
-        >&2 echo "Missing $boot_hybrid_img (grub-pc-bin not installed in chroot?). Cannot build hybrid BIOS/UEFI ISO."
-        exit 1
+    # GPT partition table.
+    #   UEFI-only: 1 = ESP 512 MB, 2 = swap 4 GB, 3 = root (rest)
+    #   Hybrid:    1 = BIOS boot 1 MiB (GRUB core.img), 2 = ESP 512 MB,
+    #              3 = swap 4 GB, 4 = root — GRUB is installed for BOTH the
+    #              i386-pc (BIOS) and x86_64-efi targets, so the same disk
+    #              boots on legacy BIOS and UEFI firmware alike
+    local p_esp p_swap p_root
+    if [[ "$firmware" == "uefi" ]]; then
+        host_priv parted -s "$IMG_LOOP_DEV" \
+            mklabel gpt \
+            mkpart ESP fat32 1MiB "$((1 + esp_mib))MiB" \
+            set 1 esp on \
+            mkpart swap linux-swap "$((1 + esp_mib))MiB" "$((1 + esp_mib + swap_mib))MiB" \
+            mkpart root ext4 "$((1 + esp_mib + swap_mib))MiB" 100%
+        p_esp="${IMG_LOOP_DEV}p1"
+        p_swap="${IMG_LOOP_DEV}p2"
+        p_root="${IMG_LOOP_DEV}p3"
+    else
+        host_priv parted -s "$IMG_LOOP_DEV" \
+            mklabel gpt \
+            mkpart biosboot 1MiB 2MiB \
+            set 1 bios_grub on \
+            mkpart ESP fat32 2MiB "$((2 + esp_mib))MiB" \
+            set 2 esp on \
+            mkpart swap linux-swap "$((2 + esp_mib))MiB" "$((2 + esp_mib + swap_mib))MiB" \
+            mkpart root ext4 "$((2 + esp_mib + swap_mib))MiB" 100%
+        p_esp="${IMG_LOOP_DEV}p2"
+        p_swap="${IMG_LOOP_DEV}p3"
+        p_root="${IMG_LOOP_DEV}p4"
     fi
-    if [[ ! -f "$WORKSPACE_IMAGE/boot/grub/bios.img" ]]; then
-        >&2 echo "Missing $WORKSPACE_IMAGE/boot/grub/bios.img (build_image step did not produce it). Aborting."
-        exit 1
-    fi
-    if [[ ! -f "$WORKSPACE_IMAGE/boot/grub/efiboot.img" ]]; then
-        >&2 echo "Missing $WORKSPACE_IMAGE/boot/grub/efiboot.img (build_image step did not produce it). Aborting."
-        exit 1
+    host_priv partprobe "$IMG_LOOP_DEV" 2>/dev/null || true
+    if command -v udevadm &>/dev/null; then
+        host_priv udevadm settle 2>/dev/null || true
     fi
 
-    # ISO 9660 volume id: A-Z 0-9 _ only, max 32 chars. Normalize so xorriso doesn't warn.
-    local iso_volid
-    iso_volid="$(printf '%s' "$TARGET_NAME" \
-        | tr '[:lower:]' '[:upper:]' \
-        | tr -c 'A-Z0-9_' '_' \
-        | cut -c1-32)"
+    echo "=====> creating filesystems (ESP ${esp_mib} MB, swap $((swap_mib / 1024)) GB, root = rest) ..."
+    host_priv mkfs.vfat -F 32 -n ESP "$p_esp"
+    host_priv mkswap -L swap "$p_swap"
+    host_priv mkfs.ext4 -q -L root "$p_root"
+
+    host_priv mkdir -p "$IMG_MOUNT_DIR"
+    host_priv mount "$p_root" "$IMG_MOUNT_DIR"
+    host_priv mkdir -p "$IMG_MOUNT_DIR/boot/efi"
+    host_priv mount "$p_esp" "$IMG_MOUNT_DIR/boot/efi"
+
+    echo "=====> copying the root filesystem into the image ..."
+    host_priv rsync -aHAX \
+        --exclude=/root/build.sh \
+        --exclude=/root/hooks \
+        --exclude='/var/cache/apt/archives/*.deb' \
+        --exclude=/swapfile \
+        "$WORKSPACE_CHROOT/" "$IMG_MOUNT_DIR/"
+
+    local uuid_esp uuid_swap uuid_root
+    uuid_esp="$(host_priv blkid -s UUID -o value "$p_esp")"
+    uuid_swap="$(host_priv blkid -s UUID -o value "$p_swap")"
+    uuid_root="$(host_priv blkid -s UUID -o value "$p_root")"
+
+    host_priv tee "$IMG_MOUNT_DIR/etc/fstab" >/dev/null <<EOF
+# /etc/fstab — generated by $SCRIPT_NAME
+UUID=${uuid_root}  /          ext4  defaults,errors=remount-ro  0 1
+UUID=${uuid_esp}  /boot/efi  vfat  umask=0077  0 1
+UUID=${uuid_swap}  none       swap  sw  0 0
+EOF
+
+    # Hostname: TARGET_HOSTNAME, or a short distro default instead of the
+    # long build target name written during the chroot phase.
+    local img_hostname="${TARGET_HOSTNAME:-ubuntu}"
+    echo "$img_hostname" | host_priv tee "$IMG_MOUNT_DIR/etc/hostname" >/dev/null
+    host_priv tee "$IMG_MOUNT_DIR/etc/hosts" >/dev/null <<EOF
+127.0.0.1 localhost
+127.0.1.1 ${img_hostname}
+
+::1 ip6-localhost ip6-loopback
+fe00::0 ip6-localnet
+ff00::0 ip6-mcastprefix
+ff02::1 ip6-allnodes
+ff02::2 ip6-allrouters
+EOF
+
+    # Standard Ubuntu resolver symlink (systemd-resolved).
+    host_priv ln -sf ../run/systemd/resolve/stub-resolv.conf "$IMG_MOUNT_DIR/etc/resolv.conf"
+
+    # Network defaults. Cloud images: cloud-init writes its own netplan at
+    # deploy time. VM images: static netplan defaults baked in here.
+    if [[ "$UVB_IMAGE_KIND" != "cloud" ]]; then
+        host_priv mkdir -p "$IMG_MOUNT_DIR/etc/netplan"
+        if [[ "${TARGET_NETWORK_STACK:-network-manager}" == "network-manager" ]]; then
+            host_priv tee "$IMG_MOUNT_DIR/etc/netplan/01-network-manager-all.yaml" >/dev/null <<'EOF'
+network:
+  version: 2
+  renderer: NetworkManager
+EOF
+            host_priv chmod 0600 "$IMG_MOUNT_DIR/etc/netplan/01-network-manager-all.yaml"
+        else
+            host_priv tee "$IMG_MOUNT_DIR/etc/netplan/01-dhcp-all.yaml" >/dev/null <<'EOF'
+network:
+  version: 2
+  ethernets:
+    all-ethernet:
+      match:
+        name: "en*"
+      dhcp4: true
+      dhcp6: true
+EOF
+            host_priv chmod 0600 "$IMG_MOUNT_DIR/etc/netplan/01-dhcp-all.yaml"
+        fi
+    fi
+
+    # Bind mounts so grub-install / update-grub / update-initramfs can run
+    # inside the image.
+    host_priv mount --bind /dev "$IMG_MOUNT_DIR/dev"
+    host_priv mount --bind /dev/pts "$IMG_MOUNT_DIR/dev/pts"
+    host_priv mount -t proc proc "$IMG_MOUNT_DIR/proc"
+    host_priv mount -t sysfs sysfs "$IMG_MOUNT_DIR/sys"
+    host_priv mount --bind /run "$IMG_MOUNT_DIR/run"
+
+    # netplan backend: enable systemd-networkd when it is the renderer.
+    if [[ "${TARGET_NETWORK_STACK:-networkd}" == "networkd" ]]; then
+        in_target systemctl enable systemd-networkd.service || true
+    fi
+
+    # Cloud images with NetworkManager: tell cloud-init to render its network
+    # config for NetworkManager instead of the systemd-networkd default.
+    if [[ "$UVB_IMAGE_KIND" == "cloud" ]] && [[ "${TARGET_NETWORK_STACK:-networkd}" == "network-manager" ]]; then
+        host_priv mkdir -p "$IMG_MOUNT_DIR/etc/cloud/cloud.cfg.d"
+        host_priv tee "$IMG_MOUNT_DIR/etc/cloud/cloud.cfg.d/91-uvb-network-renderer.cfg" >/dev/null <<'EOF'
+# Written by the Ubuntu Vanilla image builder: this image uses NetworkManager.
+system_info:
+  network:
+    renderers: ['network-manager', 'netplan', 'networkd']
+    activators: ['network-manager', 'netplan', 'networkd']
+EOF
+    fi
+
+    # Serial console for cloud images: most providers expose the VM console
+    # on ttyS0.
+    if [[ "$UVB_IMAGE_KIND" == "cloud" ]]; then
+        host_priv mkdir -p "$IMG_MOUNT_DIR/etc/default/grub.d"
+        host_priv tee "$IMG_MOUNT_DIR/etc/default/grub.d/50-cloudimg.cfg" >/dev/null <<'EOF'
+GRUB_CMDLINE_LINUX_DEFAULT="console=tty1 console=ttyS0,115200"
+GRUB_TIMEOUT=0
+GRUB_TERMINAL="console serial"
+GRUB_SERIAL_COMMAND="serial --speed=115200"
+EOF
+    fi
+
+    # No hibernation into the swap partition of a generic image: keep the
+    # initramfs free of a baked-in resume UUID.
+    host_priv mkdir -p "$IMG_MOUNT_DIR/etc/initramfs-tools/conf.d"
+    echo "RESUME=none" | host_priv tee "$IMG_MOUNT_DIR/etc/initramfs-tools/conf.d/resume" >/dev/null
+
+    echo "=====> installing GRUB (${firmware}) ..."
+    # UEFI: --no-nvram because NVRAM boot entries of the build machine do not
+    # travel with the image; --removable adds the EFI/BOOT/BOOTX64.EFI
+    # fallback path every firmware finds without NVRAM entries.
+    if [[ "$firmware" == "hybrid" ]]; then
+        # Hybrid: BIOS GRUB into the bios_grub partition, ...
+        in_target grub-install --target=i386-pc --recheck "$IMG_LOOP_DEV"
+    fi
+    # ... and UEFI GRUB onto the ESP (both firmware modes have one).
+    in_target grub-install --target=x86_64-efi --efi-directory=/boot/efi \
+        --bootloader-id=ubuntu --uefi-secure-boot --recheck --no-nvram
+    in_target grub-install --target=x86_64-efi --efi-directory=/boot/efi \
+        --bootloader-id=ubuntu --uefi-secure-boot --removable --recheck --no-nvram
+    in_target update-initramfs -u
+    in_target update-grub
+
+    # User account: baked in now, or deferred to cloud-init / the first-boot
+    # wizard depending on the image kind.
+    if [[ "${TARGET_USER_MODE:-deploy}" == "build" ]]; then
+        create_baked_user
+    elif [[ "$UVB_IMAGE_KIND" == "vm" ]]; then
+        install_firstboot_user_wizard
+    else
+        echo "=====> user account: created at deploy time by cloud-init (provider metadata)"
+    fi
+    configure_cloud_init_user
+
+    detach_image_loop
 
     ensure_output_dir
+    echo "=====> moving image to $OUTPUT_DIR/$TARGET_NAME.img"
+    host_priv mv "$img_path" "$OUTPUT_DIR/$TARGET_NAME.img"
+    write_output_hashes "$OUTPUT_DIR/$TARGET_NAME.img"
 
-    pushd "$WORKSPACE_IMAGE" >/dev/null
+    if [[ "$UVB_IMAGE_KIND" == "vm" ]]; then
+        export_vm_images "$OUTPUT_DIR/$TARGET_NAME.img"
+    fi
 
-    # Hybrid BIOS + UEFI El Torito layout (matches what Ubuntu/Debian ship today):
-    #   * Legacy/BIOS boot:  -b boot/grub/bios.img   (must exist inside the ISO tree)
-    #     - bios.img is "cdboot.img + core.img" produced by build_image()
-    #     - --grub2-boot-info patches GRUB's offsets so it finds its core inside the ISO
-    #     - --grub2-mbr embeds boot_hybrid.img as the protective MBR (BIOS hybrid boot)
-    #   * UEFI boot:         efiboot.img is appended as GPT partition 2 (EFI System
-    #     Partition GUID, mixed-endian = 28732ac11ff8d211ba4b00a0c93ec93b), and the
-    #     UEFI alt-boot entry points at that appended partition via the
-    #     `--interval:appended_partition_2:all::` pseudo-path. UEFI firmware mounts the
-    #     ESP partition directly, so the file does NOT also need to live in the ISO9660
-    #     tree (we keep it there too for tooling that still looks for /boot/grub/efiboot.img).
-    # EFI System Partition GUID (C12A7328-F81F-11D2-BA4B-00A0C93EC93B) in the
-    # on-disk mixed-endian byte order that xorriso's -append_partition expects.
-    local esp_type_guid="28732ac11ff8d211ba4b00a0c93ec93b"
-    # Microsoft Basic Data Partition GUID (EBD0A0A2-B9E5-4433-87C0-68B6B72699C7)
-    # in mixed-endian, used as the ISO MBR partition type so the ISO9660 area is
-    # visible as a normal data partition when the stick is inspected.
-    local iso_mbr_type_guid="a2a0d0ebe5b9334487c068b6b72699c7"
-
-    host_priv xorriso \
-        -as mkisofs \
-        -r -V "$iso_volid" \
-        -J -joliet-long \
-        -l \
-        -iso-level 3 \
-        -full-iso9660-filenames \
-        -o "$OUTPUT_DIR/$TARGET_NAME.iso" \
-        \
-        --grub2-mbr "$boot_hybrid_img" \
-        -partition_offset 16 \
-        --mbr-force-bootable \
-        -append_partition 2 "$esp_type_guid" boot/grub/efiboot.img \
-        -appended_part_as_gpt \
-        -iso_mbr_part_type "$iso_mbr_type_guid" \
-        \
-        -c boot.catalog \
-        -b boot/grub/bios.img \
-            -no-emul-boot \
-            -boot-load-size 4 \
-            -boot-info-table \
-            --grub2-boot-info \
-        -eltorito-alt-boot \
-        -e '--interval:appended_partition_2:all::' \
-            -no-emul-boot \
-        \
-        .
-
-    popd >/dev/null
-
-    write_iso_hashes
     fix_output_ownership
     clean_workspace
 }
@@ -1467,8 +1861,8 @@ function interactive_mode_pick() {
 
     ui_heading "Build mode"
     echo "    1) Basic     Guided build with sensible defaults  [default]"
-    echo "                 (workspace in a system directory, ISO saved to your home)"
-    echo "    2) Advanced  Adds config file loading (build.cfg / --config),"
+    echo "                 (workspace in a system directory, image saved to your home)"
+    echo "    2) Advanced  Adds config file loading (build-vm.cfg / --config),"
     echo "                 workspace preservation on failure, package caching,"
     echo "                 custom workspace/output paths (asked interactively),"
     echo "                 and the --interactive / --no-interactive overrides"
@@ -1913,6 +2307,16 @@ function interactive_thunderbird_pick() {
 }
 
 function resolve_browser_selection() {
+    # CLI/TTY-only images get no GUI browsers unless explicitly requested.
+    if [[ "${TARGET_IMAGE_PROFILE:-desktop}" == "cli" ]]; then
+        export TARGET_BRAVE_CHANNEL="${TARGET_BRAVE_CHANNEL:-none}"
+        export TARGET_LIBREWOLF="${TARGET_LIBREWOLF:-0}"
+        export TARGET_FIREFOX="${TARGET_FIREFOX:-0}"
+        export TARGET_FIREFOX_ESR="${TARGET_FIREFOX_ESR:-0}"
+        export TARGET_THUNDERBIRD="${TARGET_THUNDERBIRD:-0}"
+        return 0
+    fi
+
     if [[ -n "${TARGET_BROWSER:-}" && -z "${TARGET_BRAVE_CHANNEL:-}" ]]; then
         export TARGET_BRAVE_CHANNEL="$TARGET_BROWSER"
     fi
@@ -2045,6 +2449,22 @@ function resolve_optional_service_choices() {
         fi
     fi
 
+    # Cloud images are managed over SSH, so openssh-server defaults to yes there.
+    if [[ -z "${TARGET_OPENSSH_SERVER+x}" ]] && [[ "$UVB_IMAGE_KIND" == "cloud" ]]; then
+        if prompts_enabled; then
+            ui_heading "OpenSSH server"
+            echo "    Cloud images are normally reached over SSH, so this defaults to yes."
+            if ui_confirm "Pre-install openssh-server?" y; then
+                export TARGET_OPENSSH_SERVER=1
+            else
+                export TARGET_OPENSSH_SERVER=0
+            fi
+            ui_ok "TARGET_OPENSSH_SERVER=$TARGET_OPENSSH_SERVER"
+        else
+            export TARGET_OPENSSH_SERVER=1
+        fi
+    fi
+
     if [[ -z "${TARGET_OPENSSH_SERVER+x}" ]]; then
         if prompts_enabled; then
             interactive_toggle_pick TARGET_OPENSSH_SERVER \
@@ -2074,59 +2494,404 @@ function resolve_optional_service_choices() {
     export TARGET_COCKPIT="${TARGET_COCKPIT:-0}"
 }
 
-function interactive_installer_pick() {
+function interactive_firmware_pick() {
     if ! prompts_enabled; then
-        ui_err "No terminal is available. Use --installer=calamares|ubiquity."
+        ui_err "No terminal is available. Use --firmware=uefi|hybrid."
         exit 1
     fi
 
-    ui_heading "Live installer"
-    echo "    1) Calamares  Default. Project config in scripts/calamares (all releases)"
-    echo "    2) Ubiquity   Classic Ubuntu installer (supported only on jammy / 22.04 LTS)"
+    ui_heading "Firmware / boot mode"
+    echo "    1) UEFI-only  GPT with a 512 MB EFI System Partition; boots on UEFI"
+    echo "                  firmware only (modern clouds and hypervisors: OVMF,"
+    echo "                  Hyper-V Gen2, ...)  [default]"
+    echo "    2) Hybrid     BIOS + UEFI on one disk: GPT with a 1 MiB BIOS boot"
+    echo "                  partition plus the same 512 MB ESP; GRUB is installed"
+    echo "                  for both targets (SeaBIOS, Hyper-V Gen1, older clouds"
+    echo "                  — and still bootable on UEFI)"
 
     local choice
     while true; do
-        read -r -p "  Installer [1/2, Enter=1]: " choice
+        read -r -p "  Firmware [1/2, Enter=1]: " choice
         case "${choice,,}" in
-            ""|1|c|calamares) export TARGET_INSTALLER="calamares"; break ;;
-            2|u|ubiquity)
-                if [[ "${TARGET_UBUNTU_VERSION:-}" != "jammy" ]]; then
-                    ui_warn "Ubiquity is supported only on Ubuntu 22.04 LTS (jammy)."
-                    ui_warn "Current release: '${TARGET_UBUNTU_VERSION:-unknown}'. Choose 1 (Calamares),"
-                    ui_warn "or restart with --release=jammy if you need Ubiquity."
-                    continue
-                fi
-                export TARGET_INSTALLER="ubiquity"; break ;;
+            ""|1|u|uefi|efi|uefi-only) export TARGET_FIRMWARE="uefi";   break ;;
+            2|h|hybrid|b|bios|legacy)  export TARGET_FIRMWARE="hybrid"; break ;;
             *) ui_warn "Invalid selection: '$choice'." ;;
         esac
     done
-    ui_ok "TARGET_INSTALLER=$TARGET_INSTALLER"
+    ui_ok "TARGET_FIRMWARE=$TARGET_FIRMWARE"
 }
 
-# Ubiquity is only validated for jammy; Calamares is used for noble and resolute.
-function validate_ubiquity_jammy_only() {
-    if [[ "${TARGET_INSTALLER:-}" != "ubiquity" ]]; then
-        return 0
-    fi
-    if [[ "${TARGET_UBUNTU_VERSION:-}" == "jammy" ]]; then
-        return 0
-    fi
-    echo >&2 "ERROR: Ubiquity is supported only on Ubuntu 22.04 LTS (jammy)."
-    echo >&2 "       This build targets '${TARGET_UBUNTU_VERSION:-unknown}'. Use Calamares instead (e.g. --installer=calamares)."
-    exit 1
-}
-
-function resolve_installer_choice() {
-    if [[ -n "${TARGET_INSTALLER:-}" ]]; then
+function resolve_firmware_choice() {
+    if [[ -n "${TARGET_FIRMWARE:-}" ]]; then
+        export TARGET_FIRMWARE="${TARGET_FIRMWARE,,}"
+        # Legacy aliases from before the hybrid rename.
+        case "$TARGET_FIRMWARE" in
+            bios|legacy) export TARGET_FIRMWARE="hybrid" ;;
+            uefi-only)   export TARGET_FIRMWARE="uefi" ;;
+        esac
         return 0
     fi
 
     if prompts_enabled; then
-        interactive_installer_pick
+        interactive_firmware_pick
         return 0
     fi
 
-    export TARGET_INSTALLER=calamares
+    export TARGET_FIRMWARE="uefi"
+}
+
+function interactive_network_stack_pick() {
+    if ! prompts_enabled; then
+        ui_err "No terminal is available. Use --network=networkd|network-manager."
+        exit 1
+    fi
+
+    ui_heading "Network stack (CLI/TTY-only profile)"
+    echo "    1) networkd         netplan + systemd-networkd — lean, server-style  [default]"
+    echo "    2) network-manager  NetworkManager — nmcli/nmtui, the same stack the"
+    echo "                        desktop images use"
+
+    local choice
+    while true; do
+        read -r -p "  Network stack [1/2, Enter=1]: " choice
+        case "${choice,,}" in
+            ""|1|networkd|systemd-networkd|netplan)   export TARGET_NETWORK_STACK="networkd";       break ;;
+            2|nm|networkmanager|network-manager)      export TARGET_NETWORK_STACK="network-manager"; break ;;
+            *) ui_warn "Invalid selection: '$choice'." ;;
+        esac
+    done
+    ui_ok "TARGET_NETWORK_STACK=$TARGET_NETWORK_STACK"
+}
+
+function resolve_network_stack_choice() {
+    # Normalize aliases first.
+    if [[ -n "${TARGET_NETWORK_STACK:-}" ]]; then
+        case "${TARGET_NETWORK_STACK,,}" in
+            networkd|systemd-networkd|netplan)   export TARGET_NETWORK_STACK="networkd" ;;
+            nm|networkmanager|network-manager)   export TARGET_NETWORK_STACK="network-manager" ;;
+            *)
+                >&2 echo "TARGET_NETWORK_STACK must be networkd or network-manager (got: '${TARGET_NETWORK_STACK}')."
+                exit 1
+                ;;
+        esac
+    fi
+
+    # Desktop images always use NetworkManager — the desktop stacks depend on it.
+    if [[ "${TARGET_IMAGE_PROFILE:-desktop}" != "cli" ]]; then
+        if [[ "${TARGET_NETWORK_STACK:-}" == "networkd" ]]; then
+            ui_warn "Desktop profile always uses NetworkManager — ignoring network stack 'networkd'."
+        fi
+        export TARGET_NETWORK_STACK="network-manager"
+        return 0
+    fi
+
+    if [[ -n "${TARGET_NETWORK_STACK:-}" ]]; then
+        return 0
+    fi
+
+    if prompts_enabled; then
+        interactive_network_stack_pick
+        return 0
+    fi
+
+    export TARGET_NETWORK_STACK="networkd"
+}
+
+function interactive_alloc_pick() {
+    if ! prompts_enabled; then
+        ui_err "No terminal is available. Use --alloc-tool=truncate|fallocate|dd."
+        exit 1
+    fi
+
+    ui_heading "Image allocation tool"
+    echo "    How the raw .img file is created on the build host:"
+    echo "    1) truncate   Sparse file — instant; occupies only the data actually"
+    echo "                  written (recommended)  [default]"
+    echo "    2) fallocate  Preallocated — reserves the full size up front, no holes"
+    echo "    3) dd         Fully zero-written with dd — slowest, uses the full size"
+    echo "                  on disk, maximum compatibility with picky tooling"
+
+    local choice
+    while true; do
+        read -r -p "  Allocation [1/2/3, Enter=1]: " choice
+        case "${choice,,}" in
+            ""|1|t|truncate|sparse)        export TARGET_IMG_ALLOC="truncate";  break ;;
+            2|f|fallocate|prealloc|preallocate) export TARGET_IMG_ALLOC="fallocate"; break ;;
+            3|d|dd)                        export TARGET_IMG_ALLOC="dd";        break ;;
+            *) ui_warn "Invalid selection: '$choice'." ;;
+        esac
+    done
+    ui_ok "TARGET_IMG_ALLOC=$TARGET_IMG_ALLOC"
+}
+
+function resolve_alloc_choice() {
+    if [[ -n "${TARGET_IMG_ALLOC:-}" ]]; then
+        export TARGET_IMG_ALLOC="${TARGET_IMG_ALLOC,,}"
+        case "$TARGET_IMG_ALLOC" in
+            sparse)                 export TARGET_IMG_ALLOC="truncate" ;;
+            prealloc|preallocate)   export TARGET_IMG_ALLOC="fallocate" ;;
+        esac
+        return 0
+    fi
+
+    if prompts_enabled; then
+        interactive_alloc_pick
+        return 0
+    fi
+
+    export TARGET_IMG_ALLOC="truncate"
+}
+
+function interactive_disk_size_pick() {
+    if ! prompts_enabled; then
+        ui_err "No terminal is available. Use --disk-size=32|64|128|<GB>."
+        exit 1
+    fi
+
+    ui_heading "Disk image size"
+    echo "    Fixed layout: 512 MB ESP + 4 GB swap + root gets everything else."
+    echo "    1) 32 GB     root gets ~27.5 GB  [default]"
+    echo "    2) 64 GB     root gets ~59.5 GB"
+    echo "    3) 128 GB    root gets ~123.5 GB"
+    echo "    4) Custom    any whole number of GB (minimum 10)"
+
+    local choice custom
+    while true; do
+        read -r -p "  Size [1/2/3/4, Enter=1]: " choice
+        case "${choice,,}" in
+            ""|1|32)  export TARGET_DISK_SIZE_GB=32;  break ;;
+            2|64)     export TARGET_DISK_SIZE_GB=64;  break ;;
+            3|128)    export TARGET_DISK_SIZE_GB=128; break ;;
+            4|c|custom)
+                while true; do
+                    read -r -p "  Custom size in GB (minimum 10): " custom
+                    if [[ "$custom" =~ ^[0-9]+$ ]] && [[ "$custom" -ge 10 ]]; then
+                        export TARGET_DISK_SIZE_GB="$custom"
+                        break
+                    fi
+                    ui_warn "Enter a whole number of GB, at least 10."
+                done
+                break
+                ;;
+            *) ui_warn "Invalid selection: '$choice'." ;;
+        esac
+    done
+    ui_ok "TARGET_DISK_SIZE_GB=$TARGET_DISK_SIZE_GB"
+}
+
+function resolve_disk_size_choice() {
+    if [[ -n "${TARGET_DISK_SIZE_GB:-}" ]]; then
+        return 0
+    fi
+
+    if prompts_enabled; then
+        interactive_disk_size_pick
+        return 0
+    fi
+
+    export TARGET_DISK_SIZE_GB=32
+}
+
+function interactive_profile_pick() {
+    if ! prompts_enabled; then
+        ui_err "No terminal is available. Use --profile=desktop|cli."
+        exit 1
+    fi
+
+    ui_heading "Image profile"
+    echo "    1) Desktop ready   Full graphical desktop, ready to log in  [default]"
+    echo "                       (you pick the desktop environment next)"
+    echo "    2) CLI / TTY only  No desktop at all — text console, server-style image"
+
+    local choice
+    while true; do
+        read -r -p "  Profile [1/2, Enter=1]: " choice
+        case "${choice,,}" in
+            ""|1|d|desktop)     export TARGET_IMAGE_PROFILE="desktop"; break ;;
+            2|c|cli|tty|server) export TARGET_IMAGE_PROFILE="cli";     break ;;
+            *) ui_warn "Invalid selection: '$choice'." ;;
+        esac
+    done
+    ui_ok "TARGET_IMAGE_PROFILE=$TARGET_IMAGE_PROFILE"
+}
+
+function resolve_profile_choice() {
+    if [[ -z "${TARGET_IMAGE_PROFILE:-}" ]]; then
+        if prompts_enabled; then
+            interactive_profile_pick
+        else
+            export TARGET_IMAGE_PROFILE="desktop"
+        fi
+    fi
+    export TARGET_IMAGE_PROFILE="${TARGET_IMAGE_PROFILE,,}"
+
+    # CLI/TTY-only images have no desktop; the pseudo-desktop slug "cli"
+    # short-circuits every desktop-related prompt and install step.
+    if [[ "$TARGET_IMAGE_PROFILE" == "cli" ]]; then
+        if [[ -n "${TARGET_DESKTOP:-}" && "${TARGET_DESKTOP,,}" != "cli" ]]; then
+            ui_warn "CLI/TTY-only profile selected — ignoring desktop '${TARGET_DESKTOP}'."
+        fi
+        export TARGET_DESKTOP="cli"
+    fi
+}
+
+function interactive_user_mode_pick() {
+    if ! prompts_enabled; then
+        ui_err "No terminal is available. Use --user-mode=build|deploy."
+        exit 1
+    fi
+
+    ui_heading "User account"
+    local choice
+    if [[ "$UVB_IMAGE_KIND" == "cloud" ]]; then
+        echo "    1) Deploy-time   cloud-init creates the user when the image is deployed"
+        echo "                     (username, SSH keys, and password from provider metadata)  [default]"
+        echo "    2) Build-time    bake a username + password into the image now"
+        while true; do
+            read -r -p "  User account [1/2, Enter=1]: " choice
+            case "${choice,,}" in
+                ""|1|d|deploy|cloud-init) export TARGET_USER_MODE="deploy"; break ;;
+                2|b|build|bake)           export TARGET_USER_MODE="build";  break ;;
+                *) ui_warn "Invalid selection: '$choice'." ;;
+            esac
+        done
+    else
+        echo "    1) Build-time    bake a username + password into the image now  [default]"
+        echo "    2) First boot    the VM asks for username/password/hostname on its own"
+        echo "                     console the first time it starts (no credentials baked in)"
+        while true; do
+            read -r -p "  User account [1/2, Enter=1]: " choice
+            case "${choice,,}" in
+                ""|1|b|build|bake)               export TARGET_USER_MODE="build";  break ;;
+                2|f|firstboot|first-boot|deploy) export TARGET_USER_MODE="deploy"; break ;;
+                *) ui_warn "Invalid selection: '$choice'." ;;
+            esac
+        done
+    fi
+    ui_ok "TARGET_USER_MODE=$TARGET_USER_MODE"
+}
+
+function interactive_credentials_pick() {
+    local u
+    while true; do
+        read -r -p "  Username: " u
+        if [[ "$u" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+            export TARGET_USERNAME="$u"
+            break
+        fi
+        ui_warn "Invalid username (lowercase letters, digits, '-' and '_'; must not start with a digit)."
+    done
+    if [[ -z "${TARGET_USER_FULLNAME:-}" ]]; then
+        read -r -p "  Full name (optional): " TARGET_USER_FULLNAME
+        export TARGET_USER_FULLNAME
+    fi
+    local p1 p2
+    while true; do
+        read -r -s -p "  Password: " p1; echo
+        read -r -s -p "  Confirm password: " p2; echo
+        if [[ -n "$p1" && "$p1" == "$p2" ]]; then
+            export TARGET_USER_PASSWORD="$p1"
+            break
+        fi
+        ui_warn "Passwords are empty or do not match — try again."
+    done
+    if [[ -z "${TARGET_HOSTNAME:-}" ]]; then
+        read -r -p "  Hostname [ubuntu]: " TARGET_HOSTNAME
+        export TARGET_HOSTNAME="${TARGET_HOSTNAME:-ubuntu}"
+    fi
+}
+
+function resolve_user_setup_choice() {
+    if [[ -z "${TARGET_USER_MODE:-}" ]]; then
+        if prompts_enabled; then
+            interactive_user_mode_pick
+        else
+            export TARGET_USER_MODE="deploy"
+        fi
+    fi
+    export TARGET_USER_MODE="${TARGET_USER_MODE,,}"
+
+    if [[ "$TARGET_USER_MODE" != "build" ]]; then
+        return 0
+    fi
+
+    if [[ -z "${TARGET_USERNAME:-}" || -z "${TARGET_USER_PASSWORD:-}" ]]; then
+        if prompts_enabled; then
+            ui_heading "Build-time credentials"
+            interactive_credentials_pick
+        else
+            ui_err "TARGET_USER_MODE=build requires TARGET_USERNAME and TARGET_USER_PASSWORD (or --username/--password) for non-interactive runs."
+            exit 1
+        fi
+    fi
+    ui_ok "TARGET_USERNAME=$TARGET_USERNAME"
+}
+
+# validate_vm_formats LIST — 0 when LIST is 'none' or a comma-separated list
+# of qcow2/vdi/vmdk/vhdx.
+function validate_vm_formats() {
+    local fmt list="${1:-}"
+    [[ "$list" == "none" ]] && return 0
+    [[ -z "$list" ]] && return 1
+    for fmt in ${list//,/ }; do
+        case "$fmt" in
+            qcow2|vdi|vmdk|vhdx) ;;
+            *) return 1 ;;
+        esac
+    done
+    return 0
+}
+
+function interactive_vm_formats_pick() {
+    if ! prompts_enabled; then
+        ui_err "No terminal is available. Use --formats=qcow2,vdi,vmdk,vhdx|all|none."
+        exit 1
+    fi
+
+    ui_heading "VM export formats"
+    echo "    The raw .img is always produced. Pick extra formats to export with qemu-img:"
+    echo "      qcow2   QEMU/KVM, Proxmox, virt-manager   [default]"
+    echo "      vdi     VirtualBox"
+    echo "      vmdk    VMware Workstation / ESXi"
+    echo "      vhdx    Microsoft Hyper-V"
+    echo "    Enter a comma-separated list (e.g. qcow2,vdi), 'all', or 'none'."
+
+    local raw
+    while true; do
+        read -r -p "  Formats [Enter=qcow2]: " raw
+        raw="${raw,,}"
+        [[ -z "$raw" ]] && raw="qcow2"
+        [[ "$raw" == "all" ]] && raw="qcow2,vdi,vmdk,vhdx"
+        if validate_vm_formats "$raw"; then
+            export TARGET_VM_FORMATS="$raw"
+            break
+        fi
+        ui_warn "Invalid format list: '$raw' (allowed: qcow2, vdi, vmdk, vhdx, all, none)."
+    done
+    ui_ok "TARGET_VM_FORMATS=$TARGET_VM_FORMATS"
+}
+
+function resolve_vm_formats_choice() {
+    if [[ "$UVB_IMAGE_KIND" != "vm" ]]; then
+        return 0
+    fi
+
+    if [[ -n "${TARGET_VM_FORMATS:-}" ]]; then
+        export TARGET_VM_FORMATS="${TARGET_VM_FORMATS,,}"
+        [[ "$TARGET_VM_FORMATS" == "all" ]] && export TARGET_VM_FORMATS="qcow2,vdi,vmdk,vhdx"
+        if ! validate_vm_formats "$TARGET_VM_FORMATS"; then
+            >&2 echo "TARGET_VM_FORMATS must be 'all', 'none', or a comma-separated list of qcow2, vdi, vmdk, vhdx (got: '${TARGET_VM_FORMATS}')."
+            exit 1
+        fi
+        return 0
+    fi
+
+    if prompts_enabled; then
+        interactive_vm_formats_pick
+        return 0
+    fi
+
+    export TARGET_VM_FORMATS="qcow2"
 }
 
 # Home directory of the human who launched the build (even under sudo).
@@ -2158,7 +2923,7 @@ function path_on_windows_mount() {
 # Workspace and output locations:
 #   * Basic mode: the workspace lives in a root-owned system directory
 #     ($UVB_SYSTEM_WORKSPACE_PARENT) that regular users cannot touch — the
-#     same idea as the old WSL relocation — and the finished ISO lands in
+#     same idea as the old WSL relocation — and the finished image lands in
 #     the invoking user's home directory.
 #   * Advanced mode: prompts for both paths (workspace default:
 #     ~/uvb-workspace, output default: ~); non-interactive runs use those
@@ -2202,17 +2967,17 @@ function resolve_workspace_paths() {
         echo "=====> Using Linux-native workspace parent instead: $ws_parent" >&2
     fi
 
-    WORKSPACE_DIR="${ws_parent%/}/workspace"
+    WORKSPACE_DIR="${ws_parent%/}/workspace-vm"
     WORKSPACE_CHROOT="$WORKSPACE_DIR/chroot"
     WORKSPACE_IMAGE="$WORKSPACE_DIR/image"
 
-    # ── Output directory (final ISO + checksums) ────────────────────
+    # ── Output directory (final image + checksums) ────────────────────
     if [[ -n "${UVB_OUTPUT_DIR:-}" ]]; then
         OUTPUT_DIR="${UVB_OUTPUT_DIR%/}"
         echo "=====> Output directory (UVB_OUTPUT_DIR): $OUTPUT_DIR" >&2
     elif [[ "$interactive_advanced" -eq 1 ]]; then
         local _out
-        read -r -p "  Output directory for the ISO [${user_home}]: " _out
+        read -r -p "  Output directory for the image [${user_home}]: " _out
         OUTPUT_DIR="${_out:-$user_home}"
         OUTPUT_DIR="${OUTPUT_DIR%/}"
     else
@@ -2242,7 +3007,30 @@ function print_build_summary() {
             ui_kv "  MATE extras" "${TARGET_MATE_EXTRAS:-0}"
             ;;
     esac
-    ui_kv "Installer"       "${TARGET_INSTALLER:-?}"
+    ui_kv "Profile"         "${TARGET_IMAGE_PROFILE:-desktop}"
+    local _fw="${TARGET_FIRMWARE:-uefi}"
+    [[ "$_fw" == "uefi" ]] && _fw="uefi  (UEFI-only)"
+    [[ "$_fw" == "hybrid" ]] && _fw="hybrid  (BIOS + UEFI)"
+    ui_kv "Firmware"        "$_fw"
+    ui_kv "Network stack"   "${TARGET_NETWORK_STACK:-network-manager}"
+    ui_kv "Image allocation" "${TARGET_IMG_ALLOC:-truncate}"
+    ui_kv "Disk size"       "${TARGET_DISK_SIZE_GB:-32} GB  (ESP 512 MB + swap 4 GB + root = rest)"
+    local _user_line=""
+    if [[ "${TARGET_USER_MODE:-deploy}" == "build" ]]; then
+        _user_line="baked at build time (user: ${TARGET_USERNAME:-?})"
+    elif [[ "$UVB_IMAGE_KIND" == "cloud" ]]; then
+        _user_line="created at deploy time (cloud-init)"
+    else
+        _user_line="first-boot wizard on the VM console"
+    fi
+    ui_kv "User account"    "$_user_line"
+    if [[ "$UVB_IMAGE_KIND" == "vm" ]]; then
+        if [[ "${TARGET_VM_FORMATS:-qcow2}" == "none" ]]; then
+            ui_kv "VM formats"      "raw .img only"
+        else
+            ui_kv "VM formats"      "raw + ${TARGET_VM_FORMATS:-qcow2}"
+        fi
+    fi
     local _bs=""
     case "${TARGET_BRAVE_CHANNEL:-release}" in
         none)              _bs="Brave: none" ;;
@@ -2267,40 +3055,68 @@ function print_build_summary() {
     ui_kv "Target name"     "${TARGET_NAME:-?}"
     ui_kv "Mirror"          "${TARGET_UBUNTU_MIRROR:-?}"
     ui_kv "Workspace"       "${WORKSPACE_DIR:-?}"
-    ui_kv "Output ISO"      "${OUTPUT_DIR:-?}/${TARGET_NAME:-ubuntu}.iso"
+    ui_kv "Output image"    "${OUTPUT_DIR:-?}/${TARGET_NAME:-ubuntu}.img"
     echo
 }
 
 function print_build_result() {
-    local iso_path="${OUTPUT_DIR:-?}/${TARGET_NAME:-ubuntu}.iso"
-    if [[ ! -f "$iso_path" ]]; then
+    local img_path="${OUTPUT_DIR:-?}/${TARGET_NAME:-ubuntu}.img"
+    if [[ ! -f "$img_path" ]]; then
         ui_heading "Build finished"
-        ui_info "No ISO produced at $iso_path (this is expected for partial runs)."
+        ui_info "No image produced at $img_path (this is expected for partial runs)."
         return 0
     fi
     local size=""
-    size="$(du -h --apparent-size "$iso_path" 2>/dev/null | awk '{print $1}')"
+    size="$(du -h --apparent-size "$img_path" 2>/dev/null | awk '{print $1}')"
 
     ui_heading "Build complete"
-    ui_kv "ISO"    "$iso_path"
+    ui_kv "Image"  "$img_path"
     ui_kv "Size"   "${size:-unknown}"
-    if [[ -f "$iso_path.sha1" ]]; then
-        ui_kv "SHA1"   "$(awk '{print $1}' "$iso_path.sha1")"
+    if [[ -f "$img_path.sha1" ]]; then
+        ui_kv "SHA1"   "$(awk '{print $1}' "$img_path.sha1")"
     fi
-    if [[ -f "$iso_path.sha256" ]]; then
-        ui_kv "SHA256" "$(awk '{print $1}' "$iso_path.sha256")"
+    if [[ -f "$img_path.sha256" ]]; then
+        ui_kv "SHA256" "$(awk '{print $1}' "$img_path.sha256")"
+    fi
+    if [[ "$UVB_IMAGE_KIND" == "vm" ]]; then
+        local fmt out
+        for fmt in ${TARGET_VM_FORMATS//,/ }; do
+            [[ "$fmt" == "none" ]] && continue
+            out="${img_path%.img}.${fmt}"
+            [[ -f "$out" ]] && ui_kv "Export ($fmt)" "$out"
+        done
     fi
     echo
     echo "  Next steps:"
-    echo "    The ISO is ready to use. Write it to a USB stick with your favorite"
-    echo "    USB burner, or simply copy the file onto a USB drive that has Ventoy"
-    echo "    installed. It also works as-is for PXE network boot, and for virtual"
-    echo "    machines: just create a VM on whatever platform you prefer and boot"
-    echo "    it from this ISO."
+    if [[ "$UVB_IMAGE_KIND" == "cloud" ]]; then
+        echo "    Upload the raw .img to your cloud provider (most accept raw directly;"
+        echo "    convert with qemu-img if yours wants qcow2/vhd). When deployed to a"
+        echo "    larger disk, cloud-init/growpart grows the root filesystem on first"
+        echo "    boot."
+        if [[ "${TARGET_USER_MODE:-deploy}" == "build" ]]; then
+            echo "    Log in with the account baked in at build time: ${TARGET_USERNAME:-?}."
+        else
+            echo "    User accounts and SSH keys are created at deploy time by cloud-init"
+            echo "    from your provider's settings."
+        fi
+    else
+        echo "    Attach the exported disk to a new VM (QCOW2 for QEMU/KVM/Proxmox,"
+        echo "    VDI for VirtualBox, VMDK for VMware, VHDX for Hyper-V) or use the"
+        if [[ "${TARGET_FIRMWARE:-uefi}" == "hybrid" ]]; then
+            echo "    raw .img directly. The hybrid image boots on both BIOS and UEFI VMs."
+        else
+            echo "    raw .img directly. Create the VM with UEFI firmware (UEFI-only image)."
+        fi
+        if [[ "${TARGET_USER_MODE:-deploy}" == "build" ]]; then
+            echo "    Log in with the account baked in at build time: ${TARGET_USERNAME:-?}."
+        else
+            echo "    On first boot the VM console asks you to create your user account."
+        fi
+    fi
     echo
 }
 
-# generate_config_wizard — interactive wizard that generates a build.cfg file.
+# generate_config_wizard — interactive wizard that generates a build-vm.cfg file.
 # Walks the user through each setting and writes the result.
 function generate_config_wizard() {
     if ! prompts_enabled; then
@@ -2308,10 +3124,10 @@ function generate_config_wizard() {
         exit 1
     fi
 
-    local out_path="$SCRIPT_DIR/build.cfg"
+    local out_path="$SCRIPT_DIR/build-vm.cfg"
 
     ui_banner "Build Configuration Wizard"
-    echo "  This wizard will generate a build.cfg file with your settings."
+    echo "  This wizard will generate a build-vm.cfg file with your settings."
     echo "  Press Enter to accept the [default] value shown in brackets."
     echo
 
@@ -2322,7 +3138,8 @@ function generate_config_wizard() {
         fi
     fi
 
-    local _release _kernel _desktop _installer _mirror
+    local _release _kernel _desktop _mirror
+    local _firmware _network _alloc _disk_size _profile _user_mode _vm_formats
     local _brave _librewolf _firefox _firefox_esr _thunderbird
     local _pacstall _ubuntu_studio _fwupd _openssh _cockpit
     local _locale _keyboard_layout _keyboard_variant
@@ -2342,9 +3159,33 @@ function generate_config_wizard() {
     read -r -p "  Desktop [gnome]: " _desktop
     _desktop="${_desktop:-gnome}"
 
-    # Installer
-    read -r -p "  Installer (calamares / ubiquity) [calamares]: " _installer
-    _installer="${_installer:-calamares}"
+    # Firmware / boot mode (uefi = UEFI-only, hybrid = BIOS + UEFI)
+    read -r -p "  Firmware (uefi / hybrid) [uefi]: " _firmware
+    _firmware="${_firmware:-uefi}"
+
+    # Network stack (CLI images; desktop images always use NetworkManager)
+    read -r -p "  Network stack (networkd / network-manager) [networkd]: " _network
+    _network="${_network:-networkd}"
+
+    # Image allocation tool
+    read -r -p "  Image allocation tool (truncate / fallocate / dd) [truncate]: " _alloc
+    _alloc="${_alloc:-truncate}"
+
+    # Disk image size
+    read -r -p "  Disk image size in GB (32 / 64 / 128 / any number >= 10) [32]: " _disk_size
+    _disk_size="${_disk_size:-32}"
+
+    # Image profile
+    read -r -p "  Image profile (desktop / cli) [desktop]: " _profile
+    _profile="${_profile:-desktop}"
+
+    # User account creation
+    read -r -p "  User account (build = bake credentials / deploy = create after deployment) [deploy]: " _user_mode
+    _user_mode="${_user_mode:-deploy}"
+
+    # VM export formats
+    read -r -p "  VM export formats (qcow2,vdi,vmdk,vhdx / all / none) [qcow2]: " _vm_formats
+    _vm_formats="${_vm_formats:-qcow2}"
 
     # Mirror
     read -r -p "  Mirror [https://archive.ubuntu.com/ubuntu/]: " _mirror
@@ -2414,22 +3255,27 @@ function generate_config_wizard() {
     _output=""
     if [[ "$_advanced" == "1" ]]; then
         read -r -p "  Workspace directory (blank for ~/uvb-workspace): " _workspace
-        read -r -p "  Output directory for the ISO (blank for your home directory): " _output
+        read -r -p "  Output directory for the image (blank for your home directory): " _output
     fi
 
     # Custom name
-    read -r -p "  Custom ISO name (blank for auto): " _name
+    read -r -p "  Custom image name (blank for auto): " _name
 
     # Write the config file
     cat > "$out_path" <<WIZARD_EOF
-# Ubuntu Vanilla ISO Builder — generated by config wizard
+# Ubuntu Vanilla VM Image Builder — generated by config wizard
 # $(date '+%Y-%m-%d %H:%M:%S %Z')
 
 # --- Core ---
 TARGET_UBUNTU_VERSION=${_release}
 TARGET_KERNEL_FLAVOR=${_kernel}
 TARGET_DESKTOP=${_desktop}
-TARGET_INSTALLER=${_installer}
+TARGET_FIRMWARE=${_firmware}
+TARGET_NETWORK_STACK=${_network}
+TARGET_IMG_ALLOC=${_alloc}
+TARGET_DISK_SIZE_GB=${_disk_size}
+TARGET_IMAGE_PROFILE=${_profile}
+TARGET_USER_MODE=${_user_mode}
 TARGET_UBUNTU_MIRROR=${_mirror}
 
 # --- Browsers ---
@@ -2462,6 +3308,12 @@ WIZARD_EOF
             fi
         fi
 
+        if [[ -n "$_vm_formats" ]]; then
+            echo ""
+            echo "# --- VM export ---"
+            echo "TARGET_VM_FORMATS=${_vm_formats}"
+        fi
+
         if [[ "$_advanced" == "1" ]]; then
             echo ""
             echo "# --- Advanced ---"
@@ -2479,12 +3331,12 @@ WIZARD_EOF
 
     echo
     ui_ok "Config written to: $out_path"
-    ui_info "Run './build.sh -' to start a build with these settings."
+    ui_info "Run './build-vm.sh -' to start a build with these settings."
     exit 0
 }
 
 # load_config_file FILE — source a config file (key=value lines, # comments, blank lines).
-# Only recognized TARGET_* and GRUB_LIVEBOOT_LABEL variables are exported.
+# Only recognized TARGET_* variables are exported.
 # Unknown keys are ignored; the config cannot run arbitrary commands.
 function load_config_file() {
     local config_path="$1"
@@ -2517,8 +3369,11 @@ function load_config_file() {
                 TARGET_PACSTALL|TARGET_FWUPD|TARGET_OPENSSH_SERVER|TARGET_COCKPIT|\
                 TARGET_GNOME_INSTALL_RECOMMENDS|TARGET_NAME|\
                 TARGET_LOCALE|TARGET_KEYBOARD_LAYOUT|TARGET_KEYBOARD_VARIANT|\
-                TARGET_INSTALLER|TARGET_PACKAGE_REMOVE|\
-                GRUB_LIVEBOOT_LABEL|UBUNTU_VANILLA_WORKSPACE|UVB_OUTPUT_DIR|NO_CONFIRM|\
+                TARGET_FIRMWARE|TARGET_DISK_SIZE_GB|TARGET_IMAGE_PROFILE|\
+                TARGET_NETWORK_STACK|TARGET_IMG_ALLOC|\
+                TARGET_USER_MODE|TARGET_USERNAME|TARGET_USER_PASSWORD|\
+                TARGET_USER_FULLNAME|TARGET_HOSTNAME|TARGET_VM_FORMATS|\
+                UBUNTU_VANILLA_WORKSPACE|UVB_OUTPUT_DIR|NO_CONFIRM|\
                 INTERACTIVE|ADVANCED_MODE|HOOKS_DIR)
                     export "$key=$val"
                     ;;
@@ -2534,7 +3389,17 @@ function host_main() {
     local cli_kernel=""
     local cli_release=""
     local cli_mirror=""
-    local cli_installer=""
+    local cli_network=""
+    local cli_alloc=""
+    local cli_firmware=""
+    local cli_disk_size=""
+    local cli_profile=""
+    local cli_user_mode=""
+    local cli_username=""
+    local cli_password=""
+    local cli_fullname=""
+    local cli_hostname=""
+    local cli_formats=""
     local cli_desktop=""
     local cli_kde=""
     local cli_mate=""
@@ -2595,12 +3460,92 @@ function host_main() {
                 cli_mirror="$2"
                 shift 2
                 ;;
-            --installer=calamares|--installer=ubiquity)
-                cli_installer="${1#--installer=}"
+            --network=*)
+                cli_network="${1#--network=}"
                 shift
                 ;;
-            --installer)
-                cli_installer="$2"
+            --network)
+                cli_network="$2"
+                shift 2
+                ;;
+            --alloc-tool=*)
+                cli_alloc="${1#--alloc-tool=}"
+                shift
+                ;;
+            --alloc-tool)
+                cli_alloc="$2"
+                shift 2
+                ;;
+            --firmware=*)
+                cli_firmware="${1#--firmware=}"
+                shift
+                ;;
+            --firmware)
+                cli_firmware="$2"
+                shift 2
+                ;;
+            --disk-size=*)
+                cli_disk_size="${1#--disk-size=}"
+                shift
+                ;;
+            --disk-size)
+                cli_disk_size="$2"
+                shift 2
+                ;;
+            --profile=*)
+                cli_profile="${1#--profile=}"
+                shift
+                ;;
+            --profile)
+                cli_profile="$2"
+                shift 2
+                ;;
+            --user-mode=*)
+                cli_user_mode="${1#--user-mode=}"
+                shift
+                ;;
+            --user-mode)
+                cli_user_mode="$2"
+                shift 2
+                ;;
+            --username=*)
+                cli_username="${1#--username=}"
+                shift
+                ;;
+            --username)
+                cli_username="$2"
+                shift 2
+                ;;
+            --password=*)
+                cli_password="${1#--password=}"
+                shift
+                ;;
+            --password)
+                cli_password="$2"
+                shift 2
+                ;;
+            --fullname=*)
+                cli_fullname="${1#--fullname=}"
+                shift
+                ;;
+            --fullname)
+                cli_fullname="$2"
+                shift 2
+                ;;
+            --hostname=*)
+                cli_hostname="${1#--hostname=}"
+                shift
+                ;;
+            --hostname)
+                cli_hostname="$2"
+                shift 2
+                ;;
+            --formats=*)
+                cli_formats="${1#--formats=}"
+                shift
+                ;;
+            --formats)
+                cli_formats="$2"
                 shift 2
                 ;;
             --desktop=*)
@@ -2824,8 +3769,8 @@ function host_main() {
     if [[ "${ADVANCED_MODE:-0}" == "1" ]]; then
         if [[ -n "$cli_config" ]]; then
             load_config_file "$cli_config"
-        elif [[ -f "$SCRIPT_DIR/build.cfg" ]]; then
-            load_config_file "$SCRIPT_DIR/build.cfg"
+        elif [[ -f "$SCRIPT_DIR/build-vm.cfg" ]]; then
+            load_config_file "$SCRIPT_DIR/build-vm.cfg"
         fi
     elif [[ -n "$cli_config" ]]; then
         ui_warn "--config requires --advanced mode. Ignoring config file."
@@ -2851,7 +3796,7 @@ function host_main() {
     cd "$SCRIPT_DIR"
     resolve_workspace_paths
 
-    ui_banner "Ubuntu Vanilla ISO Builder"
+    ui_banner "Ubuntu Vanilla VM Image Builder"
     ui_kv "Script"     "$0"
     ui_kv "Workspace"  "$WORKSPACE_DIR"
     ui_kv "Output dir" "$OUTPUT_DIR"
@@ -2873,8 +3818,38 @@ function host_main() {
     if [[ -n "$cli_kernel" ]]; then
         export TARGET_KERNEL_FLAVOR="$cli_kernel"
     fi
-    if [[ -n "$cli_installer" ]]; then
-        export TARGET_INSTALLER="$cli_installer"
+    if [[ -n "$cli_network" ]]; then
+        export TARGET_NETWORK_STACK="$cli_network"
+    fi
+    if [[ -n "$cli_alloc" ]]; then
+        export TARGET_IMG_ALLOC="$cli_alloc"
+    fi
+    if [[ -n "$cli_firmware" ]]; then
+        export TARGET_FIRMWARE="$cli_firmware"
+    fi
+    if [[ -n "$cli_disk_size" ]]; then
+        export TARGET_DISK_SIZE_GB="$cli_disk_size"
+    fi
+    if [[ -n "$cli_profile" ]]; then
+        export TARGET_IMAGE_PROFILE="$cli_profile"
+    fi
+    if [[ -n "$cli_user_mode" ]]; then
+        export TARGET_USER_MODE="$cli_user_mode"
+    fi
+    if [[ -n "$cli_username" ]]; then
+        export TARGET_USERNAME="$cli_username"
+    fi
+    if [[ -n "$cli_password" ]]; then
+        export TARGET_USER_PASSWORD="$cli_password"
+    fi
+    if [[ -n "$cli_fullname" ]]; then
+        export TARGET_USER_FULLNAME="$cli_fullname"
+    fi
+    if [[ -n "$cli_hostname" ]]; then
+        export TARGET_HOSTNAME="$cli_hostname"
+    fi
+    if [[ -n "$cli_formats" ]]; then
+        export TARGET_VM_FORMATS="$cli_formats"
     fi
     if [[ -n "$cli_desktop" ]]; then
         export TARGET_DESKTOP="$cli_desktop"
@@ -2935,12 +3910,11 @@ function host_main() {
         resolve_release_choice
     fi
 
-    if [[ -z "${TARGET_INSTALLER:-}" ]]; then
-        resolve_installer_choice
-    fi
-    set_installer_and_manifest_defaults
-
-    validate_ubiquity_jammy_only
+    resolve_profile_choice
+    resolve_network_stack_choice
+    resolve_firmware_choice
+    resolve_disk_size_choice
+    resolve_alloc_choice
 
     if [[ -z "${TARGET_KERNEL_FLAVOR:-}" ]]; then
         resolve_kernel_choice
@@ -2962,6 +3936,8 @@ function host_main() {
     resolve_ubuntu_studio_choice
     resolve_pacstall_choice
     resolve_optional_service_choices
+    resolve_user_setup_choice
+    resolve_vm_formats_choice
 
     check_settings
     set_target_kernel_package_from_flavor
@@ -2993,7 +3969,7 @@ function host_main() {
 
 function chroot_help() {
     if [ -z "${1+x}" ]; then
-        echo "Chroot phase: build the root filesystem and the live image layout under /image."
+        echo "Chroot phase: build the root filesystem that is later assembled into the disk image."
         echo
     else
         echo "$1"
@@ -3051,48 +4027,6 @@ EOF
     ln -sf /bin/true /sbin/initctl
 }
 
-# Full Calamares layout from scripts/calamares (settings.conf + modules + curated i18n).
-# Only the calamares binary package is installed — no calamares-settings-* metapackages.
-function apply_calamares_custom_config() {
-    echo "=====> installing Calamares configuration from scripts/calamares ..."
-    if [[ ! -d /root/calamares-config ]] || [[ ! -f /root/calamares-config/settings.conf ]]; then
-        >&2 echo "Internal error: scripts/calamares must include settings.conf (host did not copy scripts/calamares into the chroot)."
-        exit 1
-    fi
-    install -d /etc/calamares/modules
-    cp -a /root/calamares-config/settings.conf /etc/calamares/settings.conf
-    cp -a /root/calamares-config/modules/. /etc/calamares/modules/
-
-    if [[ -f /root/calamares-config/i18n/SUPPORTED ]]; then
-        install -d /usr/share/i18n
-        if [[ -f /usr/share/i18n/SUPPORTED ]]; then
-            cp -a /usr/share/i18n/SUPPORTED /usr/share/i18n/SUPPORTED.stock-ubuntu-vanilla-backup
-        fi
-        cp /root/calamares-config/i18n/SUPPORTED /usr/share/i18n/SUPPORTED
-    fi
-
-    # Render the Ubuntu branding template with the correct release version so the installer
-    # shows "Ubuntu 24.04 LTS" / "Ubuntu 26.04 LTS" instead of the stock Calamares default
-    # ("Fancy GNU/Linux ..."). Matches calamares-settings-ubuntu's per-flavor branding approach.
-    local ubuntu_version
-    ubuntu_version="$(release_version "$TARGET_UBUNTU_VERSION")"
-    if [[ -z "$ubuntu_version" ]]; then
-        >&2 echo "Internal error: no Ubuntu marketing version for TARGET_UBUNTU_VERSION='$TARGET_UBUNTU_VERSION'."
-        exit 1
-    fi
-    if [[ ! -f /root/calamares-config/branding/ubuntu/branding.desc ]]; then
-        >&2 echo "Internal error: scripts/calamares/branding/ubuntu/branding.desc is missing."
-        exit 1
-    fi
-    install -d /etc/calamares/branding/ubuntu
-    # Copy all branding assets (QML slideshow, images); branding.desc is templated next.
-    cp -a /root/calamares-config/branding/ubuntu/. /etc/calamares/branding/ubuntu/
-    sed -e "s|@VERSION@|${ubuntu_version}|g" \
-        -e "s|@CODENAME@|${TARGET_UBUNTU_VERSION}|g" \
-        /root/calamares-config/branding/ubuntu/branding.desc \
-        > /etc/calamares/branding/ubuntu/branding.desc
-}
-
 function install_pkg() {
     echo "=====> running install_pkg ... this will take a while ..."
     echo "=====> kernel metapackage: $TARGET_KERNEL_PACKAGE"
@@ -3101,54 +4035,37 @@ function install_pkg() {
     apt-get install -y \
         sudo \
         ubuntu-standard \
-        casper \
-        discover \
-        laptop-detect \
-        os-prober \
-        network-manager \
         net-tools \
         locales \
+        netplan.io \
         grub-common \
         grub-gfxpayload-lists \
         grub-pc \
         grub-pc-bin \
         grub2-common \
+        grub-efi-amd64-bin \
         grub-efi-amd64-signed \
         shim-signed \
-        mtools \
-        unzip \
-        binutils \
-        gparted \
         dosfstools \
         e2fsprogs \
-        btrfs-progs \
-        xfsprogs \
-        ntfs-3g \
         parted
+
+    if [[ "${TARGET_NETWORK_STACK:-network-manager}" == "network-manager" ]]; then
+        echo "=====> networking: NetworkManager"
+        apt-get install -y network-manager
+    else
+        echo "=====> networking: netplan + systemd-networkd (NetworkManager not installed)"
+    fi
 
     echo "=====> installing kernel metapackage (with Recommends): $TARGET_KERNEL_PACKAGE"
     apt-get install -y "$TARGET_KERNEL_PACKAGE"
 
-    echo "=====> live installer: ${TARGET_INSTALLER}"
-    case "${TARGET_INSTALLER}" in
-        calamares)
-            # Depends only (no Recommends): avoids pulling calamares-settings-* packages; config is 100% scripts/calamares.
-            apt-get install -y --no-install-recommends calamares
-            apply_calamares_custom_config
-            ;;
-        ubiquity)
-            if [[ "${TARGET_UBUNTU_VERSION}" != "jammy" ]]; then
-                >&2 echo "Internal error: Ubiquity is supported only on jammy; got TARGET_UBUNTU_VERSION='${TARGET_UBUNTU_VERSION}'."
-                exit 1
-            fi
-            # No-install-recommends prevents ubiquity-slideshow-ubuntu from being pulled in.
-            apt-get install -y --no-install-recommends ubiquity ubiquity-frontend-gtk
-            ;;
-        *)
-            >&2 echo "Internal error: unsupported TARGET_INSTALLER: ${TARGET_INSTALLER:-}"
-            exit 1
-            ;;
-    esac
+    if [[ "${UVB_IMAGE_KIND:-cloud}" == "cloud" ]]; then
+        echo "=====> cloud-init: installing (deploy-time provisioning: users, SSH keys, growroot)"
+        apt-get install -y cloud-init cloud-guest-utils
+    else
+        echo "=====> VM image: cloud-init skipped (credentials are baked in or created by the first-boot wizard)"
+    fi
 
     customize_image
 
@@ -3183,7 +4100,8 @@ function install_pkg() {
         dpkg-reconfigure --frontend=noninteractive console-setup
     fi
 
-    cat <<EOF > /etc/NetworkManager/NetworkManager.conf
+    if [[ "${TARGET_NETWORK_STACK:-network-manager}" == "network-manager" ]]; then
+        cat <<EOF > /etc/NetworkManager/NetworkManager.conf
 [main]
 rc-manager=none
 plugins=ifupdown,keyfile
@@ -3193,146 +4111,10 @@ dns=systemd-resolved
 managed=false
 EOF
 
-    dpkg-reconfigure network-manager
+        dpkg-reconfigure network-manager
+    fi
 
     apt-get clean -y
-}
-
-function build_image() {
-    echo "=====> running build_image ..."
-
-    rm -rf /image
-    mkdir -p /image/{casper,boot/grub,install,EFI/boot,EFI/ubuntu}
-
-    pushd /image >/dev/null
-
-    local vmlinuz_src initrd_src
-    vmlinuz_src="$(ls -1 /boot/vmlinuz-* 2>/dev/null | sort -V | tail -1)"
-    initrd_src="$(ls -1 /boot/initrd.img-* 2>/dev/null | sort -V | tail -1)"
-    if [[ -z "${vmlinuz_src:-}" || ! -f "$vmlinuz_src" ]]; then
-        echo "No /boot/vmlinuz-* file was found. Did the kernel install fail?" >&2
-        exit 1
-    fi
-    if [[ -z "${initrd_src:-}" || ! -f "$initrd_src" ]]; then
-        echo "No /boot/initrd.img-* file was found. Did the kernel install fail?" >&2
-        exit 1
-    fi
-    cp "$vmlinuz_src" casper/vmlinuz
-    cp "$initrd_src" casper/initrd
-
-    local _memtest_url="https://memtest.org/download/v7.00/mt86plus_7.00.binaries.zip"
-    local _memtest_sha256="19894151788a99c25c42644696527aba18cb210b2f9bca4a60e73586a6d78286"
-    wget --progress=dot "$_memtest_url" -O install/memtest86.zip
-    echo "${_memtest_sha256}  install/memtest86.zip" | sha256sum -c - || {
-        >&2 echo "ERROR: Memtest86+ archive checksum mismatch — aborting."
-        rm -f install/memtest86.zip
-        exit 1
-    }
-    unzip -p install/memtest86.zip memtest64.bin > install/memtest86+.bin
-    unzip -p install/memtest86.zip memtest64.efi > install/memtest86+.efi
-    rm -f install/memtest86.zip
-
-    touch ubuntu
-    cat <<EOF > boot/grub/grub.cfg
-
-search --set=root --file /ubuntu
-
-insmod all_video
-
-set default="0"
-set timeout=30
-
-menuentry "$GRUB_LIVEBOOT_LABEL" {
-    linux /casper/vmlinuz boot=casper nopersistent quiet splash ---
-    initrd /casper/initrd
-}
-
-menuentry "Check the disc for defects" {
-    linux /casper/vmlinuz boot=casper integrity-check quiet splash ---
-    initrd /casper/initrd
-}
-
-if [ "\$grub_platform" = "efi" ]; then
-menuentry "UEFI firmware settings" {
-    fwsetup
-}
-
-menuentry "Test memory with Memtest86+ (UEFI)" {
-    linux /install/memtest86+.efi
-}
-else
-menuentry "Test memory with Memtest86+ (BIOS)" {
-    linux16 /install/memtest86+.bin
-}
-fi
-EOF
-
-    dpkg-query -W --showformat='${Package} ${Version}\n' | tee casper/filesystem.manifest >/dev/null
-
-    cp -v casper/filesystem.manifest casper/filesystem.manifest-desktop
-
-    # Anchor to "^package " so only the exact package is removed. An unanchored
-    # substring match would also delete unrelated packages that merely contain
-    # the name (e.g. removing "discover" would strip "plasma-discover" on KDE
-    # builds, and casper would then purge it from the installed system).
-    local pkg pkg_re
-    for pkg in $TARGET_PACKAGE_REMOVE; do
-        pkg_re="$(printf '%s' "$pkg" | sed 's/[][\\.*^$/]/\\&/g')"
-        sed -i "/^${pkg_re} /d" casper/filesystem.manifest-desktop
-    done
-
-    cat <<EOF > README.diskdefines
-#define DISKNAME  ${GRUB_LIVEBOOT_LABEL}
-#define TYPE  binary
-#define TYPEbinary  1
-#define ARCH  amd64
-#define ARCHamd64  1
-#define DISKNUM  1
-#define DISKNUM1  1
-#define TOTALNUM  0
-#define TOTALNUM0  1
-EOF
-
-    local _efi_src
-    for _efi_src in /usr/lib/shim/shimx64.efi.signed.previous /usr/lib/shim/mmx64.efi /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed; do
-        if [[ ! -f "$_efi_src" ]]; then
-            echo "ERROR: Required EFI binary '$_efi_src' not found. Ensure shim-signed and grub-efi-amd64-signed are installed." >&2
-            exit 1
-        fi
-    done
-    cp /usr/lib/shim/shimx64.efi.signed.previous EFI/boot/bootx64.efi
-    cp /usr/lib/shim/mmx64.efi EFI/boot/mmx64.efi
-    cp /usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed EFI/boot/grubx64.efi
-    cp boot/grub/grub.cfg EFI/ubuntu/grub.cfg
-
-    (
-        cd boot/grub
-        dd if=/dev/zero of=efiboot.img bs=1M count=10
-        mkfs.vfat -F 16 efiboot.img
-        LC_CTYPE=C mmd -i efiboot.img efi efi/ubuntu efi/boot
-        LC_CTYPE=C mcopy -i efiboot.img ../../EFI/boot/bootx64.efi ::efi/boot/bootx64.efi
-        LC_CTYPE=C mcopy -i efiboot.img ../../EFI/boot/mmx64.efi ::efi/boot/mmx64.efi
-        LC_CTYPE=C mcopy -i efiboot.img ../../EFI/boot/grubx64.efi ::efi/boot/grubx64.efi
-        LC_CTYPE=C mcopy -i efiboot.img ./grub.cfg ::efi/ubuntu/grub.cfg
-    )
-
-    grub-mkstandalone \
-      --format=i386-pc \
-      --output=boot/grub/core.img \
-      --install-modules="linux16 linux normal iso9660 biosdisk memdisk search tar ls" \
-      --modules="linux16 linux normal iso9660 biosdisk search" \
-      --locales="" \
-      --fonts="" \
-      "boot/grub/grub.cfg=boot/grub/grub.cfg"
-
-    cat /usr/lib/grub/i386-pc/cdboot.img boot/grub/core.img > boot/grub/bios.img
-
-    find . -type f -print0 \
-        | xargs -0 md5sum \
-        | grep -v -e 'boot/grub/efiboot.img' -e 'boot/grub/bios.img' -e 'md5sum.txt' \
-        > md5sum.txt
-
-    popd >/dev/null
 }
 
 function finish_up() {
@@ -3362,7 +4144,18 @@ function finish_up() {
 function chroot_main() {
     shift
     set_defaults
-    set_installer_and_manifest_defaults
+    export TARGET_IMAGE_PROFILE="${TARGET_IMAGE_PROFILE:-desktop}"
+    export TARGET_FIRMWARE="${TARGET_FIRMWARE:-uefi}"
+    export TARGET_DISK_SIZE_GB="${TARGET_DISK_SIZE_GB:-32}"
+    export TARGET_USER_MODE="${TARGET_USER_MODE:-deploy}"
+    export TARGET_IMG_ALLOC="${TARGET_IMG_ALLOC:-truncate}"
+    if [[ -z "${TARGET_NETWORK_STACK:-}" ]]; then
+        if [[ "${TARGET_IMAGE_PROFILE:-desktop}" == "cli" ]]; then
+            export TARGET_NETWORK_STACK="networkd"
+        else
+            export TARGET_NETWORK_STACK="network-manager"
+        fi
+    fi
     export TARGET_DESKTOP="${TARGET_DESKTOP:-gnome}"
     export TARGET_KDE_PACKAGE="${TARGET_KDE_PACKAGE:-kde-standard}"
     export TARGET_MATE_PACKAGE="${TARGET_MATE_PACKAGE:-mate-desktop-environment}"
@@ -3380,7 +4173,6 @@ function chroot_main() {
     export TARGET_FWUPD="${TARGET_FWUPD:-0}"
     export TARGET_OPENSSH_SERVER="${TARGET_OPENSSH_SERVER:-0}"
     export TARGET_COCKPIT="${TARGET_COCKPIT:-0}"
-    validate_ubiquity_jammy_only
     check_settings
     set_target_kernel_package_from_flavor
     check_chroot_root
