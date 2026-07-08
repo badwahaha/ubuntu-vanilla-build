@@ -782,7 +782,11 @@ EOF
         apt-get install -y plymouth plymouth-label plymouth-theme-ubuntu-text
     fi
 
-    apt-get install -y curl wget apt-transport-https ca-certificates gnupg
+    # software-properties-common provides add-apt-repository, used below for the
+    # Mozilla PPA. Desktop profiles pull it in transitively via the desktop
+    # stack, but a CLI/TTY-only build installs no desktop, so add-apt-repository
+    # would be missing and the build would abort — install it explicitly here.
+    apt-get install -y curl wget apt-transport-https ca-certificates gnupg software-properties-common
 
     install -d /usr/share/keyrings /etc/apt/sources.list.d /etc/apt/preferences.d
 
