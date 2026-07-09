@@ -694,96 +694,13 @@ EOF
 
     apt-get install -y curl wget apt-transport-https ca-certificates gnupg
 
-    install -d /usr/share/keyrings /etc/apt/sources.list.d /etc/apt/preferences.d
-
-    echo "=====> Browser APT sources (always): Brave release, Librewolf, Mozilla — install packages only when selected"
-    curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
-        https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
-    curl -fsSLo /etc/apt/sources.list.d/brave-browser-release.sources \
-        https://brave-browser-apt-release.s3.brave.com/brave-browser.sources
-
-    curl -fsSL https://repo.librewolf.net/pubkey.gpg | gpg --dearmor -o /usr/share/keyrings/librewolf.gpg
-    printf '%s\n' \
-        "deb [arch=amd64 signed-by=/usr/share/keyrings/librewolf.gpg] https://repo.librewolf.net/ librewolf main" \
-        > /etc/apt/sources.list.d/librewolf.list
-
-    wget -q https://packages.mozilla.org/apt/repo-signing-key.gpg -O- \
-        > /usr/share/keyrings/packages.mozilla.org.asc
-    printf '%s\n' \
-        "deb [signed-by=/usr/share/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main" \
-        > /etc/apt/sources.list.d/mozilla.list
-    add-apt-repository ppa:mozillateam/ppa -y
-    cat <<'EOF' > /etc/apt/preferences.d/mozilla
-Package: *
-Pin: origin packages.mozilla.org
-Pin-Priority: 1000
-
-Package: firefox
-Pin: release o=Ubuntu
-Pin-Priority: -1
-
-Package: firefox
-Pin: origin ppa.launchpadcontent.net
-Pin-Priority: -1
-
-Package: firefox-esr
-Pin: origin ppa.launchpadcontent.net
-Pin-Priority: 1000
-
-Package: thunderbird
-Pin: origin ppa.launchpadcontent.net
-Pin-Priority: 1000
-EOF
-
-    apt-get update
-
-    echo "=====> Browser vendor APT: Brave (release), Librewolf, and Mozilla sources + keyrings are always on disk"
-    echo "       (optional installs below only; you can apt install later without re-adding repositories)."
-
-    case "${TARGET_BRAVE_CHANNEL:-release}" in
-        release)
-            echo "=====> install: Brave stable"
-            apt-get install -y brave-browser
-            ;;
-        origin)
-            echo "=====> install: Brave Origin"
-            apt-get install -y brave-origin
-            ;;
-        none)
-            echo "=====> Brave: not pre-installed (Brave APT sources above remain; apt install brave-browser | brave-origin when ready)"
-            ;;
-        *)
-            >&2 echo "TARGET_BRAVE_CHANNEL must be none, release, or origin (got: '${TARGET_BRAVE_CHANNEL:-}')."
-            exit 1
-            ;;
-    esac
-
-    if [[ "${TARGET_LIBREWOLF:-0}" == "1" ]]; then
-        apt-get install -y librewolf
+    # Desktop-only software: web browsers and their vendor APT repositories.
+    # Skipped entirely for the CLI/TTY-only profile so a CLI image never gets
+    # browser repos or GUI browsers; the desktop-ready path is unchanged.
+    if [[ "${TARGET_DESKTOP:-gnome}" != "cli" ]]; then
+        install_desktop_browsers
     else
-        echo "=====> Librewolf: not pre-installed (Librewolf repo above remains; apt install librewolf when ready)"
-    fi
-
-    if [[ "${TARGET_FIREFOX:-0}" == "1" ]]; then
-        # The desktop metapackage may already have pulled in Ubuntu's
-        # epoch-versioned firefox stub (1:1snapX...) before the Mozilla pin
-        # existed; moving to Mozilla's epoch-less build is then a downgrade,
-        # and -y without --allow-downgrades aborts the build.
-        apt-get install -y --allow-downgrades firefox
-    else
-        echo "=====> Firefox: not pre-installed (Mozilla repo + pin above remain; apt install firefox when ready)"
-    fi
-
-    if [[ "${TARGET_FIREFOX_ESR:-0}" == "1" ]]; then
-        apt-get install -y firefox-esr
-    else
-        echo "=====> Firefox ESR: not pre-installed (Mozilla PPA + pin above remain; apt install firefox-esr when ready)"
-    fi
-
-    if [[ "${TARGET_THUNDERBIRD:-0}" == "1" ]]; then
-        apt-get install -y thunderbird
-    else
-        echo "=====> Thunderbird: not pre-installed (Mozilla PPA + pin above remain; apt install thunderbird when ready)"
+        echo "=====> profile: CLI/TTY-only — skipping desktop browsers and their APT repositories"
     fi
 
     if [[ "${TARGET_PACSTALL:-1}" == "1" ]]; then
@@ -800,7 +717,9 @@ EOF
         echo "=====> Pacstall: skipped (TARGET_PACSTALL=0)"
     fi
 
-    if [[ "${TARGET_UBUNTU_STUDIO:-0}" == "1" ]]; then
+    # Ubuntu Studio is a GUI creative suite — desktop-only. Never install it on
+    # a CLI/TTY-only image even if the flag was set.
+    if [[ "${TARGET_DESKTOP:-gnome}" != "cli" && "${TARGET_UBUNTU_STUDIO:-0}" == "1" ]]; then
         apt_install_available "Ubuntu Studio metapackages" \
             ubuntustudio-audio \
             ubuntustudio-graphics \
@@ -892,6 +811,109 @@ EOF
             gnome-mahjongg \
             gnome-mines \
             gnome-sudoku
+    fi
+}
+
+# install_desktop_browsers — vendor browser APT repositories (Brave, Librewolf,
+# Mozilla) plus the optional browser pre-installs selected via
+# TARGET_BRAVE_CHANNEL / TARGET_LIBREWOLF / TARGET_FIREFOX / TARGET_FIREFOX_ESR /
+# TARGET_THUNDERBIRD. Desktop profiles only — never called for the CLI/TTY-only
+# image, so a CLI image never gets browser repos or GUI browsers.
+function install_desktop_browsers() {
+    # add-apt-repository (from software-properties-common) is only needed for the
+    # Mozilla PPA below, which is a desktop-browser repository.
+    apt-get install -y software-properties-common
+
+    install -d /usr/share/keyrings /etc/apt/sources.list.d /etc/apt/preferences.d
+
+    echo "=====> Browser APT sources: Brave release, Librewolf, Mozilla — install packages only when selected"
+    curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
+        https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
+    curl -fsSLo /etc/apt/sources.list.d/brave-browser-release.sources \
+        https://brave-browser-apt-release.s3.brave.com/brave-browser.sources
+
+    curl -fsSL https://repo.librewolf.net/pubkey.gpg | gpg --dearmor -o /usr/share/keyrings/librewolf.gpg
+    printf '%s\n' \
+        "deb [arch=amd64 signed-by=/usr/share/keyrings/librewolf.gpg] https://repo.librewolf.net/ librewolf main" \
+        > /etc/apt/sources.list.d/librewolf.list
+
+    wget -q https://packages.mozilla.org/apt/repo-signing-key.gpg -O- \
+        > /usr/share/keyrings/packages.mozilla.org.asc
+    printf '%s\n' \
+        "deb [signed-by=/usr/share/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main" \
+        > /etc/apt/sources.list.d/mozilla.list
+    add-apt-repository ppa:mozillateam/ppa -y
+    cat <<'EOF' > /etc/apt/preferences.d/mozilla
+Package: *
+Pin: origin packages.mozilla.org
+Pin-Priority: 1000
+
+Package: firefox
+Pin: release o=Ubuntu
+Pin-Priority: -1
+
+Package: firefox
+Pin: origin ppa.launchpadcontent.net
+Pin-Priority: -1
+
+Package: firefox-esr
+Pin: origin ppa.launchpadcontent.net
+Pin-Priority: 1000
+
+Package: thunderbird
+Pin: origin ppa.launchpadcontent.net
+Pin-Priority: 1000
+EOF
+
+    apt-get update
+
+    echo "=====> Browser vendor APT: Brave (release), Librewolf, and Mozilla sources + keyrings are on disk"
+    echo "       (optional installs below only; you can apt install later without re-adding repositories)."
+
+    case "${TARGET_BRAVE_CHANNEL:-release}" in
+        release)
+            echo "=====> install: Brave stable"
+            apt-get install -y brave-browser
+            ;;
+        origin)
+            echo "=====> install: Brave Origin"
+            apt-get install -y brave-origin
+            ;;
+        none)
+            echo "=====> Brave: not pre-installed (Brave APT sources above remain; apt install brave-browser | brave-origin when ready)"
+            ;;
+        *)
+            >&2 echo "TARGET_BRAVE_CHANNEL must be none, release, or origin (got: '${TARGET_BRAVE_CHANNEL:-}')."
+            exit 1
+            ;;
+    esac
+
+    if [[ "${TARGET_LIBREWOLF:-0}" == "1" ]]; then
+        apt-get install -y librewolf
+    else
+        echo "=====> Librewolf: not pre-installed (Librewolf repo above remains; apt install librewolf when ready)"
+    fi
+
+    if [[ "${TARGET_FIREFOX:-0}" == "1" ]]; then
+        # The desktop metapackage may already have pulled in Ubuntu's
+        # epoch-versioned firefox stub (1:1snapX...) before the Mozilla pin
+        # existed; moving to Mozilla's epoch-less build is then a downgrade,
+        # and -y without --allow-downgrades aborts the build.
+        apt-get install -y --allow-downgrades firefox
+    else
+        echo "=====> Firefox: not pre-installed (Mozilla repo + pin above remain; apt install firefox when ready)"
+    fi
+
+    if [[ "${TARGET_FIREFOX_ESR:-0}" == "1" ]]; then
+        apt-get install -y firefox-esr
+    else
+        echo "=====> Firefox ESR: not pre-installed (Mozilla PPA + pin above remain; apt install firefox-esr when ready)"
+    fi
+
+    if [[ "${TARGET_THUNDERBIRD:-0}" == "1" ]]; then
+        apt-get install -y thunderbird
+    else
+        echo "=====> Thunderbird: not pre-installed (Mozilla PPA + pin above remain; apt install thunderbird when ready)"
     fi
 }
 

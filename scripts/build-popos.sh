@@ -753,7 +753,10 @@ EOF
     esac
     apt-get install -y plymouth plymouth-label plymouth-theme-ubuntu-text
 
-    apt-get install -y curl wget apt-transport-https ca-certificates squashfs-tools gnupg
+    # software-properties-common provides add-apt-repository, used below for the
+    # Mozilla PPA; install it explicitly rather than relying on the desktop
+    # stack to pull it in transitively.
+    apt-get install -y curl wget apt-transport-https ca-certificates squashfs-tools gnupg software-properties-common
 
     install -d /usr/share/keyrings /etc/apt/sources.list.d /etc/apt/preferences.d
 
