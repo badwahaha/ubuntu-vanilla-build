@@ -31,8 +31,24 @@ Dispatcher options:
                               img  Cloud disk image: raw .img for cloud VMs (cloud-init)
                               vm   VM disk image: raw .img + QCOW2/VDI/VMDK/VHDX exports
   --create-config           Only run the selected builder's config wizard
-    (--generate-config)     (no sudo, no host dependencies installed).
+    (--generate-config)     (no sudo, no host dependencies installed). The
+                            builder's --generate-config is forwarded as-is.
+  --advanced                Forwarded to the builder: enables config file loading,
+                            workspace preservation, package caching, and the
+                            --interactive/--no-interactive overrides. Without
+                            this flag the launcher runs in basic mode (the
+                            builder's own startup-mode prompt is suppressed
+                            by the launcher because basic is always assumed).
+                            Env: ADVANCED_MODE.
   -h, --help                Show this help and exit.
+
+Environment contract:
+  BUILD_DISTRO, BUILD_OUTPUT  Resolved by the launcher only — not exported to
+                              the builder. Use --distro=… and --output=… if
+                              you also need the builder to see the choice.
+  LAUNCHED_FROM_START_HERE=1  Set on the builder's environment so it knows to
+                              skip its own host-setup (sudo + dependency
+                              installation). The launcher handles both.
 
 distro + output map to these builders (run one directly if you prefer):
   ubuntu iso  ->  scripts/build.sh            popos iso  ->  scripts/build-popos.sh
@@ -52,6 +68,7 @@ Examples:
   ${self} --distro=popos --output=vm          Pop!_OS VM image, then guided prompts
   ${self} --output=img --release=noble --profile=cli -
   ${self} --create-config --distro=ubuntu --output=vm
+  ${self} --advanced --distro=ubuntu --config=build.cfg --no-interactive -
 EOF
 }
 
@@ -69,94 +86,19 @@ if [[ -t 1 ]]; then
     clear || true
 fi
 
-# ── Config-wizard shortcut ───────────────────────────────────────────
-# "./start-here.sh --create-config" (or --generate-config) only runs the
-# builder's config wizard: no host dependencies or sudo credentials are
-# needed, so both setup steps below are skipped. The distro question is
-# still asked first, then the chosen builder is invoked with
-# --generate-config.
+# ── Pre-scan: detect dispatcher-only flags before the arg loop ─────────
+# --create-config and --generate-config both set the same flag, and the
+# wizard is launched as <builder> --generate-config below. --advanced is
+# forwarded to the builder as-is (and additionally exported as ADVANCED_MODE=1
+# so the builder skips its interactive mode-pick prompt).
 GENERATE_CONFIG=0
+ADVANCE_REQUESTED=0
 for arg in "$@"; do
     case "$arg" in
         --create-config|--generate-config) GENERATE_CONFIG=1 ;;
+        --advanced)                        ADVANCE_REQUESTED=1 ;;
     esac
 done
-
-# Determine if running on a Debian-based host (excluding Ubuntu-based)
-IS_DEBIAN_OR_UBUNTU=0
-IS_DEBIAN=0
-if [[ -r /etc/os-release ]]; then
-    # shellcheck source=/dev/null
-    . /etc/os-release
-    if [[ "${ID:-}" == "ubuntu" ]] || [[ "${ID_LIKE:-}" == *ubuntu* ]]; then
-        IS_DEBIAN_OR_UBUNTU=1
-    elif [[ "${ID:-}" == "debian" ]] || [[ "${ID_LIKE:-}" == *debian* ]]; then
-        IS_DEBIAN_OR_UBUNTU=1
-        # Exclude Ubuntu-based distros (e.g. Linux Mint based on Ubuntu)
-        if [[ "${ID:-}" != "ubuntu" ]] && [[ "${ID_LIKE:-}" != *ubuntu* ]]; then
-            IS_DEBIAN=1
-        fi
-    fi
-fi
-
-# Only perform Debian/Ubuntu dependency checks if on a supported Debian/Ubuntu host
-if [[ "$GENERATE_CONFIG" -eq 0 ]] && [[ "$IS_DEBIAN_OR_UBUNTU" -eq 1 ]] && command -v dpkg &>/dev/null; then
-    # Define dependencies
-    DEPS=("debootstrap" "squashfs-tools" "xorriso")
-    if [[ "$IS_DEBIAN" -eq 1 ]]; then
-        DEPS+=("ubuntu-archive-keyring")
-    fi
-
-    # Check for missing dependencies
-    MISSING_DEPS=()
-    for dep in "${DEPS[@]}"; do
-        if ! dpkg -s "$dep" &>/dev/null; then
-            MISSING_DEPS+=("$dep")
-        fi
-    done
-
-    # If there are missing dependencies, update and install them
-    if [ ${#MISSING_DEPS[@]} -gt 0 ]; then
-        echo "=====> Installing missing host dependencies: ${MISSING_DEPS[*]}"
-        if [ "$(id -u)" -eq 0 ]; then
-            apt-get update
-            apt-get install -y "${MISSING_DEPS[@]}"
-        else
-            sudo apt-get update
-            sudo apt-get install -y "${MISSING_DEPS[@]}"
-        fi
-    fi
-fi
-
-# ── Sudo keep-alive ──────────────────────────────────────────────────
-# Long builds (especially on WSL2) can outlast the default sudo timeout.
-# We validate credentials once up front, then refresh them in the
-# background so privileged steps never stall waiting for a password.
-SUDO_KEEPALIVE_PID=""
-
-cleanup_sudo_keepalive() {
-    if [[ -n "$SUDO_KEEPALIVE_PID" ]] && kill -0 "$SUDO_KEEPALIVE_PID" 2>/dev/null; then
-        kill "$SUDO_KEEPALIVE_PID" 2>/dev/null
-        wait "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
-    fi
-}
-
-if [[ "$GENERATE_CONFIG" -eq 0 ]] && [[ "$(id -u)" -ne 0 ]]; then
-    echo "=====> Requesting sudo credentials (will be kept alive for the entire build) ..."
-    if ! sudo -v 2>/dev/null; then
-        echo "=====> ERROR: Failed to obtain sudo credentials. The build requires sudo access." >&2
-        exit 1
-    fi
-
-    # Background loop: refresh sudo timestamp every 60 seconds
-    (while sudo -v -n 2>/dev/null; do sleep 60; done) &
-    SUDO_KEEPALIVE_PID=$!
-
-    trap cleanup_sudo_keepalive EXIT
-fi
-
-# Set the toggle indicating launched from start-here.sh
-export LAUNCHED_FROM_START_HERE=1
 
 # ── Distro selection ─────────────────────────────────────────────────
 # Choose which image to build: Ubuntu (scripts/build.sh) or Pop!_OS
@@ -172,10 +114,14 @@ for arg in "$@"; do
     case "$arg" in
         --distro=*)       BUILD_DISTRO="${arg#--distro=}" ;;
         --output=*)       BUILD_OUTPUT="${arg#--output=}" ;;
-        # Translated to the builders' --generate-config below; keep it out of
-        # PASS_ARGS so it is not forwarded twice.
+        # --create-config / --generate-config are translated to the builders'
+        # --generate-config below; keep both spellings out of PASS_ARGS so they
+        # are not forwarded twice. --advanced is also exported as ADVANCED_MODE=1
+        # so the builder skips its interactive mode-pick prompt, but the flag
+        # is forwarded so the builder can set ADVANCED_MODE_EXPLICIT=1 itself.
         --create-config|--generate-config) ;;
-        *)                PASS_ARGS+=("$arg") ;;
+        --advanced)                        ADVANCE_REQUESTED=1; PASS_ARGS+=("$arg") ;;
+        *)                                 PASS_ARGS+=("$arg") ;;
     esac
 done
 if [[ "$GENERATE_CONFIG" -eq 1 ]]; then
@@ -203,6 +149,7 @@ case "${BUILD_DISTRO,,}" in
                 esac
             done
         else
+            echo "  info  No TTY and no --distro given: defaulting to 'ubuntu'. Pass --distro=ubuntu|popos to override." >&2
             BUILD_DISTRO="ubuntu"
         fi
         ;;
@@ -234,6 +181,7 @@ case "${BUILD_OUTPUT,,}" in
                 esac
             done
         else
+            echo "  info  No TTY and no --output given: defaulting to 'iso'. Pass --output=iso|img|vm to override." >&2
             BUILD_OUTPUT="iso"
         fi
         ;;
@@ -252,6 +200,107 @@ case "${BUILD_DISTRO}-${BUILD_OUTPUT}" in
     popos-vm)   BUILD_SCRIPT="build-popos-vm.sh" ;;
 esac
 echo "=====> Selected: ${BUILD_DISTRO} / ${BUILD_OUTPUT} (scripts/${BUILD_SCRIPT})"
+
+# ── Host detection + dependency install ──────────────────────────────
+# Single source of truth for host packages: the launcher always installs
+# them, then sets LAUNCHED_FROM_START_HERE=1 so the builder's own host-setup
+# (which would otherwise re-install them) is a no-op. The dep list is
+# computed from BUILD_OUTPUT so the ISO-only tools (squashfs-tools, xorriso)
+# are not pulled in for img/vm runs and vice versa.
+IS_DEBIAN_OR_UBUNTU=0
+IS_DEBIAN=0
+if [[ -r /etc/os-release ]]; then
+    # shellcheck source=/dev/null
+    . /etc/os-release
+    if [[ "${ID:-}" == "ubuntu" ]] || [[ "${ID_LIKE:-}" == *ubuntu* ]]; then
+        IS_DEBIAN_OR_UBUNTU=1
+    elif [[ "${ID:-}" == "debian" ]] || [[ "${ID_LIKE:-}" == *debian* ]]; then
+        IS_DEBIAN_OR_UBUNTU=1
+        # Exclude Ubuntu-based distros (e.g. Linux Mint based on Ubuntu)
+        if [[ "${ID:-}" != "ubuntu" ]] && [[ "${ID_LIKE:-}" != *ubuntu* ]]; then
+            IS_DEBIAN=1
+        fi
+    fi
+fi
+
+# Compute the dep list for the chosen output. debootstrap is always required;
+# ISO output needs squashfs-tools + xorriso; img needs parted/dosfstools/e2fsprogs/rsync;
+# vm is img + qemu-utils.
+DEPS=(debootstrap)
+case "${BUILD_OUTPUT}" in
+    iso) DEPS+=(squashfs-tools xorriso) ;;
+    img) DEPS+=(parted dosfstools e2fsprogs rsync) ;;
+    vm)  DEPS+=(parted dosfstools e2fsprogs rsync qemu-utils) ;;
+esac
+# On non-Ubuntu Debian, also pull the Ubuntu archive keyring so debootstrap
+# can verify Ubuntu release signatures.
+if [[ "$IS_DEBIAN" -eq 1 ]]; then
+    DEPS+=("ubuntu-archive-keyring")
+fi
+
+if [[ "$GENERATE_CONFIG" -eq 0 ]]; then
+    if [[ "$IS_DEBIAN_OR_UBUNTU" -eq 1 ]] && command -v dpkg &>/dev/null; then
+        MISSING_DEPS=()
+        for dep in "${DEPS[@]}"; do
+            if ! dpkg -s "$dep" &>/dev/null; then
+                MISSING_DEPS+=("$dep")
+            fi
+        done
+
+        if [ ${#MISSING_DEPS[@]} -gt 0 ]; then
+            echo "=====> Installing missing host dependencies: ${MISSING_DEPS[*]}"
+            if [ "$(id -u)" -eq 0 ]; then
+                apt-get update
+                apt-get install -y "${MISSING_DEPS[@]}"
+            else
+                sudo apt-get update
+                sudo apt-get install -y "${MISSING_DEPS[@]}"
+            fi
+        fi
+    else
+        echo "=====> WARNING: host is not detected as Debian or Ubuntu ($(lsb_release -id 2>/dev/null || echo unknown))." >&2
+        echo "=====>          Skipping automatic dependency install. Make sure these are present:" >&2
+        printf '=====>            %s\n' "${DEPS[@]}" >&2
+        echo "=====>          The build will fail mid-run if any are missing." >&2
+    fi
+fi
+
+# ── Sudo keep-alive ──────────────────────────────────────────────────
+# Long builds (especially on WSL2) can outlast the default sudo timeout.
+# We validate credentials once up front, then refresh them in the
+# background so privileged steps never stall waiting for a password.
+# Skipped when the user only wants the config wizard.
+SUDO_KEEPALIVE_PID=""
+
+cleanup_sudo_keepalive() {
+    if [[ -n "$SUDO_KEEPALIVE_PID" ]] && kill -0 "$SUDO_KEEPALIVE_PID" 2>/dev/null; then
+        kill "$SUDO_KEEPALIVE_PID" 2>/dev/null
+        wait "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
+    fi
+}
+
+if [[ "$GENERATE_CONFIG" -eq 0 ]] && [[ "$(id -u)" -ne 0 ]]; then
+    echo "=====> Requesting sudo credentials (will be kept alive for the entire build) ..."
+    if ! sudo -v 2>/dev/null; then
+        echo "=====> ERROR: Failed to obtain sudo credentials. The build requires sudo access." >&2
+        exit 1
+    fi
+
+    # Background loop: refresh sudo timestamp every 60 seconds
+    (while sudo -v -n 2>/dev/null; do sleep 60; done) &
+    SUDO_KEEPALIVE_PID=$!
+
+    trap cleanup_sudo_keepalive EXIT
+fi
+
+# Set the toggle indicating launched from start-here.sh
+export LAUNCHED_FROM_START_HERE=1
+
+# Forward --advanced explicitly so the builder skips its interactive
+# mode-pick prompt. (The flag is also passed through PASS_ARGS.)
+if [[ "$ADVANCE_REQUESTED" -eq 1 ]]; then
+    export ADVANCED_MODE=1
+fi
 
 # Call the selected build script with all remaining arguments passed through.
 # Use a regular invocation (not exec) so the EXIT trap can clean up the
