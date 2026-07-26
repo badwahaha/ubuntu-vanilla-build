@@ -106,14 +106,16 @@ Then log out and pick the **COSMIC** session from the session menu on the login 
 
 ## Building Cloud & VM Disk Images
 
-Besides the live-installer ISOs, four builders produce **ready-to-use disk images** — no installer involved; the image boots straight into a configured system:
+Besides the live-installer ISOs, six builders produce **ready-to-use disk images** — no installer involved; the image boots straight into a configured system:
 
 | Script | Distro | Output |
 | --- | --- | --- |
 | `scripts/build-img.sh` | Ubuntu | Cloud image: raw `.img` for deployment to cloud VMs |
 | `scripts/build-vm.sh` | Ubuntu | VM image: raw `.img` + QCOW2 / VDI / VMDK / VHDX exports |
+| `scripts/build-removable.sh` | Ubuntu | Removable-media image: raw `.img` for USB sticks, SD cards, CF |
 | `scripts/build-popos-img.sh` | Pop!_OS | Cloud image (Pop!_OS repos, staging excluded) |
 | `scripts/build-popos-vm.sh` | Pop!_OS | VM image (Pop!_OS repos, staging excluded) |
+| `scripts/build-popos-removable.sh` | Pop!_OS | Removable-media image (Pop!_OS repos, staging excluded) |
 
 They are copies of `build.sh` / `build-popos.sh`: same stages up to `run_chroot` (same desktops, browsers, Pacstall, hooks, basic/advanced modes, config files), but the final stage is `build_disk_image` instead of `build_iso`.
 
@@ -148,6 +150,67 @@ cd scripts
     --firmware=hybrid --disk-size=32 --user-mode=build --username=alice \
     --password='secret' --hostname=xfce-vm --formats=qcow2,vdi -
 ```
+
+---
+
+## Building Removable Media Disk Images
+
+A pair of builders produces **ready-to-flash raw `.img` files for USB sticks, SD cards, CompactFlash, and any other removable media that BIOS/UEFI can boot from**. The same pipeline as the cloud/VM builders (`setup_host` → `debootstrap` → `run_chroot` → `build_disk_image`) is used, but the final image is laid out so a single `.img` can be written with `dd` / balenaEtcher / Rufus and boot directly on whatever computer picks it up.
+
+| Script | Distro | Output |
+| --- | --- | --- |
+| `scripts/build-removable.sh` | Ubuntu | Removable-media image: raw `.img` for USB / SD / CF |
+| `scripts/build-popos-removable.sh` | Pop!_OS | Removable-media image (Pop!_OS repos, staging excluded) |
+
+### Image-specific choices (prompted interactively, or via flags)
+
+- **Firmware** — `--firmware=uefi|hybrid` (default `hybrid`). **Hybrid** boots on both BIOS *and* UEFI from the same disk: GPT with a 1 MiB BIOS boot partition plus a 512 MB ESP, with GRUB installed for both the `i386-pc` and `x86_64-efi` targets. **UEFI-only** uses GPT with just the 512 MB ESP. (`bios` / `legacy` are accepted as aliases for `hybrid`.)
+- **Disk size** — `--disk-size=8|16|32|64|<GB>` (default `16`, minimum `8`). The partition layout is computed from the image size:
+  - **8 GB** image: 512 MB ESP + 2 GB swap + ~5.5 GB root
+  - **16 GB** image: 512 MB ESP + 4 GB swap + ~11.5 GB root
+  - **32 GB and up**: 512 MB ESP + 4 GB swap + the rest as root (rule: image `< 16 GB` → 2 GB swap, image `≥ 16 GB` → 4 GB swap)
+  - On first boot, `growpart` expands the root partition to fill any leftover space on the physical stick or card, so flashing a 16 GB image onto a 64 GB stick works as expected.
+  - The swap partition is always written to `/etc/fstab` by UUID (no `RESUME=` so hibernate is not bound to a generic swap UUID).
+- **Allocation tool** — `--alloc-tool=truncate|fallocate|dd` (default `truncate`). Same as the cloud/VM builders: `truncate` makes a sparse file (instant; occupies only the data actually written), `fallocate` preallocates the full size up front, and `dd` fully zero-writes the file (slowest, maximum compatibility with picky tooling).
+- **Profile** — `--profile=desktop|cli`. `desktop` is a desktop-ready image (you pick the desktop environment exactly like the ISO builder); `cli` is a CLI/TTY-only image with no desktop stack, GUI browsers, or Flatpak.
+- **Network stack** — `--network=networkd|network-manager`. CLI images default to netplan + systemd-networkd but can use NetworkManager (nmcli/nmtui) instead; desktop images always use NetworkManager.
+- **User account** — `--user-mode=build|deploy`:
+  - `build` bakes a username + password into the image during the build (`--username`, `--password`, optional `--fullname` and `--hostname`; prompted on a TTY if omitted). cloud-init is told to treat that account as the default user, so any provider-injected metadata still lands on it.
+  - `deploy` (default) leaves user creation to a **first-boot console wizard** that asks for username / password / hostname on the attached console the first time the image starts.
+
+The same `cloud-init` + `cloud-guest-utils` packages as the cloud images are installed, but configured for the **NoCloud** datasource only (`datasource_list: [NoCloud, None]`) with a tiny meta-data / user-data seed under `/var/lib/cloud/seed/nocloud/` so first boot does not stall waiting for EC2/Azure/GCE metadata. Each image plus its checksums get `.sha1` / `.sha256` files, like the ISOs and cloud/VM images.
+
+### Examples
+
+```bash
+# Interactive (asks distro + output type):
+./start-here.sh --output=removable                # Ubuntu, removable media
+./start-here.sh --distro=popos --output=removable # Pop!_OS, removable media
+
+# Unattended Ubuntu removable image, CLI-only, 16 GB, hybrid firmware, baked-in user:
+cd scripts
+./build-removable.sh --advanced --no-interactive --release=noble --kernel=generic \
+    --profile=cli --network=networkd --firmware=hybrid --disk-size=16 --alloc-tool=truncate \
+    --user-mode=build --username=alice --password='secret' --hostname=stick01 -
+
+# Pop!_OS removable image, GNOME desktop, 32 GB, hybrid firmware, first-boot user wizard:
+./build-popos-removable.sh --release=noble --profile=desktop --desktop=gnome \
+    --firmware=hybrid --disk-size=32 --user-mode=deploy -
+
+# Custom 128 GB image with 4 GB swap and dd allocation (max compatibility):
+./build-removable.sh --profile=desktop --desktop=kde-plasma --disk-size=128 \
+    --alloc-tool=dd --user-mode=deploy -
+```
+
+After the build finishes, flash the image to your media:
+
+```bash
+# Find the device (e.g. /dev/sdb), then:
+sudo dd if=ubuntu-noble-cli-removable-amd64-260726-120000.img of=/dev/sdX bs=4M status=progress conv=fsync
+# or use balenaEtcher / Rufus / GNOME Disks / KDE Partition Manager.
+```
+
+The first boot takes a few seconds longer than usual while growpart resizes the root partition to fill the rest of the stick and the first-boot wizard (if `--user-mode=deploy`) prompts on the console.
 
 ---
 

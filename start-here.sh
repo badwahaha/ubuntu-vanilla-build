@@ -18,18 +18,19 @@ It asks two things (or takes them as flags), then hands off to the matching
 script in scripts/ with all remaining arguments passed through unchanged.
 
 Usage:
-  ${self} [--distro=ubuntu|popos] [--output=iso|img|vm] [builder options...]
+  ${self} [--distro=ubuntu|popos] [--output=iso|img|vm|removable] [builder options...]
   ${self} --create-config [--distro=...] [--output=...]
   ${self} --help
 
 Dispatcher options:
   --distro=ubuntu|popos     Which distribution to build (default: asked on a TTY,
                             else ubuntu). Env: BUILD_DISTRO.
-  --output=iso|img|vm       What to produce (default: asked on a TTY, else iso).
+  --output=iso|img|vm|removable  What to produce (default: asked on a TTY, else iso).
                             Env: BUILD_OUTPUT.
-                              iso  Live-installer ISO (USB / DVD / PXE / VM boot)
-                              img  Cloud disk image: raw .img for cloud VMs (cloud-init)
-                              vm   VM disk image: raw .img + QCOW2/VDI/VMDK/VHDX exports
+                              iso       Live-installer ISO (USB / DVD / PXE / VM boot)
+                              img       Cloud disk image: raw .img for cloud VMs (cloud-init)
+                              vm        VM disk image: raw .img + QCOW2/VDI/VMDK/VHDX exports
+                              removable Removable-media disk image: raw .img to flash onto USB / SD / CF
   --create-config           Only run the selected builder's config wizard
     (--generate-config)     (no sudo, no host dependencies installed). The
                             builder's --generate-config is forwarded as-is.
@@ -51,17 +52,19 @@ Environment contract:
                               installation). The launcher handles both.
 
 distro + output map to these builders (run one directly if you prefer):
-  ubuntu iso  ->  scripts/build.sh            popos iso  ->  scripts/build-popos.sh
-  ubuntu img  ->  scripts/build-img.sh        popos img  ->  scripts/build-popos-img.sh
-  ubuntu vm   ->  scripts/build-vm.sh         popos vm   ->  scripts/build-popos-vm.sh
+  ubuntu iso       ->  scripts/build.sh                popos iso       ->  scripts/build-popos.sh
+  ubuntu img       ->  scripts/build-img.sh            popos img       ->  scripts/build-popos-img.sh
+  ubuntu vm        ->  scripts/build-vm.sh             popos vm        ->  scripts/build-popos-vm.sh
+  ubuntu removable ->  scripts/build-removable.sh      popos removable ->  scripts/build-popos-removable.sh
 
 All other options (--release, --kernel, --desktop, browsers, and for images
 --firmware, --disk-size, --profile, --network, --alloc-tool, --user-mode,
 --formats, ...) belong to the builders and are forwarded verbatim. For the full,
 output-specific list run the matching builder's own help, e.g.:
-  scripts/build.sh --help          (ISO options + stages)
-  scripts/build-img.sh --help      (cloud image options + stages)
-  scripts/build-vm.sh --help       (VM image options + stages)
+  scripts/build.sh --help                  (ISO options + stages)
+  scripts/build-img.sh --help              (cloud image options + stages)
+  scripts/build-vm.sh --help               (VM image options + stages)
+  scripts/build-removable.sh --help        (removable-media options + stages)
 
 Examples:
   ${self}                                     Fully guided (asks distro + output)
@@ -104,8 +107,9 @@ done
 # Choose which image to build: Ubuntu (scripts/build.sh) or Pop!_OS
 # (scripts/build-popos.sh). Selectable via --distro=ubuntu|popos, the
 # BUILD_DISTRO env var, or an interactive prompt on a TTY (default: ubuntu).
-# The output type — live-installer ISO, cloud disk image (.img), or VM disk
-# image (raw + QCOW2/VDI/VMDK/VHDX) — is selectable via --output=iso|img|vm,
+# The output type — live-installer ISO, cloud disk image (.img), VM disk
+# image (raw + QCOW2/VDI/VMDK/VHDX), or removable-media disk image (raw .img
+# to flash onto USB / SD / CF) — is selectable via --output=iso|img|vm|removable,
 # the BUILD_OUTPUT env var, or an interactive prompt (default: iso).
 BUILD_DISTRO="${BUILD_DISTRO:-}"
 BUILD_OUTPUT="${BUILD_OUTPUT:-}"
@@ -164,6 +168,7 @@ case "${BUILD_OUTPUT,,}" in
     iso)          BUILD_OUTPUT="iso" ;;
     img|image|cloud|cloud-img) BUILD_OUTPUT="img" ;;
     vm)           BUILD_OUTPUT="vm" ;;
+    removable|removable-media|usb|sd) BUILD_OUTPUT="removable" ;;
     "")
         if [[ -t 0 ]]; then
             echo ""
@@ -171,33 +176,37 @@ case "${BUILD_OUTPUT,,}" in
             echo "    1) ISO           Live-installer ISO (USB/DVD/PXE/VM boot)  [default]"
             echo "    2) Cloud image   Ready-to-deploy raw .img for cloud VMs (cloud-init)"
             echo "    3) VM image      Raw .img + QCOW2/VDI/VMDK/VHDX exports for hypervisors"
+            echo "    4) Removable     Ready-to-flash raw .img for USB sticks, SD cards, CF cards"
             while true; do
-                read -r -p "  Output [1/2/3, Enter=1]: " _choice
+                read -r -p "  Output [1/2/3/4, Enter=1]: " _choice
                 case "${_choice,,}" in
-                    ""|1|iso)                       BUILD_OUTPUT="iso"; break ;;
-                    2|img|image|cloud|cloud-img)    BUILD_OUTPUT="img"; break ;;
-                    3|vm)                           BUILD_OUTPUT="vm";  break ;;
+                    ""|1|iso)                              BUILD_OUTPUT="iso";       break ;;
+                    2|img|image|cloud|cloud-img)           BUILD_OUTPUT="img";       break ;;
+                    3|vm)                                  BUILD_OUTPUT="vm";        break ;;
+                    4|removable|removable-media|usb|sd)    BUILD_OUTPUT="removable"; break ;;
                     *) echo "  Invalid selection: '${_choice}'." ;;
                 esac
             done
         else
-            echo "  info  No TTY and no --output given: defaulting to 'iso'. Pass --output=iso|img|vm to override." >&2
+            echo "  info  No TTY and no --output given: defaulting to 'iso'. Pass --output=iso|img|vm|removable to override." >&2
             BUILD_OUTPUT="iso"
         fi
         ;;
     *)
-        echo "ERROR: BUILD_OUTPUT/--output must be 'iso', 'img', or 'vm' (got: '${BUILD_OUTPUT}')." >&2
+        echo "ERROR: BUILD_OUTPUT/--output must be 'iso', 'img', 'vm', or 'removable' (got: '${BUILD_OUTPUT}')." >&2
         exit 1
         ;;
 esac
 
 case "${BUILD_DISTRO}-${BUILD_OUTPUT}" in
-    ubuntu-iso) BUILD_SCRIPT="build.sh" ;;
-    ubuntu-img) BUILD_SCRIPT="build-img.sh" ;;
-    ubuntu-vm)  BUILD_SCRIPT="build-vm.sh" ;;
-    popos-iso)  BUILD_SCRIPT="build-popos.sh" ;;
-    popos-img)  BUILD_SCRIPT="build-popos-img.sh" ;;
-    popos-vm)   BUILD_SCRIPT="build-popos-vm.sh" ;;
+    ubuntu-iso)       BUILD_SCRIPT="build.sh" ;;
+    ubuntu-img)       BUILD_SCRIPT="build-img.sh" ;;
+    ubuntu-vm)        BUILD_SCRIPT="build-vm.sh" ;;
+    ubuntu-removable) BUILD_SCRIPT="build-removable.sh" ;;
+    popos-iso)        BUILD_SCRIPT="build-popos.sh" ;;
+    popos-img)        BUILD_SCRIPT="build-popos-img.sh" ;;
+    popos-vm)         BUILD_SCRIPT="build-popos-vm.sh" ;;
+    popos-removable)  BUILD_SCRIPT="build-popos-removable.sh" ;;
 esac
 echo "=====> Selected: ${BUILD_DISTRO} / ${BUILD_OUTPUT} (scripts/${BUILD_SCRIPT})"
 
@@ -224,13 +233,14 @@ if [[ -r /etc/os-release ]]; then
 fi
 
 # Compute the dep list for the chosen output. debootstrap is always required;
-# ISO output needs squashfs-tools + xorriso; img needs parted/dosfstools/e2fsprogs/rsync;
-# vm is img + qemu-utils.
+# ISO output needs squashfs-tools + xorriso; img + removable need
+# parted/dosfstools/e2fsprogs/rsync; vm is img + qemu-utils.
 DEPS=(debootstrap)
 case "${BUILD_OUTPUT}" in
-    iso) DEPS+=(squashfs-tools xorriso) ;;
-    img) DEPS+=(parted dosfstools e2fsprogs rsync) ;;
-    vm)  DEPS+=(parted dosfstools e2fsprogs rsync qemu-utils) ;;
+    iso)       DEPS+=(squashfs-tools xorriso) ;;
+    img)       DEPS+=(parted dosfstools e2fsprogs rsync) ;;
+    vm)        DEPS+=(parted dosfstools e2fsprogs rsync qemu-utils) ;;
+    removable) DEPS+=(parted dosfstools e2fsprogs rsync) ;;
 esac
 # On non-Ubuntu Debian, also pull the Ubuntu archive keyring so debootstrap
 # can verify Ubuntu release signatures.
