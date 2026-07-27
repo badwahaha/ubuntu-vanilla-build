@@ -3,7 +3,7 @@
 # Exit immediately if a command exits with a non-zero status
 set -euo pipefail
 
-# ── Help ─────────────────────────────────────────────────────────────
+# -- Help -------------------------------------------------------------
 # start-here.sh is a thin dispatcher: it picks a distro (Ubuntu / Pop!_OS)
 # and an output type (ISO / cloud image / VM image), then runs the matching
 # builder in scripts/ with every other argument passed straight through.
@@ -12,7 +12,7 @@ set -euo pipefail
 show_start_help() {
     local self="$0"
     cat <<EOF
-start-here.sh — guided launcher for the Ubuntu / Pop!_OS image builders.
+start-here.sh -- guided launcher for the Ubuntu / Pop!_OS image builders.
 
 It asks two things (or takes them as flags), then hands off to the matching
 script in scripts/ with all remaining arguments passed through unchanged.
@@ -44,8 +44,8 @@ Dispatcher options:
   -h, --help                Show this help and exit.
 
 Environment contract:
-  BUILD_DISTRO, BUILD_OUTPUT  Resolved by the launcher only — not exported to
-                              the builder. Use --distro=… and --output=… if
+  BUILD_DISTRO, BUILD_OUTPUT  Resolved by the launcher only -- not exported to
+                              the builder. Use --distro=... and --output=... if
                               you also need the builder to see the choice.
   LAUNCHED_FROM_START_HERE=1  Set on the builder's environment so it knows to
                               skip its own host-setup (sudo + dependency
@@ -89,7 +89,7 @@ if [[ -t 1 ]]; then
     clear || true
 fi
 
-# ── Pre-scan: detect dispatcher-only flags before the arg loop ─────────
+# -- Pre-scan: detect dispatcher-only flags before the arg loop ---------
 # --create-config and --generate-config both set the same flag, and the
 # wizard is launched as <builder> --generate-config below. --advanced is
 # forwarded to the builder as-is (and additionally exported as ADVANCED_MODE=1
@@ -103,13 +103,13 @@ for arg in "$@"; do
     esac
 done
 
-# ── Distro selection ─────────────────────────────────────────────────
+# -- Distro selection -------------------------------------------------
 # Choose which image to build: Ubuntu (scripts/build.sh) or Pop!_OS
 # (scripts/build-popos.sh). Selectable via --distro=ubuntu|popos, the
 # BUILD_DISTRO env var, or an interactive prompt on a TTY (default: ubuntu).
-# The output type — live-installer ISO, cloud disk image (.img), VM disk
+# The output type -- live-installer ISO, cloud disk image (.img), VM disk
 # image (raw + QCOW2/VDI/VMDK/VHDX), or removable-media disk image (raw .img
-# to flash onto USB / SD / CF) — is selectable via --output=iso|img|vm|removable,
+# to flash onto USB / SD / CF) -- is selectable via --output=iso|img|vm|removable,
 # the BUILD_OUTPUT env var, or an interactive prompt (default: iso).
 BUILD_DISTRO="${BUILD_DISTRO:-}"
 BUILD_OUTPUT="${BUILD_OUTPUT:-}"
@@ -163,7 +163,7 @@ case "${BUILD_DISTRO,,}" in
         ;;
 esac
 
-# ── Output type selection ────────────────────────────────────────────
+# -- Output type selection --------------------------------------------
 case "${BUILD_OUTPUT,,}" in
     iso)          BUILD_OUTPUT="iso" ;;
     img|image|cloud|cloud-img) BUILD_OUTPUT="img" ;;
@@ -210,7 +210,7 @@ case "${BUILD_DISTRO}-${BUILD_OUTPUT}" in
 esac
 echo "=====> Selected: ${BUILD_DISTRO} / ${BUILD_OUTPUT} (scripts/${BUILD_SCRIPT})"
 
-# ── Host detection + dependency install ──────────────────────────────
+# -- Host detection + dependency install ------------------------------
 # Single source of truth for host packages: the launcher always installs
 # them, then sets LAUNCHED_FROM_START_HERE=1 so the builder's own host-setup
 # (which would otherwise re-install them) is a no-op. The dep list is
@@ -275,7 +275,7 @@ if [[ "$GENERATE_CONFIG" -eq 0 ]]; then
     fi
 fi
 
-# ── Sudo keep-alive ──────────────────────────────────────────────────
+# -- Sudo keep-alive --------------------------------------------------
 # Long builds (especially on WSL2) can outlast the default sudo timeout.
 # We validate credentials once up front, then refresh them in the
 # background so privileged steps never stall waiting for a password.

@@ -1,23 +1,23 @@
 #!/bin/bash
 
-# build-popos.sh — Pop!_OS variant of build.sh.
+# build-popos.sh -- Pop!_OS variant of build.sh.
 #
 # Repositories: everything comes from the CDN-backed https://apt.pop-os.org/
-# — the ubuntu mirror plus the release, proprietary, and release-ubuntu
+# -- the ubuntu mirror plus the release, proprietary, and release-ubuntu
 # suites (staging suites are intentionally excluded). The origin server
 # (apt-origin.pop-os.org) is only used as a per-suite fallback when the CDN
 # does not publish a suite: fetching bulk package traffic straight from the
 # origin makes it drop TLS connections mid-transfer (OpenSSL "unexpected
 # eof while reading"), aborting the chroot phase.
 # Calamares configuration comes from scripts/calamares-popos.
-# Supported releases: jammy (22.04), noble (24.04), resolute (26.04) — LTS only.
+# Supported releases: jammy (22.04), noble (24.04), resolute (26.04) -- LTS only.
 #
 # Deliberate differences from official Pop!_OS media:
 #   * Bootloader: official Pop!_OS ISOs use systemd-boot, which wants a large
 #     (>= 1 GiB) EFI System Partition. This build keeps GRUB (BIOS + UEFI
 #     hybrid) so no oversized ESP is required.
 #   * Desktop: Pop's own desktops (pop-desktop, and COSMIC on noble/resolute)
-#     are NOT offered — COSMIC still has too many bugs when installed through
+#     are NOT offered -- COSMIC still has too many bugs when installed through
 #     Calamares. Users can install COSMIC after installation; see the note
 #     printed at the end of the build (print_build_result).
 #   * Kernel: choose the System76 kernel (linux-system76, tracking the stable
@@ -33,7 +33,7 @@ SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 # release, proprietary, and release-ubuntu. Staging suites are excluded.
 # POP_APT_URL is the CDN endpoint packages must be fetched from;
 # POP_APT_ORIGIN_URL is the origin server, used only as a per-suite fallback
-# — bulk downloads from the origin get their TLS connections cut
+# -- bulk downloads from the origin get their TLS connections cut
 # mid-transfer ("SSL routines::unexpected eof while reading").
 POP_APT_URL="https://apt.pop-os.org"
 POP_APT_ORIGIN_URL="https://apt-origin.pop-os.org"
@@ -118,7 +118,7 @@ function ui_kv() {
     printf '    %-22s %s\n' "$1" "$2"
 }
 
-# ui_confirm "Prompt" [y|n]  — default is "y" if omitted. Returns 0 for yes, 1 for no.
+# ui_confirm "Prompt" [y|n]  -- default is "y" if omitted. Returns 0 for yes, 1 for no.
 function ui_confirm() {
     local prompt="${1:-Proceed?}"
     local default="${2:-y}"
@@ -149,7 +149,7 @@ function prompts_enabled() {
     [[ "$FORCE_INTERACTIVE" == "1" ]] || [[ -t 0 ]]
 }
 
-# assert_bool_var VAR_NAME [DEFAULT]  — validate that $VAR_NAME is 0 or 1.
+# assert_bool_var VAR_NAME [DEFAULT]  -- validate that $VAR_NAME is 0 or 1.
 function assert_bool_var() {
     local name="$1" default="${2:-0}"
     local val="${!name:-$default}"
@@ -162,7 +162,7 @@ function assert_bool_var() {
     esac
 }
 
-# cmd_find_index CMD ARRAY_NAME HELP_FN  — set $index to the position of CMD in
+# cmd_find_index CMD ARRAY_NAME HELP_FN  -- set $index to the position of CMD in
 # the named array, or call HELP_FN with an error message if not found.
 function cmd_find_index() {
     local cmd="$1" arr_name="$2" help_fn="$3"
@@ -177,7 +177,7 @@ function cmd_find_index() {
     "$help_fn" "Command not found: $cmd"
 }
 
-# parse_cmd_range ARRAY_NAME HELP_FN ARGS...  — compute start_index / end_index
+# parse_cmd_range ARRAY_NAME HELP_FN ARGS...  -- compute start_index / end_index
 # from the [start_cmd] [-] [end_cmd] syntax used by both host and chroot phases.
 # Sets shell variables: start_index, end_index.
 function parse_cmd_range() {
@@ -294,7 +294,7 @@ function run_hooks() {
         local name
         name="$(basename "$f")"
         if [[ ! -x "$f" ]]; then
-            ui_warn "[hook $i/${#hook_files[@]}] $name — skipped (not executable)"
+            ui_warn "[hook $i/${#hook_files[@]}] $name -- skipped (not executable)"
             continue
         fi
         ui_info "[hook $i/${#hook_files[@]}] Loading: $name"
@@ -303,7 +303,7 @@ function run_hooks() {
     done
 }
 
-# run_chroot_hooks — execute chroot hooks from /root/hooks/chroot/ inside the chroot.
+# run_chroot_hooks -- execute chroot hooks from /root/hooks/chroot/ inside the chroot.
 # Called from the chroot phase (install_pkg) after customize_image.
 function run_chroot_hooks() {
     local hooks_path="/root/hooks/chroot"
@@ -329,7 +329,7 @@ function run_chroot_hooks() {
         local name
         name="$(basename "$f")"
         if [[ ! -x "$f" ]]; then
-            echo "  WARN  [hook $i/${#hook_files[@]}] $name — skipped (not executable)"
+            echo "  WARN  [hook $i/${#hook_files[@]}] $name -- skipped (not executable)"
             continue
         fi
         echo "  info  [hook $i/${#hook_files[@]}] Loading: $name"
@@ -488,7 +488,7 @@ EOF
 
 # fwupd is banned while the image is being built: nothing may pull it in via
 # Depends/Recommends. Unlike the permanent snapd pin, this one is build-time
-# only — finish_up() removes it (and the TARGET_FWUPD=1 path lifts it before
+# only -- finish_up() removes it (and the TARGET_FWUPD=1 path lifts it before
 # pre-installing), so users can 'apt install fwupd' on the installed system.
 function block_fwupd() {
     install -d /etc/apt/preferences.d
@@ -553,7 +553,7 @@ function apt_install_available() {
     fi
 }
 
-# install_lightdm_desktop PKG...  — install desktop packages with xorg + lightdm + slick-greeter.
+# install_lightdm_desktop PKG...  -- install desktop packages with xorg + lightdm + slick-greeter.
 # Pop!_OS publishes firefox as a real native deb built from Mozilla source
 # (github.com/pop-os/packaging-firefox, versions like 1:152.0.4), unlike
 # Ubuntu's archive "firefox", which is a ~70 kB transitional stub that only
@@ -592,14 +592,14 @@ EOF
         exit 1
     fi
     if [[ "$depends" == *snap* ]]; then
-        >&2 echo "ERROR: firefox candidate '${candidate}' depends on snapd — a snap-transition stub, not the real browser."
+        >&2 echo "ERROR: firefox candidate '${candidate}' depends on snapd -- a snap-transition stub, not the real browser."
         exit 1
     fi
     if [[ ! "$size" =~ ^[0-9]+$ ]] || (( size <= 10485760 )); then
-        >&2 echo "ERROR: firefox candidate '${candidate}' .deb is ${size:-unknown} bytes (<= 10 MB) — too small to be the real browser."
+        >&2 echo "ERROR: firefox candidate '${candidate}' .deb is ${size:-unknown} bytes (<= 10 MB) -- too small to be the real browser."
         exit 1
     fi
-    echo "=====> Firefox ${candidate}: $(( size / 1024 / 1024 )) MB deb from ${uri%%/pool/*}, no snapd dependency — genuine native build."
+    echo "=====> Firefox ${candidate}: $(( size / 1024 / 1024 )) MB deb from ${uri%%/pool/*}, no snapd dependency -- genuine native build."
     # --allow-downgrades: harmless when firefox is absent or already Pop's,
     # and required if something earlier pinned in a higher-versioned build.
     apt-get install -y --allow-downgrades firefox
@@ -760,7 +760,7 @@ EOF
 
     install -d /usr/share/keyrings /etc/apt/sources.list.d /etc/apt/preferences.d
 
-    echo "=====> Browser APT sources (always): Brave release, Librewolf, Mozilla — install packages only when selected"
+    echo "=====> Browser APT sources (always): Brave release, Librewolf, Mozilla -- install packages only when selected"
     curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
         https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
     curl -fsSLo /etc/apt/sources.list.d/brave-browser-release.sources \
@@ -855,7 +855,7 @@ EOF
     fi
 
     if [[ "${TARGET_PACSTALL:-1}" == "1" ]]; then
-        echo "=====> Pacstall (official installer from https://pacstall.dev/q/install — not Chaotic PPR / apt package)"
+        echo "=====> Pacstall (official installer from https://pacstall.dev/q/install -- not Chaotic PPR / apt package)"
         # Subshell: restore DEBIAN_FRONTEND after upstream script. Pipe declines optional axel; GITHUB_ACTIONS quiets apt.
         local _pacstall_installer="/tmp/pacstall-install.sh"
         curl -fsSL https://pacstall.dev/q/install -o "$_pacstall_installer"
@@ -1035,7 +1035,7 @@ function check_settings() {
     assert_bool_var TARGET_FIREFOX_ESR
     assert_bool_var TARGET_FIREFOX_POPOS
     if [[ "${TARGET_FIREFOX:-0}" == "1" && "${TARGET_FIREFOX_POPOS:-0}" == "1" ]]; then
-        >&2 echo "TARGET_FIREFOX and TARGET_FIREFOX_POPOS are both 1 — they install the same 'firefox' package from competing sources; pick one (Mozilla APT or Pop!_OS repo)."
+        >&2 echo "TARGET_FIREFOX and TARGET_FIREFOX_POPOS are both 1 -- they install the same 'firefox' package from competing sources; pick one (Mozilla APT or Pop!_OS repo)."
         exit 1
     fi
     assert_bool_var TARGET_THUNDERBIRD
@@ -1140,7 +1140,7 @@ function host_help() {
     echo "  If end_cmd is omitted (with a start_cmd), stop after the selected start_cmd"
     echo "  Use '-' by itself to run all commands explicitly"
     echo
-    echo "Build stages (HOST_CMD — run in order; run one alone or a range with '-'):"
+    echo "Build stages (HOST_CMD -- run in order; run one alone or a range with '-'):"
     echo "  setup_host       Install host build tools (debootstrap, squashfs-tools,"
     echo "                   xorriso) and prepare a fresh workspace directory."
     echo "  debootstrap      Bootstrap the minimal base (--variant=minbase) from the"
@@ -1153,7 +1153,7 @@ function host_help() {
     echo "                   the hybrid BIOS+UEFI ISO with xorriso; write SHA-1/SHA-256"
     echo "                   checksums and clean the workspace."
     echo
-    echo "Chroot phase sub-stages (CHROOT_CMD — run automatically inside run_chroot):"
+    echo "Chroot phase sub-stages (CHROOT_CMD -- run automatically inside run_chroot):"
     echo "  chroot_prepare   Ubuntu APT sources + the Pop!_OS repos (release, proprietary,"
     echo "                   release-ubuntu; staging excluded) with the Pop!_OS keyring and"
     echo "                   scoped pin; switch to Pop!_OS base-files; snapd/fwupd pins."
@@ -1325,7 +1325,7 @@ function host_build_exit_trap() {
     exit "$_st"
 }
 
-# host_build_signal_trap EXIT_CODE  — shared handler for INT (130) and TERM (143).
+# host_build_signal_trap EXIT_CODE  -- shared handler for INT (130) and TERM (143).
 function host_build_signal_trap() {
     local code="$1"
     if [[ "${HOST_ABORT_CLEANUP_DONE:-0}" -eq 1 ]]; then
@@ -1379,7 +1379,7 @@ function debootstrap() {
     # Advanced mode preserves the workspace across runs; re-running debootstrap
     # into an already-bootstrapped chroot fails midway and corrupts it.
     if [[ "${ADVANCED_MODE:-0}" == "1" ]] && [[ -f "$WORKSPACE_CHROOT/etc/os-release" ]]; then
-        echo "=====> [advanced] Chroot already bootstrapped at $WORKSPACE_CHROOT — skipping debootstrap."
+        echo "=====> [advanced] Chroot already bootstrapped at $WORKSPACE_CHROOT -- skipping debootstrap."
         echo "=====> [advanced] Delete the workspace to force a fresh bootstrap."
         return 0
     fi
@@ -1715,7 +1715,7 @@ function interactive_desktop_pick() {
     fi
 
     ui_heading "Desktop environment"
-    echo "    (Ordered A-Z by desktop name. Pop's own desktops — pop-desktop and COSMIC —"
+    echo "    (Ordered A-Z by desktop name. Pop's own desktops -- pop-desktop and COSMIC --"
     echo "     are intentionally NOT offered here; see the COSMIC note at the end of the build.)"
     echo "    1) Budgie         Modern GTK desktop with Raven applets/sidebar. budgie-desktop-environment; lightdm + slick-greeter."
     echo "    2) Cinnamon       Familiar bottom panel and menu layout. cinnamon-desktop-environment; lightdm + slick-greeter."
@@ -2017,7 +2017,7 @@ function interactive_firefox_pick() {
     echo ""
     echo "    3) Firefox from the Pop!_OS repository"
     echo "       The native deb System76 builds from Mozilla source (pop-os/packaging-firefox)"
-    echo "       Same firefox package stock Pop!_OS ships — a real browser, NOT Ubuntu's"
+    echo "       Same firefox package stock Pop!_OS ships -- a real browser, NOT Ubuntu's"
     echo "       snap-transition stub; verified at install time (deb > 10 MB, no snapd dependency)"
     echo "       Updates arrive through the Pop!_OS release repository together with the system"
     echo "       Ideal if you want the browser exactly as Pop!_OS ships it"
@@ -2201,7 +2201,7 @@ function resolve_system76_driver_choice() {
 }
 
 # Optional service/tool pre-installs: fwupd, OpenSSH server, Cockpit.
-# All default to "no" — the point is a lean image where the user opts in.
+# All default to "no" -- the point is a lean image where the user opts in.
 function resolve_optional_service_choices() {
     if [[ -z "${TARGET_FWUPD+x}" ]]; then
         if prompts_enabled; then
@@ -2332,8 +2332,8 @@ function path_on_windows_mount() {
 
 # Workspace and output locations:
 #   * Basic mode: the workspace lives in a root-owned system directory
-#     ($UVB_SYSTEM_WORKSPACE_PARENT) that regular users cannot touch — the
-#     same idea as the old WSL relocation — and the finished ISO lands in
+#     ($UVB_SYSTEM_WORKSPACE_PARENT) that regular users cannot touch -- the
+#     same idea as the old WSL relocation -- and the finished ISO lands in
 #     the invoking user's home directory.
 #   * Advanced mode: prompts for both paths (workspace default:
 #     ~/uvb-workspace, output default: ~); non-interactive runs use those
@@ -2349,7 +2349,7 @@ function resolve_workspace_paths() {
         interactive_advanced=1
     fi
 
-    # ── Workspace parent directory ──────────────────────────────────
+    # -- Workspace parent directory ----------------------------------
     local ws_parent=""
     if [[ -n "${UBUNTU_VANILLA_WORKSPACE:-}" ]]; then
         ws_parent="${UBUNTU_VANILLA_WORKSPACE%/}"
@@ -2372,7 +2372,7 @@ function resolve_workspace_paths() {
     [[ -z "$ws_parent" ]] && ws_parent="/"
 
     if path_on_windows_mount "$ws_parent"; then
-        echo "=====> $ws_parent is on a Windows/WSL mount — debootstrap cannot unpack reliably there." >&2
+        echo "=====> $ws_parent is on a Windows/WSL mount -- debootstrap cannot unpack reliably there." >&2
         ws_parent="$UVB_SYSTEM_WORKSPACE_PARENT"
         echo "=====> Using Linux-native workspace parent instead: $ws_parent" >&2
     fi
@@ -2381,7 +2381,7 @@ function resolve_workspace_paths() {
     WORKSPACE_CHROOT="$WORKSPACE_DIR/chroot"
     WORKSPACE_IMAGE="$WORKSPACE_DIR/image"
 
-    # ── Output directory (final ISO + checksums) ────────────────────
+    # -- Output directory (final ISO + checksums) --------------------
     if [[ -n "${UVB_OUTPUT_DIR:-}" ]]; then
         OUTPUT_DIR="${UVB_OUTPUT_DIR%/}"
         echo "=====> Output directory (UVB_OUTPUT_DIR): $OUTPUT_DIR" >&2
@@ -2492,7 +2492,7 @@ function print_build_result() {
     esac
 }
 
-# generate_config_wizard — interactive wizard that generates a build-popos.cfg file.
+# generate_config_wizard -- interactive wizard that generates a build-popos.cfg file.
 # Walks the user through each setting and writes the result.
 function generate_config_wizard() {
     if ! prompts_enabled; then
@@ -2622,7 +2622,7 @@ function generate_config_wizard() {
 
     # Write the config file
     cat > "$out_path" <<WIZARD_EOF
-# Pop!_OS Vanilla ISO Builder — generated by config wizard
+# Pop!_OS Vanilla ISO Builder -- generated by config wizard
 # $(date '+%Y-%m-%d %H:%M:%S %Z')
 
 # --- Core ---
@@ -2685,7 +2685,7 @@ WIZARD_EOF
     exit 0
 }
 
-# load_config_file FILE — source a config file (key=value lines, # comments, blank lines).
+# load_config_file FILE -- source a config file (key=value lines, # comments, blank lines).
 # Only recognized TARGET_* and GRUB_LIVEBOOT_LABEL variables are exported.
 # Unknown keys are ignored; the config cannot run arbitrary commands.
 function load_config_file() {
@@ -3277,7 +3277,7 @@ function setup_pop_apt_repos() {
     # Suite names; staging suites are deliberately absent from this list.
     # Each suite is taken from the CDN (POP_APT_URL) when it publishes the
     # target release, falling back to the origin server only when it does
-    # not — bulk fetches straight from apt-origin get their TLS connections
+    # not -- bulk fetches straight from apt-origin get their TLS connections
     # dropped mid-transfer ("unexpected eof while reading").
     #
     # The sources are written in deb822 format under the filenames stock
@@ -3319,7 +3319,7 @@ EOF
                 echo "  WARN  ${name}: using the origin server (CDN does not publish '${TARGET_UBUNTU_VERSION}'); downloads may be less reliable." >&2
             added_any=1
         else
-            echo "  WARN  ${name} '${TARGET_UBUNTU_VERSION}' is unreachable on both ${POP_APT_URL} and ${POP_APT_ORIGIN_URL} — skipping this suite." >&2
+            echo "  WARN  ${name} '${TARGET_UBUNTU_VERSION}' is unreachable on both ${POP_APT_URL} and ${POP_APT_ORIGIN_URL} -- skipping this suite." >&2
             # Write a disabled stub anyway: the pop-default-settings postinst
             # greps this exact file unconditionally and kills the dpkg run if
             # it is missing. "Enabled: no" keeps apt from ever using it, and
@@ -3341,7 +3341,7 @@ EOF
         exit 1
     fi
 
-    # Prefer Pop!_OS packages over the Ubuntu archive — but only for the
+    # Prefer Pop!_OS packages over the Ubuntu archive -- but only for the
     # packages this build actually takes from Pop: OS identity (base-files),
     # the keyring/defaults (pop-*), and the System76 kernel/driver stack.
     #
@@ -3353,7 +3353,7 @@ EOF
     # desktop metapackages' strictly versioned dependencies unsatisfiable
     # ("Depends: ... but it is not going to be installed", conflicting
     # assignments on update-manager-core). Pop-only packages (linux-system76's
-    # concrete kernel builds, system76-power, ...) need no pin at all — the
+    # concrete kernel builds, system76-power, ...) need no pin at all -- the
     # Pop repos are their only source.
     cat <<'EOF' > /etc/apt/preferences.d/pop-os-release
 Package: base-files pop-* linux-system76* linux-image-system76* linux-headers-system76* system76-*
@@ -3421,7 +3421,7 @@ EOF
 }
 
 # Full Calamares layout from scripts/calamares-popos (settings.conf + modules + curated i18n).
-# Only the calamares binary package is installed — no calamares-settings-* metapackages.
+# Only the calamares binary package is installed -- no calamares-settings-* metapackages.
 function apply_calamares_custom_config() {
     echo "=====> installing Calamares configuration from scripts/calamares-popos ..."
     if [[ ! -d /root/calamares-config ]] || [[ ! -f /root/calamares-config/settings.conf ]]; then
@@ -3593,7 +3593,7 @@ function build_image() {
     local _memtest_sha256="19894151788a99c25c42644696527aba18cb210b2f9bca4a60e73586a6d78286"
     wget --progress=dot "$_memtest_url" -O install/memtest86.zip
     echo "${_memtest_sha256}  install/memtest86.zip" | sha256sum -c - || {
-        >&2 echo "ERROR: Memtest86+ archive checksum mismatch — aborting."
+        >&2 echo "ERROR: Memtest86+ archive checksum mismatch -- aborting."
         rm -f install/memtest86.zip
         exit 1
     }

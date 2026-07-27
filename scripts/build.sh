@@ -84,7 +84,7 @@ function ui_kv() {
     printf '    %-22s %s\n' "$1" "$2"
 }
 
-# ui_confirm "Prompt" [y|n]  — default is "y" if omitted. Returns 0 for yes, 1 for no.
+# ui_confirm "Prompt" [y|n]  -- default is "y" if omitted. Returns 0 for yes, 1 for no.
 function ui_confirm() {
     local prompt="${1:-Proceed?}"
     local default="${2:-y}"
@@ -115,7 +115,7 @@ function prompts_enabled() {
     [[ "$FORCE_INTERACTIVE" == "1" ]] || [[ -t 0 ]]
 }
 
-# assert_bool_var VAR_NAME [DEFAULT]  — validate that $VAR_NAME is 0 or 1.
+# assert_bool_var VAR_NAME [DEFAULT]  -- validate that $VAR_NAME is 0 or 1.
 function assert_bool_var() {
     local name="$1" default="${2:-0}"
     local val="${!name:-$default}"
@@ -128,7 +128,7 @@ function assert_bool_var() {
     esac
 }
 
-# cmd_find_index CMD ARRAY_NAME HELP_FN  — set $index to the position of CMD in
+# cmd_find_index CMD ARRAY_NAME HELP_FN  -- set $index to the position of CMD in
 # the named array, or call HELP_FN with an error message if not found.
 function cmd_find_index() {
     local cmd="$1" arr_name="$2" help_fn="$3"
@@ -143,7 +143,7 @@ function cmd_find_index() {
     "$help_fn" "Command not found: $cmd"
 }
 
-# parse_cmd_range ARRAY_NAME HELP_FN ARGS...  — compute start_index / end_index
+# parse_cmd_range ARRAY_NAME HELP_FN ARGS...  -- compute start_index / end_index
 # from the [start_cmd] [-] [end_cmd] syntax used by both host and chroot phases.
 # Sets shell variables: start_index, end_index.
 function parse_cmd_range() {
@@ -260,7 +260,7 @@ function run_hooks() {
         local name
         name="$(basename "$f")"
         if [[ ! -x "$f" ]]; then
-            ui_warn "[hook $i/${#hook_files[@]}] $name — skipped (not executable)"
+            ui_warn "[hook $i/${#hook_files[@]}] $name -- skipped (not executable)"
             continue
         fi
         ui_info "[hook $i/${#hook_files[@]}] Loading: $name"
@@ -269,7 +269,7 @@ function run_hooks() {
     done
 }
 
-# run_chroot_hooks — execute chroot hooks from /root/hooks/chroot/ inside the chroot.
+# run_chroot_hooks -- execute chroot hooks from /root/hooks/chroot/ inside the chroot.
 # Called from the chroot phase (install_pkg) after customize_image.
 function run_chroot_hooks() {
     local hooks_path="/root/hooks/chroot"
@@ -295,7 +295,7 @@ function run_chroot_hooks() {
         local name
         name="$(basename "$f")"
         if [[ ! -x "$f" ]]; then
-            echo "  WARN  [hook $i/${#hook_files[@]}] $name — skipped (not executable)"
+            echo "  WARN  [hook $i/${#hook_files[@]}] $name -- skipped (not executable)"
             continue
         fi
         echo "  info  [hook $i/${#hook_files[@]}] Loading: $name"
@@ -445,7 +445,7 @@ EOF
 
 # fwupd is banned while the image is being built: nothing may pull it in via
 # Depends/Recommends. Unlike the permanent snapd pin, this one is build-time
-# only — finish_up() removes it (and the TARGET_FWUPD=1 path lifts it before
+# only -- finish_up() removes it (and the TARGET_FWUPD=1 path lifts it before
 # pre-installing), so users can 'apt install fwupd' on the installed system.
 function block_fwupd() {
     install -d /etc/apt/preferences.d
@@ -510,7 +510,7 @@ function apt_install_available() {
     fi
 }
 
-# install_lightdm_desktop PKG...  — install desktop packages with xorg + lightdm + slick-greeter.
+# install_lightdm_desktop PKG...  -- install desktop packages with xorg + lightdm + slick-greeter.
 function install_lightdm_desktop() {
     apt-get install -y "$@" xorg lightdm slick-greeter
 }
@@ -666,7 +666,7 @@ EOF
 
     install -d /usr/share/keyrings /etc/apt/sources.list.d /etc/apt/preferences.d
 
-    echo "=====> Browser APT sources (always): Brave release, Librewolf, Mozilla — install packages only when selected"
+    echo "=====> Browser APT sources (always): Brave release, Librewolf, Mozilla -- install packages only when selected"
     curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
         https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
     curl -fsSLo /etc/apt/sources.list.d/brave-browser-release.sources \
@@ -757,7 +757,7 @@ EOF
     fi
 
     if [[ "${TARGET_PACSTALL:-1}" == "1" ]]; then
-        echo "=====> Pacstall (official installer from https://pacstall.dev/q/install — not Chaotic PPR / apt package)"
+        echo "=====> Pacstall (official installer from https://pacstall.dev/q/install -- not Chaotic PPR / apt package)"
         # Subshell: restore DEBIAN_FRONTEND after upstream script. Pipe declines optional axel; GITHUB_ACTIONS quiets apt.
         local _pacstall_installer="/tmp/pacstall-install.sh"
         curl -fsSL https://pacstall.dev/q/install -o "$_pacstall_installer"
@@ -1009,7 +1009,7 @@ function host_help() {
     echo "  If end_cmd is omitted (with a start_cmd), stop after the selected start_cmd"
     echo "  Use '-' by itself to run all commands explicitly"
     echo
-    echo "Build stages (HOST_CMD — run in order; run one alone or a range with '-'):"
+    echo "Build stages (HOST_CMD -- run in order; run one alone or a range with '-'):"
     echo "  setup_host       Install host build tools (debootstrap, squashfs-tools,"
     echo "                   xorriso) and prepare a fresh workspace directory."
     echo "  debootstrap      Bootstrap the minimal Ubuntu base (--variant=minbase) from"
@@ -1022,7 +1022,7 @@ function host_help() {
     echo "                   the hybrid BIOS+UEFI ISO with xorriso; write SHA-1/SHA-256"
     echo "                   checksums and clean the workspace."
     echo
-    echo "Chroot phase sub-stages (CHROOT_CMD — run automatically inside run_chroot):"
+    echo "Chroot phase sub-stages (CHROOT_CMD -- run automatically inside run_chroot):"
     echo "  chroot_prepare   APT sources (release/-security/-updates/-backports), hostname,"
     echo "                   machine-id, snapd + build-time fwupd APT pins."
     echo "  install_pkg      Upgrade the base; install kernel, GRUB, and the live installer"
@@ -1192,7 +1192,7 @@ function host_build_exit_trap() {
     exit "$_st"
 }
 
-# host_build_signal_trap EXIT_CODE  — shared handler for INT (130) and TERM (143).
+# host_build_signal_trap EXIT_CODE  -- shared handler for INT (130) and TERM (143).
 function host_build_signal_trap() {
     local code="$1"
     if [[ "${HOST_ABORT_CLEANUP_DONE:-0}" -eq 1 ]]; then
@@ -1246,7 +1246,7 @@ function debootstrap() {
     # Advanced mode preserves the workspace across runs; re-running debootstrap
     # into an already-bootstrapped chroot fails midway and corrupts it.
     if [[ "${ADVANCED_MODE:-0}" == "1" ]] && [[ -f "$WORKSPACE_CHROOT/etc/os-release" ]]; then
-        echo "=====> [advanced] Chroot already bootstrapped at $WORKSPACE_CHROOT — skipping debootstrap."
+        echo "=====> [advanced] Chroot already bootstrapped at $WORKSPACE_CHROOT -- skipping debootstrap."
         echo "=====> [advanced] Delete the workspace to force a fresh bootstrap."
         return 0
     fi
@@ -2029,7 +2029,7 @@ function resolve_pacstall_choice() {
 }
 
 # Optional service/tool pre-installs: fwupd, OpenSSH server, Cockpit.
-# All default to "no" — the point is a lean image where the user opts in.
+# All default to "no" -- the point is a lean image where the user opts in.
 function resolve_optional_service_choices() {
     if [[ -z "${TARGET_FWUPD+x}" ]]; then
         if prompts_enabled; then
@@ -2160,8 +2160,8 @@ function path_on_windows_mount() {
 
 # Workspace and output locations:
 #   * Basic mode: the workspace lives in a root-owned system directory
-#     ($UVB_SYSTEM_WORKSPACE_PARENT) that regular users cannot touch — the
-#     same idea as the old WSL relocation — and the finished ISO lands in
+#     ($UVB_SYSTEM_WORKSPACE_PARENT) that regular users cannot touch -- the
+#     same idea as the old WSL relocation -- and the finished ISO lands in
 #     the invoking user's home directory.
 #   * Advanced mode: prompts for both paths (workspace default:
 #     ~/uvb-workspace, output default: ~); non-interactive runs use those
@@ -2177,7 +2177,7 @@ function resolve_workspace_paths() {
         interactive_advanced=1
     fi
 
-    # ── Workspace parent directory ──────────────────────────────────
+    # -- Workspace parent directory ----------------------------------
     local ws_parent=""
     if [[ -n "${UBUNTU_VANILLA_WORKSPACE:-}" ]]; then
         ws_parent="${UBUNTU_VANILLA_WORKSPACE%/}"
@@ -2200,7 +2200,7 @@ function resolve_workspace_paths() {
     [[ -z "$ws_parent" ]] && ws_parent="/"
 
     if path_on_windows_mount "$ws_parent"; then
-        echo "=====> $ws_parent is on a Windows/WSL mount — debootstrap cannot unpack reliably there." >&2
+        echo "=====> $ws_parent is on a Windows/WSL mount -- debootstrap cannot unpack reliably there." >&2
         ws_parent="$UVB_SYSTEM_WORKSPACE_PARENT"
         echo "=====> Using Linux-native workspace parent instead: $ws_parent" >&2
     fi
@@ -2209,7 +2209,7 @@ function resolve_workspace_paths() {
     WORKSPACE_CHROOT="$WORKSPACE_DIR/chroot"
     WORKSPACE_IMAGE="$WORKSPACE_DIR/image"
 
-    # ── Output directory (final ISO + checksums) ────────────────────
+    # -- Output directory (final ISO + checksums) --------------------
     if [[ -n "${UVB_OUTPUT_DIR:-}" ]]; then
         OUTPUT_DIR="${UVB_OUTPUT_DIR%/}"
         echo "=====> Output directory (UVB_OUTPUT_DIR): $OUTPUT_DIR" >&2
@@ -2303,7 +2303,7 @@ function print_build_result() {
     echo
 }
 
-# generate_config_wizard — interactive wizard that generates a build.cfg file.
+# generate_config_wizard -- interactive wizard that generates a build.cfg file.
 # Walks the user through each setting and writes the result.
 function generate_config_wizard() {
     if ! prompts_enabled; then
@@ -2425,7 +2425,7 @@ function generate_config_wizard() {
 
     # Write the config file
     cat > "$out_path" <<WIZARD_EOF
-# Ubuntu Vanilla ISO Builder — generated by config wizard
+# Ubuntu Vanilla ISO Builder -- generated by config wizard
 # $(date '+%Y-%m-%d %H:%M:%S %Z')
 
 # --- Core ---
@@ -2486,7 +2486,7 @@ WIZARD_EOF
     exit 0
 }
 
-# load_config_file FILE — source a config file (key=value lines, # comments, blank lines).
+# load_config_file FILE -- source a config file (key=value lines, # comments, blank lines).
 # Only recognized TARGET_* and GRUB_LIVEBOOT_LABEL variables are exported.
 # Unknown keys are ignored; the config cannot run arbitrary commands.
 function load_config_file() {
@@ -3055,7 +3055,7 @@ EOF
 }
 
 # Full Calamares layout from scripts/calamares (settings.conf + modules + curated i18n).
-# Only the calamares binary package is installed — no calamares-settings-* metapackages.
+# Only the calamares binary package is installed -- no calamares-settings-* metapackages.
 function apply_calamares_custom_config() {
     echo "=====> installing Calamares configuration from scripts/calamares ..."
     if [[ ! -d /root/calamares-config ]] || [[ ! -f /root/calamares-config/settings.conf ]]; then
@@ -3227,7 +3227,7 @@ function build_image() {
     local _memtest_sha256="19894151788a99c25c42644696527aba18cb210b2f9bca4a60e73586a6d78286"
     wget --progress=dot "$_memtest_url" -O install/memtest86.zip
     echo "${_memtest_sha256}  install/memtest86.zip" | sha256sum -c - || {
-        >&2 echo "ERROR: Memtest86+ archive checksum mismatch — aborting."
+        >&2 echo "ERROR: Memtest86+ archive checksum mismatch -- aborting."
         rm -f install/memtest86.zip
         exit 1
     }

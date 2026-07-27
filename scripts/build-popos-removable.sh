@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# build-popos-removable.sh — removable-media disk image variant of build-popos.sh.
+# build-popos-removable.sh -- removable-media disk image variant of build-popos.sh.
 #
 # Instead of a live-installer ISO, this script produces a ready-to-flash
 # raw disk image (.img) for USB sticks, SD cards, CompactFlash, and similar
@@ -8,10 +8,10 @@
 # the .img with dd/Etcher/Rufus; when BIOS/UEFI boots from that device, the
 # image runs a full installed system.
 #
-#   * Firmware: Hybrid (BIOS + UEFI) by default — GPT with a 1 MiB BIOS boot
+#   * Firmware: Hybrid (BIOS + UEFI) by default -- GPT with a 1 MiB BIOS boot
 #     partition + 512 MB ESP, GRUB for both targets. UEFI-only is optional.
-#   * Partition layout: ESP 512 MB, swap sized by image capacity (<16 GB →
-#     2 GB swap; ≥16 GB → 4 GB swap), root = remaining space. Swap is always
+#   * Partition layout: ESP 512 MB, swap sized by image capacity (<16 GB ->
+#     2 GB swap; >=16 GB -> 4 GB swap), root = remaining space. Swap is always
 #     written to /etc/fstab by UUID. Image size: minimum 8 GB, default 16 GB.
 #   * Profile: desktop-ready (pick any desktop the ISO builder offers) or
 #     CLI/TTY-only (no desktop stack at all; network stack selectable:
@@ -34,7 +34,7 @@ SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 # release, proprietary, and release-ubuntu. Staging suites are excluded.
 # POP_APT_URL is the CDN endpoint packages must be fetched from;
 # POP_APT_ORIGIN_URL is the origin server, used only as a per-suite fallback
-# — bulk downloads from the origin get their TLS connections cut
+# -- bulk downloads from the origin get their TLS connections cut
 # mid-transfer ("SSL routines::unexpected eof while reading").
 POP_APT_URL="https://apt.pop-os.org"
 POP_APT_ORIGIN_URL="https://apt-origin.pop-os.org"
@@ -131,7 +131,7 @@ function ui_kv() {
     printf '    %-22s %s\n' "$1" "$2"
 }
 
-# ui_confirm "Prompt" [y|n]  — default is "y" if omitted. Returns 0 for yes, 1 for no.
+# ui_confirm "Prompt" [y|n]  -- default is "y" if omitted. Returns 0 for yes, 1 for no.
 function ui_confirm() {
     local prompt="${1:-Proceed?}"
     local default="${2:-y}"
@@ -162,7 +162,7 @@ function prompts_enabled() {
     [[ "$FORCE_INTERACTIVE" == "1" ]] || [[ -t 0 ]]
 }
 
-# assert_bool_var VAR_NAME [DEFAULT]  — validate that $VAR_NAME is 0 or 1.
+# assert_bool_var VAR_NAME [DEFAULT]  -- validate that $VAR_NAME is 0 or 1.
 function assert_bool_var() {
     local name="$1" default="${2:-0}"
     local val="${!name:-$default}"
@@ -175,7 +175,7 @@ function assert_bool_var() {
     esac
 }
 
-# cmd_find_index CMD ARRAY_NAME HELP_FN  — set $index to the position of CMD in
+# cmd_find_index CMD ARRAY_NAME HELP_FN  -- set $index to the position of CMD in
 # the named array, or call HELP_FN with an error message if not found.
 function cmd_find_index() {
     local cmd="$1" arr_name="$2" help_fn="$3"
@@ -190,7 +190,7 @@ function cmd_find_index() {
     "$help_fn" "Command not found: $cmd"
 }
 
-# parse_cmd_range ARRAY_NAME HELP_FN ARGS...  — compute start_index / end_index
+# parse_cmd_range ARRAY_NAME HELP_FN ARGS...  -- compute start_index / end_index
 # from the [start_cmd] [-] [end_cmd] syntax used by both host and chroot phases.
 # Sets shell variables: start_index, end_index.
 function parse_cmd_range() {
@@ -307,7 +307,7 @@ function run_hooks() {
         local name
         name="$(basename "$f")"
         if [[ ! -x "$f" ]]; then
-            ui_warn "[hook $i/${#hook_files[@]}] $name — skipped (not executable)"
+            ui_warn "[hook $i/${#hook_files[@]}] $name -- skipped (not executable)"
             continue
         fi
         ui_info "[hook $i/${#hook_files[@]}] Loading: $name"
@@ -316,7 +316,7 @@ function run_hooks() {
     done
 }
 
-# run_chroot_hooks — execute chroot hooks from /root/hooks/chroot/ inside the chroot.
+# run_chroot_hooks -- execute chroot hooks from /root/hooks/chroot/ inside the chroot.
 # Called from the chroot phase (install_pkg) after customize_image.
 function run_chroot_hooks() {
     local hooks_path="/root/hooks/chroot"
@@ -342,7 +342,7 @@ function run_chroot_hooks() {
         local name
         name="$(basename "$f")"
         if [[ ! -x "$f" ]]; then
-            echo "  WARN  [hook $i/${#hook_files[@]}] $name — skipped (not executable)"
+            echo "  WARN  [hook $i/${#hook_files[@]}] $name -- skipped (not executable)"
             continue
         fi
         echo "  info  [hook $i/${#hook_files[@]}] Loading: $name"
@@ -386,7 +386,7 @@ function set_defaults() {
     # Desktop images always use NetworkManager; CLI images default to
     # systemd-networkd but can opt into NetworkManager.
     export TARGET_NETWORK_STACK="${TARGET_NETWORK_STACK:-}"
-    # TARGET_IMG_ALLOC: how the raw .img file is created — truncate (sparse),
+    # TARGET_IMG_ALLOC: how the raw .img file is created -- truncate (sparse),
     # fallocate (preallocated), or dd (fully zero-written).
     export TARGET_IMG_ALLOC="${TARGET_IMG_ALLOC:-}"
     export TARGET_VM_FORMATS="${TARGET_VM_FORMATS:-}"
@@ -495,7 +495,7 @@ EOF
 
 # fwupd is banned while the image is being built: nothing may pull it in via
 # Depends/Recommends. Unlike the permanent snapd pin, this one is build-time
-# only — finish_up() removes it (and the TARGET_FWUPD=1 path lifts it before
+# only -- finish_up() removes it (and the TARGET_FWUPD=1 path lifts it before
 # pre-installing), so users can 'apt install fwupd' on the installed system.
 function block_fwupd() {
     install -d /etc/apt/preferences.d
@@ -560,7 +560,7 @@ function apt_install_available() {
     fi
 }
 
-# install_lightdm_desktop PKG...  — install desktop packages with xorg + lightdm + slick-greeter.
+# install_lightdm_desktop PKG...  -- install desktop packages with xorg + lightdm + slick-greeter.
 # Pop!_OS publishes firefox as a real native deb built from Mozilla source
 # (github.com/pop-os/packaging-firefox, versions like 1:152.0.4), unlike
 # Ubuntu's archive "firefox", which is a ~70 kB transitional stub that only
@@ -599,14 +599,14 @@ EOF
         exit 1
     fi
     if [[ "$depends" == *snap* ]]; then
-        >&2 echo "ERROR: firefox candidate '${candidate}' depends on snapd — a snap-transition stub, not the real browser."
+        >&2 echo "ERROR: firefox candidate '${candidate}' depends on snapd -- a snap-transition stub, not the real browser."
         exit 1
     fi
     if [[ ! "$size" =~ ^[0-9]+$ ]] || (( size <= 10485760 )); then
-        >&2 echo "ERROR: firefox candidate '${candidate}' .deb is ${size:-unknown} bytes (<= 10 MB) — too small to be the real browser."
+        >&2 echo "ERROR: firefox candidate '${candidate}' .deb is ${size:-unknown} bytes (<= 10 MB) -- too small to be the real browser."
         exit 1
     fi
-    echo "=====> Firefox ${candidate}: $(( size / 1024 / 1024 )) MB deb from ${uri%%/pool/*}, no snapd dependency — genuine native build."
+    echo "=====> Firefox ${candidate}: $(( size / 1024 / 1024 )) MB deb from ${uri%%/pool/*}, no snapd dependency -- genuine native build."
     # --allow-downgrades: harmless when firefox is absent or already Pop's,
     # and required if something earlier pinned in a higher-versioned build.
     apt-get install -y --allow-downgrades firefox
@@ -622,7 +622,7 @@ function customize_image() {
 
     case "${TARGET_DESKTOP:-gnome}" in
         cli)
-            echo "=====> profile: CLI/TTY-only — no desktop environment installed"
+            echo "=====> profile: CLI/TTY-only -- no desktop environment installed"
             ;;
         gnome)
             echo "=====> desktop flavor: gnome"
@@ -768,12 +768,12 @@ EOF
     # software-properties-common provides add-apt-repository, used below for the
     # Mozilla PPA. Desktop profiles pull it in transitively via the desktop
     # stack, but a CLI/TTY-only build installs no desktop, so add-apt-repository
-    # would be missing and the build would abort — install it explicitly here.
+    # would be missing and the build would abort -- install it explicitly here.
     apt-get install -y curl wget apt-transport-https ca-certificates gnupg software-properties-common
 
     install -d /usr/share/keyrings /etc/apt/sources.list.d /etc/apt/preferences.d
 
-    echo "=====> Browser APT sources (always): Brave release, Librewolf, Mozilla — install packages only when selected"
+    echo "=====> Browser APT sources (always): Brave release, Librewolf, Mozilla -- install packages only when selected"
     curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
         https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
     curl -fsSLo /etc/apt/sources.list.d/brave-browser-release.sources \
@@ -868,7 +868,7 @@ EOF
     fi
 
     if [[ "${TARGET_PACSTALL:-1}" == "1" ]]; then
-        echo "=====> Pacstall (official installer from https://pacstall.dev/q/install — not Chaotic PPR / apt package)"
+        echo "=====> Pacstall (official installer from https://pacstall.dev/q/install -- not Chaotic PPR / apt package)"
         # Subshell: restore DEBIAN_FRONTEND after upstream script. Pipe declines optional axel; GITHUB_ACTIONS quiets apt.
         local _pacstall_installer="/tmp/pacstall-install.sh"
         curl -fsSL https://pacstall.dev/q/install -o "$_pacstall_installer"
@@ -1036,7 +1036,7 @@ function check_settings() {
     assert_bool_var TARGET_FIREFOX_ESR
     assert_bool_var TARGET_FIREFOX_POPOS
     if [[ "${TARGET_FIREFOX:-0}" == "1" && "${TARGET_FIREFOX_POPOS:-0}" == "1" ]]; then
-        >&2 echo "TARGET_FIREFOX and TARGET_FIREFOX_POPOS are both 1 — they install the same 'firefox' package from competing sources; pick one (Mozilla APT or Pop!_OS repo)."
+        >&2 echo "TARGET_FIREFOX and TARGET_FIREFOX_POPOS are both 1 -- they install the same 'firefox' package from competing sources; pick one (Mozilla APT or Pop!_OS repo)."
         exit 1
     fi
     assert_bool_var TARGET_THUNDERBIRD
@@ -1197,7 +1197,7 @@ function host_help() {
     echo "  If end_cmd is omitted (with a start_cmd), stop after the selected start_cmd"
     echo "  Use '-' by itself to run all commands explicitly"
     echo
-    echo "Build stages (HOST_CMD — run in order; run one alone or a range with '-'):"
+    echo "Build stages (HOST_CMD -- run in order; run one alone or a range with '-'):"
     echo "  setup_host         Install host tools (debootstrap, parted, dosfstools,"
     echo "                     e2fsprogs, rsync) and prepare a fresh workspace."
     echo "  debootstrap        Bootstrap the minimal base (--variant=minbase) from the"
@@ -1209,7 +1209,7 @@ function host_help() {
     echo "                     chosen firmware, then bake the user in or defer it."
     echo "                     Writes SHA-1/SHA-256 checksums."
     echo
-    echo "Chroot phase sub-stages (CHROOT_CMD — run automatically inside run_chroot):"
+    echo "Chroot phase sub-stages (CHROOT_CMD -- run automatically inside run_chroot):"
     echo "  chroot_prepare   Ubuntu APT sources + the Pop!_OS repos (release, proprietary,"
     echo "                   release-ubuntu; staging excluded) with the Pop!_OS keyring +"
     echo "                   scoped pin; switch to Pop!_OS base-files; snapd/fwupd pins."
@@ -1240,7 +1240,7 @@ function host_help() {
     echo "  Default <name>: popos-<version>-<desktop|cli>-cloud-amd64-<UTC-timestamp>."
     echo "  Default output dir: your home directory (UVB_OUTPUT_DIR overrides). Workspace:"
     echo "  <parent>/workspace-popos-removable (basic parent /var/cache/ubuntu-vanilla-build,"
-    echo "  advanced ~/uvb-workspace) — separate from the other builders so nothing collides."
+    echo "  advanced ~/uvb-workspace) -- separate from the other builders so nothing collides."
     echo
     echo "Examples:"
     echo "  $0                                     Guided interactive build (all stages)"
@@ -1390,7 +1390,7 @@ function host_build_exit_trap() {
     exit "$_st"
 }
 
-# host_build_signal_trap EXIT_CODE  — shared handler for INT (130) and TERM (143).
+# host_build_signal_trap EXIT_CODE  -- shared handler for INT (130) and TERM (143).
 function host_build_signal_trap() {
     local code="$1"
     if [[ "${HOST_ABORT_CLEANUP_DONE:-0}" -eq 1 ]]; then
@@ -1449,7 +1449,7 @@ function debootstrap() {
     # Advanced mode preserves the workspace across runs; re-running debootstrap
     # into an already-bootstrapped chroot fails midway and corrupts it.
     if [[ "${ADVANCED_MODE:-0}" == "1" ]] && [[ -f "$WORKSPACE_CHROOT/etc/os-release" ]]; then
-        echo "=====> [advanced] Chroot already bootstrapped at $WORKSPACE_CHROOT — skipping debootstrap."
+        echo "=====> [advanced] Chroot already bootstrapped at $WORKSPACE_CHROOT -- skipping debootstrap."
         echo "=====> [advanced] Delete the workspace to force a fresh bootstrap."
         return 0
     fi
@@ -1570,7 +1570,7 @@ function detach_image_loop() {
     IMG_MOUNT_DIR=""
 }
 
-# in_target CMD...  — run a command inside the mounted disk image.
+# in_target CMD...  -- run a command inside the mounted disk image.
 function in_target() {
     host_priv chroot "$IMG_MOUNT_DIR" /usr/bin/env \
         DEBIAN_FRONTEND=noninteractive LC_ALL=C HOME=/root "$@"
@@ -1667,7 +1667,7 @@ while true; do
         continue
     fi
     if id "$username" &>/dev/null; then
-        echo "User '$username' already exists — pick another name."
+        echo "User '$username' already exists -- pick another name."
         continue
     fi
     break
@@ -1677,7 +1677,7 @@ while true; do
     read -r -s -p "Password: " pw1; echo
     read -r -s -p "Confirm password: " pw2; echo
     [[ -n "$pw1" && "$pw1" == "$pw2" ]] && break
-    echo "Passwords are empty or do not match — try again."
+    echo "Passwords are empty or do not match -- try again."
 done
 read -r -p "Hostname [$(cat /etc/hostname)]: " newhost
 useradd -m -s /bin/bash -c "${fullname:-$username}" "$username"
@@ -1724,7 +1724,7 @@ UNIT_EOF
     in_target systemctl enable uvb-firstboot-setup.service
 }
 
-# export_vm_images RAW_IMG — convert the raw image to the formats selected in
+# export_vm_images RAW_IMG -- convert the raw image to the formats selected in
 # TARGET_VM_FORMATS with qemu-img (vm kind only).
 function export_vm_images() {
     local raw="$1"
@@ -1757,7 +1757,7 @@ function export_vm_images() {
                 host_priv qemu-img convert -f raw -O vhdx "$raw" "$out"
                 ;;
             *)
-                ui_warn "Unknown VM export format '$fmt' — skipping."
+                ui_warn "Unknown VM export format '$fmt' -- skipping."
                 continue
                 ;;
         esac
@@ -1808,7 +1808,7 @@ function build_disk_image() {
     # GPT partition table.
     #   UEFI-only: 1 = ESP 512 MB, 2 = swap (2 or 4 GB), 3 = root (rest)
     #   Hybrid:    1 = BIOS boot 1 MiB (GRUB core.img), 2 = ESP 512 MB,
-    #              3 = swap (2 or 4 GB), 4 = root — GRUB is installed for BOTH
+    #              3 = swap (2 or 4 GB), 4 = root -- GRUB is installed for BOTH
     #              the i386-pc (BIOS) and x86_64-efi targets, so the same disk
     #              boots on legacy BIOS and UEFI firmware alike
     local p_esp p_swap p_root
@@ -1864,7 +1864,7 @@ function build_disk_image() {
     uuid_root="$(host_priv blkid -s UUID -o value "$p_root")"
 
     host_priv tee "$IMG_MOUNT_DIR/etc/fstab" >/dev/null <<EOF
-# /etc/fstab — generated by $SCRIPT_NAME
+# /etc/fstab -- generated by $SCRIPT_NAME
 UUID=${uuid_root}  /          ext4  defaults,errors=remount-ro  0 1
 UUID=${uuid_esp}  /boot/efi  vfat  umask=0077  0 1
 UUID=${uuid_swap}  none       swap  sw  0 0
@@ -2131,7 +2131,7 @@ function interactive_desktop_pick() {
     fi
 
     ui_heading "Desktop environment"
-    echo "    (Ordered A-Z by desktop name. Pop's own desktops — pop-desktop and COSMIC —"
+    echo "    (Ordered A-Z by desktop name. Pop's own desktops -- pop-desktop and COSMIC --"
     echo "     are intentionally NOT offered here; see the COSMIC note at the end of the build.)"
     echo "    1) Budgie         Modern GTK desktop with Raven applets/sidebar. budgie-desktop-environment; lightdm + slick-greeter."
     echo "    2) Cinnamon       Familiar bottom panel and menu layout. cinnamon-desktop-environment; lightdm + slick-greeter."
@@ -2433,7 +2433,7 @@ function interactive_firefox_pick() {
     echo ""
     echo "    3) Firefox from the Pop!_OS repository"
     echo "       The native deb System76 builds from Mozilla source (pop-os/packaging-firefox)"
-    echo "       Same firefox package stock Pop!_OS ships — a real browser, NOT Ubuntu's"
+    echo "       Same firefox package stock Pop!_OS ships -- a real browser, NOT Ubuntu's"
     echo "       snap-transition stub; verified at install time (deb > 10 MB, no snapd dependency)"
     echo "       Updates arrive through the Pop!_OS release repository together with the system"
     echo "       Ideal if you want the browser exactly as Pop!_OS ships it"
@@ -2628,7 +2628,7 @@ function resolve_system76_driver_choice() {
 }
 
 # Optional service/tool pre-installs: fwupd, OpenSSH server, Cockpit.
-# All default to "no" — the point is a lean image where the user opts in.
+# All default to "no" -- the point is a lean image where the user opts in.
 function resolve_optional_service_choices() {
     if [[ -z "${TARGET_FWUPD+x}" ]]; then
         if prompts_enabled; then
@@ -2705,7 +2705,7 @@ function interactive_firmware_pick() {
     echo "    2) Hybrid     BIOS + UEFI on one disk: GPT with a 1 MiB BIOS boot"
     echo "                  partition plus the same 512 MB ESP; GRUB is installed"
     echo "                  for both targets (SeaBIOS, Hyper-V Gen1, older clouds"
-    echo "                  — and still bootable on UEFI)"
+    echo "                  -- and still bootable on UEFI)"
 
     local choice
     while true; do
@@ -2745,8 +2745,8 @@ function interactive_network_stack_pick() {
     fi
 
     ui_heading "Network stack (CLI/TTY-only profile)"
-    echo "    1) networkd         netplan + systemd-networkd — lean, server-style  [default]"
-    echo "    2) network-manager  NetworkManager — nmcli/nmtui, the same stack the"
+    echo "    1) networkd         netplan + systemd-networkd -- lean, server-style  [default]"
+    echo "    2) network-manager  NetworkManager -- nmcli/nmtui, the same stack the"
     echo "                        desktop images use"
 
     local choice
@@ -2774,10 +2774,10 @@ function resolve_network_stack_choice() {
         esac
     fi
 
-    # Desktop images always use NetworkManager — the desktop stacks depend on it.
+    # Desktop images always use NetworkManager -- the desktop stacks depend on it.
     if [[ "${TARGET_IMAGE_PROFILE:-desktop}" != "cli" ]]; then
         if [[ "${TARGET_NETWORK_STACK:-}" == "networkd" ]]; then
-            ui_warn "Desktop profile always uses NetworkManager — ignoring network stack 'networkd'."
+            ui_warn "Desktop profile always uses NetworkManager -- ignoring network stack 'networkd'."
         fi
         export TARGET_NETWORK_STACK="network-manager"
         return 0
@@ -2803,10 +2803,10 @@ function interactive_alloc_pick() {
 
     ui_heading "Image allocation tool"
     echo "    How the raw .img file is created on the build host:"
-    echo "    1) truncate   Sparse file — instant; occupies only the data actually"
+    echo "    1) truncate   Sparse file -- instant; occupies only the data actually"
     echo "                  written (recommended)  [default]"
-    echo "    2) fallocate  Preallocated — reserves the full size up front, no holes"
-    echo "    3) dd         Fully zero-written with dd — slowest, uses the full size"
+    echo "    2) fallocate  Preallocated -- reserves the full size up front, no holes"
+    echo "    3) dd         Fully zero-written with dd -- slowest, uses the full size"
     echo "                  on disk, maximum compatibility with picky tooling"
 
     local choice
@@ -2902,7 +2902,7 @@ function interactive_profile_pick() {
     ui_heading "Image profile"
     echo "    1) Desktop ready   Full graphical desktop, ready to log in  [default]"
     echo "                       (you pick the desktop environment next)"
-    echo "    2) CLI / TTY only  No desktop at all — text console, server-style image"
+    echo "    2) CLI / TTY only  No desktop at all -- text console, server-style image"
 
     local choice
     while true; do
@@ -2930,7 +2930,7 @@ function resolve_profile_choice() {
     # short-circuits every desktop-related prompt and install step.
     if [[ "$TARGET_IMAGE_PROFILE" == "cli" ]]; then
         if [[ -n "${TARGET_DESKTOP:-}" && "${TARGET_DESKTOP,,}" != "cli" ]]; then
-            ui_warn "CLI/TTY-only profile selected — ignoring desktop '${TARGET_DESKTOP}'."
+            ui_warn "CLI/TTY-only profile selected -- ignoring desktop '${TARGET_DESKTOP}'."
         fi
         export TARGET_DESKTOP="cli"
     fi
@@ -2998,7 +2998,7 @@ function interactive_credentials_pick() {
             export TARGET_USER_PASSWORD="$p1"
             break
         fi
-        ui_warn "Passwords are empty or do not match — try again."
+        ui_warn "Passwords are empty or do not match -- try again."
     done
     if [[ -z "${TARGET_HOSTNAME:-}" ]]; then
         read -r -p "  Hostname [pop-os]: " TARGET_HOSTNAME
@@ -3032,7 +3032,7 @@ function resolve_user_setup_choice() {
     ui_ok "TARGET_USERNAME=$TARGET_USERNAME"
 }
 
-# validate_vm_formats LIST — 0 when LIST is 'none' or a comma-separated list
+# validate_vm_formats LIST -- 0 when LIST is 'none' or a comma-separated list
 # of qcow2/vdi/vmdk/vhdx.
 function validate_vm_formats() {
     local fmt list="${1:-}"
@@ -3127,8 +3127,8 @@ function path_on_windows_mount() {
 
 # Workspace and output locations:
 #   * Basic mode: the workspace lives in a root-owned system directory
-#     ($UVB_SYSTEM_WORKSPACE_PARENT) that regular users cannot touch — the
-#     same idea as the old WSL relocation — and the finished image lands in
+#     ($UVB_SYSTEM_WORKSPACE_PARENT) that regular users cannot touch -- the
+#     same idea as the old WSL relocation -- and the finished image lands in
 #     the invoking user's home directory.
 #   * Advanced mode: prompts for both paths (workspace default:
 #     ~/uvb-workspace, output default: ~); non-interactive runs use those
@@ -3144,7 +3144,7 @@ function resolve_workspace_paths() {
         interactive_advanced=1
     fi
 
-    # ── Workspace parent directory ──────────────────────────────────
+    # -- Workspace parent directory ----------------------------------
     local ws_parent=""
     if [[ -n "${UBUNTU_VANILLA_WORKSPACE:-}" ]]; then
         ws_parent="${UBUNTU_VANILLA_WORKSPACE%/}"
@@ -3167,7 +3167,7 @@ function resolve_workspace_paths() {
     [[ -z "$ws_parent" ]] && ws_parent="/"
 
     if path_on_windows_mount "$ws_parent"; then
-        echo "=====> $ws_parent is on a Windows/WSL mount — debootstrap cannot unpack reliably there." >&2
+        echo "=====> $ws_parent is on a Windows/WSL mount -- debootstrap cannot unpack reliably there." >&2
         ws_parent="$UVB_SYSTEM_WORKSPACE_PARENT"
         echo "=====> Using Linux-native workspace parent instead: $ws_parent" >&2
     fi
@@ -3176,7 +3176,7 @@ function resolve_workspace_paths() {
     WORKSPACE_CHROOT="$WORKSPACE_DIR/chroot"
     WORKSPACE_IMAGE="$WORKSPACE_DIR/image"
 
-    # ── Output directory (final image + checksums) ────────────────────
+    # -- Output directory (final image + checksums) --------------------
     if [[ -n "${UVB_OUTPUT_DIR:-}" ]]; then
         OUTPUT_DIR="${UVB_OUTPUT_DIR%/}"
         echo "=====> Output directory (UVB_OUTPUT_DIR): $OUTPUT_DIR" >&2
@@ -3343,7 +3343,7 @@ function print_build_result() {
     esac
 }
 
-# generate_config_wizard — interactive wizard that generates a build-popos-removable.cfg file.
+# generate_config_wizard -- interactive wizard that generates a build-popos-removable.cfg file.
 # Walks the user through each setting and writes the result.
 function generate_config_wizard() {
     if ! prompts_enabled; then
@@ -3496,7 +3496,7 @@ function generate_config_wizard() {
 
     # Write the config file
     cat > "$out_path" <<WIZARD_EOF
-# Pop!_OS Vanilla Cloud Image Builder — generated by config wizard
+# Pop!_OS Vanilla Cloud Image Builder -- generated by config wizard
 # $(date '+%Y-%m-%d %H:%M:%S %Z')
 
 # --- Core ---
@@ -3564,7 +3564,7 @@ WIZARD_EOF
     exit 0
 }
 
-# load_config_file FILE — source a config file (key=value lines, # comments, blank lines).
+# load_config_file FILE -- source a config file (key=value lines, # comments, blank lines).
 # Only recognized TARGET_* variables are exported.
 # Unknown keys are ignored; the config cannot run arbitrary commands.
 function load_config_file() {
@@ -4269,7 +4269,7 @@ function setup_pop_apt_repos() {
     # Suite names; staging suites are deliberately absent from this list.
     # Each suite is taken from the CDN (POP_APT_URL) when it publishes the
     # target release, falling back to the origin server only when it does
-    # not — bulk fetches straight from apt-origin get their TLS connections
+    # not -- bulk fetches straight from apt-origin get their TLS connections
     # dropped mid-transfer ("unexpected eof while reading").
     #
     # The sources are written in deb822 format under the filenames stock
@@ -4311,7 +4311,7 @@ EOF
                 echo "  WARN  ${name}: using the origin server (CDN does not publish '${TARGET_UBUNTU_VERSION}'); downloads may be less reliable." >&2
             added_any=1
         else
-            echo "  WARN  ${name} '${TARGET_UBUNTU_VERSION}' is unreachable on both ${POP_APT_URL} and ${POP_APT_ORIGIN_URL} — skipping this suite." >&2
+            echo "  WARN  ${name} '${TARGET_UBUNTU_VERSION}' is unreachable on both ${POP_APT_URL} and ${POP_APT_ORIGIN_URL} -- skipping this suite." >&2
             # Write a disabled stub anyway: the pop-default-settings postinst
             # greps this exact file unconditionally and kills the dpkg run if
             # it is missing. "Enabled: no" keeps apt from ever using it, and
@@ -4333,7 +4333,7 @@ EOF
         exit 1
     fi
 
-    # Prefer Pop!_OS packages over the Ubuntu archive — but only for the
+    # Prefer Pop!_OS packages over the Ubuntu archive -- but only for the
     # packages this build actually takes from Pop: OS identity (base-files),
     # the keyring/defaults (pop-*), and the System76 kernel/driver stack.
     #
@@ -4345,7 +4345,7 @@ EOF
     # desktop metapackages' strictly versioned dependencies unsatisfiable
     # ("Depends: ... but it is not going to be installed", conflicting
     # assignments on update-manager-core). Pop-only packages (linux-system76's
-    # concrete kernel builds, system76-power, ...) need no pin at all — the
+    # concrete kernel builds, system76-power, ...) need no pin at all -- the
     # Pop repos are their only source.
     cat <<'EOF' > /etc/apt/preferences.d/pop-os-release
 Package: base-files pop-* linux-system76* linux-image-system76* linux-headers-system76* system76-*
