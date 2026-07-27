@@ -7,7 +7,7 @@ This project is designed for:
 - **Advanced users** who want deterministic output, chroot-level control, tunable package profiles, and full customization capabilities.
 
 > [!NOTE]
-> This project now is part of jimedrand.org, new internet-based organisation and place to develop the open source software that developed by [jimed-rand](https://github.com/jimed-rand) and contributors who've helping me working on it.
+> This project now is part of jimedrand.org, an new internet-based small organisation and place to develop the open source software that developed by [jimed-rand](https://github.com/jimed-rand) and contributors who've helping to working on it.
 ---
 
 ## What's New
