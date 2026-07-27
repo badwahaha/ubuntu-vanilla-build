@@ -6,6 +6,8 @@ This project is designed for:
 - **Beginners** who want a working custom Ubuntu ISO with simple commands and interactive prompts.
 - **Advanced users** who want deterministic output, chroot-level control, tunable package profiles, and full customization capabilities.
 
+> [!NOTE]
+> This project now is part of jimedrand.org, new internet-based organisation and place to develop the open source software that developed by [jimed-rand](https://github.com/jimed-rand) and contributors who've helping me working on it.
 ---
 
 ## What's New
