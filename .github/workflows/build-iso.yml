@@ -1,0 +1,42 @@
+name: Build Custom ISO (Unattended)
+
+# This enables the manual "Run workflow" trigger button on GitHub
+on:
+  workflow_dispatch:
+
+jobs:
+  compile-iso:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Pull your fork containing /scripts/build.cfg
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # Step 2: Clear runner bloat to prevent "No Space Left on Device" errors
+      # Linux ISO compilation requires roughly 10-15GB of entirely free workspace
+      - name: Maximize Disk Space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/libexec/docker
+
+      # Step 3: Install heavy compilation tooling needed by the build script
+      - name: Install ISO Tooling Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y debootstrap squashfs-tools xorriso x11-xserver-utils isolinux syslinux-common
+
+      # Step 4: Execute the script non-interactively using your config file
+      - name: Run Script Non-Interactively
+        run: |
+          chmod +x scripts/build.sh
+          sudo ./scripts/build.sh --advanced --config=scripts/build.cfg
+
+      # Step 5: Extract and save the .iso artifact so you can download it
+      - name: Upload Finalized ISO
+        uses: actions/upload-artifact@v4
+        with:
+          name: custom-ubuntu-vanilla
+          path: |
+            *.iso
+            output/*.iso
+          if-no-files-found: error
