@@ -620,7 +620,8 @@ function customize_image() {
             # looks nothing like Plasma. Install Breeze explicitly and pin it
             # in sddm.conf.d so third-party themes cannot take over the greeter.
             echo "=====> SDDM: forcing Plasma's Breeze theme"
-            apt-get install -y --no-install-recommends sddm sddm-theme-breeze
+            # apt-get install -y --no-install-recommends sddm sddm-theme-breeze
+            apt-get install -y sddm sddm-theme-breeze
             install -d /etc/sddm.conf.d
             cat <<'EOF' > /etc/sddm.conf.d/10-ubuntu-vanilla-breeze.conf
 [Theme]
@@ -650,7 +651,8 @@ EOF
             # (see block_snapd). kde-plasma-desktop does not always pull
             # plasma-discover itself, so install it explicitly.
             echo "=====> Discover: plasma-discover + Flatpak backend (Snap backend blocked)"
-            apt-get install -y plasma-discover plasma-discover-backend-flatpak
+            # apt-get install -y plasma-discover plasma-discover-backend-flatpak
+            apt-get install -y plasma-discover
             ;;
         *)
             >&2 echo "Unsupported desktop variant '${TARGET_DESKTOP:-}'. Add install logic for this variant in customize_image()."
@@ -833,20 +835,19 @@ EOF
         echo "=====> Cockpit: not pre-installed ('sudo apt install -t ${TARGET_UBUNTU_VERSION}-backports cockpit' when needed)"
     fi
 
-    apt-get install -y \
+    # apt-get install -y \
         git \
         vim \
         nano \
         less
 
-    apt-get install -y flatpak
-    flatpak remote-add --if-not-exists --system flathub \
+    # apt-get install -y flatpak
+    # flatpak remote-add --if-not-exists --system flathub \
         https://flathub.org/repo/flathub.flatpakrepo
 
     if [[ "${TARGET_DESKTOP:-gnome}" == "gnome" ]]; then
         apt-get install -y \
-            gnome-software \
-            gnome-software-plugin-flatpak
+            gnome-software
     fi
 
     apt-get purge -y --ignore-missing \
