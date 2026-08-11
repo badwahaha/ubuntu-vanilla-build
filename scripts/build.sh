@@ -843,7 +843,7 @@ EOF
 
     # apt-get install -y flatpak
     # flatpak remote-add --if-not-exists --system flathub \
-        https://flathub.org/repo/flathub.flatpakrepo
+    #    https://flathub.org/repo/flathub.flatpakrepo
 
     if [[ "${TARGET_DESKTOP:-gnome}" == "gnome" ]]; then
         apt-get install -y \
