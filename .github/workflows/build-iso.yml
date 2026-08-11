@@ -29,7 +29,7 @@ jobs:
       - name: Run Script Non-Interactively
         run: |
           chmod +x scripts/build.sh
-          sudo ./scripts/build.sh --advanced --config=scripts/build.cfg -
+          sudo ./scripts/build.sh --advanced --config=./scripts/build.cfg -
 
       # Step 5: Extract and save the .iso artifact so you can download it
       - name: Upload Finalized ISO
