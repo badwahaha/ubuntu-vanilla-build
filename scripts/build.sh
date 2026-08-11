@@ -836,10 +836,10 @@ EOF
     fi
 
     # apt-get install -y \
-        git \
-        vim \
-        nano \
-        less
+    #    git \
+    #    vim \
+    #    nano \
+    #    less
 
     # apt-get install -y flatpak
     # flatpak remote-add --if-not-exists --system flathub \
